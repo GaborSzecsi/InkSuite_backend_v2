@@ -1,0 +1,80 @@
+{
+  "Fanni Mezes": [
+    {
+      "period_start": "2024-04-23",
+      "period_end": "2024-12-31",
+      "book_id": "3ca597d9-c69c-486a-ac67-39851cb124d3",
+      "advance": -5000.0,
+      "royalty_total": 655.336,
+      "balance": -4344.664,
+      "categories": [
+        {
+          "Category": "Paperback",
+          "Units": 1916,
+          "Returns": 36,
+          "Net Units": 1880,
+          "Lifetime Quantity": "1,880",
+          "Returns to Date": "36",
+          "Unit Price": "$9.99",
+          "Royalty Rate (%)": "3.0%",
+          "Discount": 50.0,
+          "Net Revenue": "",
+          "Value": "$18,781.20",
+          "Royalty": "$563.44"
+        },
+        {
+          "Category": "Canada-PB",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "2.0%",
+          "Discount": 50.0,
+          "Net Revenue": "✅",
+          "Value": "$4,595.00",
+          "Royalty": "$91.90"
+        }
+      ]
+    },
+    {
+      "period_start": "2025-01-01",
+      "period_end": "2025-06-30",
+      "book_id": "3ca597d9-c69c-486a-ac67-39851cb124d3",
+      "advance": -5000.0,
+      "royalty_total": 163.1667,
+      "balance": -4181.4973,
+      "categories": [
+        {
+          "Category": "Paperback",
+          "Units": 507,
+          "Returns": 4,
+          "Net Units": 503,
+          "Lifetime Quantity": "503",
+          "Returns to Date": "4",
+          "Unit Price": "$9.99",
+          "Royalty Rate (%)": "3.0%",
+          "Discount": 50.0,
+          "Net Revenue": "",
+          "Value": "$5,024.97",
+          "Royalty": "$150.75"
+        },
+        {
+          "Category": "Canada-PB",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "2.0%",
+          "Discount": 50.0,
+          "Net Revenue": "✅",
+          "Value": "$620.88",
+          "Royalty": "$12.42"
+        }
+      ]
+    }
+  ]
+}

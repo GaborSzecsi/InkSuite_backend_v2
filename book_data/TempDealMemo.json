@@ -1,0 +1,863 @@
+[
+  {
+    "author": "Katherine Dwyer",
+    "author_email": "katiedwyerart@gmail.com",
+    "author_phone_country_code": "+1",
+    "author_phone_number": "916.206.9227",
+    "author_address": {
+      "street": "122 Indian Branch Road",
+      "city": "Candler",
+      "state": "",
+      "zip": "28715",
+      "country": "United States",
+      "nonUS": false
+    },
+    "agent_name": "Kaitlyn Sanchez",
+    "agency_name": "Bradford Literary Agency",
+    "agent_email": "Kaitlyn@bradfordlit.com",
+    "agency_website": "https://bradfordlit.com/",
+    "agency_street": "5694 Mission Center Rd. #347",
+    "agency_city": "San Diego",
+    "agency_state": "CA",
+    "agency_zip": "92108",
+    "agency_country": "USA",
+    "title": "Pay Attention, Oliver",
+    "effectiveDate": "2025-12-17",
+    "optionDeleted": false,
+    "optionClause": "Publisher shall have an exclusive option for the Contributor’s next work by Author that features characters from Pay Attention, Oliver, exercisable within 60 days of acceptance of the final manuscript, on terms to be negotiated in good faith.",
+    "compCopiesContributor": 25,
+    "compCopiesAgent": 10,
+    "name": "Pay Attention, Oliver",
+    "uid": "nfq2jm8",
+    "createdAt": 1766018745.663364,
+    "updatedAt": 1766020849.285878,
+    "author_advance": 10000,
+    "advanceSchedule": [
+      {
+        "id": "lzvwsts",
+        "amountType": "percent",
+        "value": 50,
+        "trigger": "Upon signing. Note, final manuscript delivered and accepted along with scketches"
+      },
+      {
+        "id": "tl1szuj",
+        "amountType": "percent",
+        "value": 50,
+        "trigger": "review and acceptance of the final artwork"
+      }
+    ],
+    "projectedPublicationDate": "Spring 2027",
+    "projectedRetailPrice": "18.99",
+    "territoriesRights": "World, all languages",
+    "royalties": {
+      "author": {
+        "first_rights": [
+          {
+            "format": "Hardcover",
+            "base": "list_price",
+            "escalating": true,
+            "flat_rate_percent": 5,
+            "tiers": [
+              {
+                "rate_percent": 10,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": "<=",
+                    "value": 17500
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 12.5,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": ">",
+                    "value": 17500
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 8,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": "between",
+                    "value": [
+                      55,
+                      60
+                    ]
+                  }
+                ]
+              },
+              {
+                "rate_percent": 10,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 60
+                  }
+                ]
+              },
+              {
+                "rate_percent": 0,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 75
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "format": "Paperback",
+            "base": "list_price",
+            "escalating": true,
+            "flat_rate_percent": 5,
+            "tiers": [
+              {
+                "rate_percent": 6,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": "<=",
+                    "value": 40000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 7.5,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": ">",
+                    "value": 40000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 5,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": "between",
+                    "value": [
+                      55,
+                      60
+                    ]
+                  }
+                ]
+              },
+              {
+                "rate_percent": 6,
+                "base": "net_receipts",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 60
+                  }
+                ]
+              },
+              {
+                "rate_percent": 0,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 75
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "format": "Board Book",
+            "base": "list_price",
+            "escalating": true,
+            "flat_rate_percent": 5,
+            "tiers": [
+              {
+                "rate_percent": 6,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": "<=",
+                    "value": 50000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 6,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": ">",
+                    "value": 50000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 5,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": "between",
+                    "value": [
+                      55,
+                      60
+                    ]
+                  }
+                ]
+              },
+              {
+                "rate_percent": 6,
+                "base": "net_receipts",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 60
+                  }
+                ]
+              },
+              {
+                "rate_percent": 0,
+                "base": "net_receipts",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 75
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "format": "E-book",
+            "base": "list_price",
+            "escalating": false,
+            "flat_rate_percent": 12.5,
+            "tiers": []
+          }
+        ],
+        "subrights": [
+          {
+            "name": "Hardcover, paperback, and large-type reprint editions",
+            "percent": 20
+          },
+          {
+            "name": "Book club publication",
+            "percent": 25
+          },
+          {
+            "name": "First serial publication",
+            "variants": {
+              "text_only": 90,
+              "text_and_art": 45
+            }
+          },
+          {
+            "name": "Second serial publication",
+            "variants": {
+              "text_only": 50,
+              "text_and_art": 25
+            }
+          },
+          {
+            "name": "Right to publish the Work in English in the UK",
+            "percent": 80
+          },
+          {
+            "name": "Right to publish the Work in English in Canada",
+            "percent": 0
+          },
+          {
+            "name": "Publication as selections, condensations, or abridgments in anthologies, textbook editions, and book digests",
+            "percent": 25
+          },
+          {
+            "name": "Foreign translation",
+            "percent": 70
+          },
+          {
+            "name": "Export rights",
+            "percent": 0
+          },
+          {
+            "name": "Audiobooks",
+            "variants": {
+              "physical": 10,
+              "digital": 25
+            }
+          }
+        ]
+      }
+    },
+    "shortDescription": "a 32-page picture book about a young boy and his mother as they explore and discover the world around them together."
+  },
+  {
+    "author": "Benjamin Gillenwater",
+    "author_email": "ben@familyitguy.com",
+    "author_website": "https://www.familyitguy.com",
+    "author_phone_country_code": "+1",
+    "author_phone_number": "208.391.2941",
+    "author_address": {
+      "street": "2976 E State St, #120-2078",
+      "city": "Eagle",
+      "state": "",
+      "zip": "83616",
+      "country": "",
+      "nonUS": false
+    },
+    "author_citizenship": "American",
+    "title": "Digital Heroes",
+    "effectiveDate": "2025-11-11",
+    "projectedPublicationDate": "Fall 2026",
+    "projectedRetailPrice": "18.99 USD",
+    "territoriesRights": "World, in all languages",
+    "compCopiesContributor": 25,
+    "author_advance": 5000,
+    "shortDescription": "A hybrid middle-grade novel-graphic novel about transforming",
+    "deliveryMode": "author_by_date",
+    "deliveryClause": "Manuscript shall be delivered to Publisher in an editorially satisfactory format by 2026-02-10.",
+    "deliveryDate": "2026-02-10",
+    "advanceSchedule": [
+      {
+        "id": "t9l20le",
+        "amountType": "percent",
+        "value": 50,
+        "trigger": "Upon signing"
+      },
+      {
+        "id": "1e1wmpk",
+        "amountType": "percent",
+        "value": 50,
+        "trigger": "Upon Delivery and Acceptance "
+      }
+    ],
+    "royalties": {
+      "author": {
+        "first_rights": [
+          {
+            "format": "Hardcover",
+            "base": "list_price",
+            "escalating": true,
+            "flat_rate_percent": 5,
+            "tiers": [
+              {
+                "rate_percent": 10,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": "<=",
+                    "value": 25000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 12.5,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": ">",
+                    "value": 25000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 10,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": "between",
+                    "value": [
+                      55,
+                      60
+                    ]
+                  }
+                ]
+              },
+              {
+                "rate_percent": 10,
+                "base": "net_receipts",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": "between",
+                    "value": [
+                      60,
+                      75
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "format": "Paperback",
+            "base": "list_price",
+            "escalating": true,
+            "flat_rate_percent": 5,
+            "tiers": [
+              {
+                "rate_percent": 6,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": "<=",
+                    "value": 25000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 7.5,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": ">",
+                    "value": 25000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 6,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": "between",
+                    "value": [
+                      55,
+                      60
+                    ]
+                  }
+                ]
+              },
+              {
+                "rate_percent": 7.5,
+                "base": "net_receipts",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 60
+                  }
+                ]
+              },
+              {
+                "rate_percent": 0,
+                "base": "net_receipts",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 75
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "format": "E-book",
+            "base": "net_receipts",
+            "escalating": false,
+            "flat_rate_percent": 25,
+            "tiers": []
+          }
+        ],
+        "subrights": [
+          {
+            "name": "Hardcover, paperback, and large-type reprint editions",
+            "percent": 25
+          },
+          {
+            "name": "Publication as selections, condensations, or abridgments in anthologies, textbook editions, and book digests",
+            "percent": 25
+          },
+          {
+            "name": "Book club publication",
+            "percent": 50
+          },
+          {
+            "name": "First serial publication",
+            "variants": {
+              "text_only": 90,
+              "text_and_art": 45
+            }
+          },
+          {
+            "name": "Second serial publication",
+            "variants": {
+              "text_only": 50,
+              "text_and_art": 25
+            }
+          },
+          {
+            "name": "Audiobooks",
+            "variants": {
+              "physical": 10,
+              "digital": 25
+            }
+          },
+          {
+            "name": "Right to publish the Work in English in the UK",
+            "percent": 80
+          },
+          {
+            "name": "Right to publish the Work in English in Canada",
+            "percent": 0
+          },
+          {
+            "name": "Export rights",
+            "percent": 0
+          },
+          {
+            "name": "Foreign translation",
+            "percent": 70
+          }
+        ]
+      }
+    },
+    "name": "Your Family's Digital North Star",
+    "uid": "pxnn78b",
+    "createdAt": 1763418027.4916358,
+    "updatedAt": 1763419079.4806361,
+    "contributorRole": "author"
+  },
+  {
+    "uid": "779qlf3",
+    "name": "Your Family's Digital North Star",
+    "contributorRole": "author",
+    "optionDeleted": true,
+    "advanceSchedule": [
+      {
+        "id": "1ad93rd",
+        "amountType": "percent",
+        "value": 50,
+        "trigger": "Upon signing"
+      },
+      {
+        "id": "eu0yetr",
+        "amountType": "percent",
+        "value": 50,
+        "trigger": "Upon delivery & acceptance"
+      }
+    ],
+    "author": "Benjamin Gillenwater",
+    "createdAt": 1763069585.9816258,
+    "updatedAt": 1763091336.4834764,
+    "author_email": "ben@familyitguy.com",
+    "author_website": "https://www.familyitguy.com/",
+    "author_phone_country_code": "+1",
+    "title": "Your Family's Digital North Star ",
+    "effectiveDate": "2025-11-11",
+    "projectedPublicationDate": "Fall 2026",
+    "projectedRetailPrice": "24 USD",
+    "territoriesRights": "World Englich with Translation",
+    "compCopiesContributor": 25,
+    "author_advance": 5000,
+    "shortDescription": "200-page nonfiction manuscript offering practical guidance for parents and caregivers on how to support children in developing safe, balanced, and responsible digital habits.",
+    "deliveryMode": "author_by_date",
+    "deliveryClause": "Manuscript shall be delivered to Publisher in an editorially satisfactory format by 2025-12-15.",
+    "deliveryDate": "2025-12-15",
+    "royalties": {
+      "author": {
+        "first_rights": [
+          {
+            "format": "Hardcover",
+            "base": "list_price",
+            "escalating": true,
+            "flat_rate_percent": 5,
+            "tiers": [
+              {
+                "rate_percent": 10,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": "<=",
+                    "value": 24998
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 12,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": ">",
+                    "value": 24998
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 12,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": "between",
+                    "value": [
+                      55,
+                      60
+                    ]
+                  }
+                ]
+              },
+              {
+                "rate_percent": 7.5,
+                "base": "net_receipts",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 60
+                  }
+                ]
+              },
+              {
+                "rate_percent": 0,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 75
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "format": "Paperback",
+            "base": "list_price",
+            "escalating": true,
+            "flat_rate_percent": 5,
+            "tiers": [
+              {
+                "rate_percent": 6,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": "<=",
+                    "value": 25000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 7.5,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "units",
+                    "comparator": ">",
+                    "value": 25000
+                  },
+                  {
+                    "kind": "discount",
+                    "comparator": "<",
+                    "value": 55
+                  }
+                ]
+              },
+              {
+                "rate_percent": 7.5,
+                "base": "list_price",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": "between",
+                    "value": [
+                      55,
+                      60
+                    ]
+                  }
+                ]
+              },
+              {
+                "rate_percent": 6,
+                "base": "net_receipts",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 60
+                  }
+                ]
+              },
+              {
+                "rate_percent": 0,
+                "base": "net_receipts",
+                "conditions": [
+                  {
+                    "kind": "discount",
+                    "comparator": ">=",
+                    "value": 75
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "format": "E-book",
+            "base": "net_receipts",
+            "escalating": false,
+            "flat_rate_percent": 25,
+            "tiers": []
+          }
+        ],
+        "subrights": [
+          {
+            "name": "Mass merchandise",
+            "percent": 75
+          },
+          {
+            "name": "Publication as selections, condensations, or abridgments in anthologies, textbook editions, and book digests",
+            "percent": 25
+          },
+          {
+            "name": "Book club publication",
+            "percent": 50
+          },
+          {
+            "name": "First serial publication",
+            "variants": {
+              "text_only": 90,
+              "text_and_art": 45
+            }
+          },
+          {
+            "name": "Second serial publication",
+            "variants": {
+              "text_only": 50,
+              "text_and_art": 25
+            }
+          },
+          {
+            "name": "Audiobooks",
+            "variants": {
+              "physical": 10,
+              "digital": 25
+            }
+          },
+          {
+            "name": "Right to publish the Work in English in the UK",
+            "percent": 80
+          },
+          {
+            "name": "Right to publish the Work in English in Canada",
+            "percent": 0
+          },
+          {
+            "name": "Export rights",
+            "percent": 0
+          },
+          {
+            "name": "Foreign translation",
+            "percent": 70
+          }
+        ]
+      }
+    },
+    "author_address": {
+      "street": "2976 E State St, #120-2078",
+      "city": "Eagle",
+      "state": "Idaho",
+      "zip": "83616",
+      "country": "United States",
+      "nonUS": false
+    },
+    "author_citizenship": "American",
+    "author_phone_number": "208.391.2941"
+  }
+]

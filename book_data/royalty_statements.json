@@ -1,0 +1,200 @@
+[
+  {
+    "book_id": "3ca597d9-c69c-486a-ac67-39851cb124d3",
+    "period_start": "2024-04-23",
+    "period_end": "2024-12-31",
+    "sales_data": [
+      {
+        "category": "Paperback",
+        "units": 1916,
+        "returns": 36,
+        "unit_price_or_net_revenue": 9.99,
+        "discount": 50.0,
+        "net_revenue": false
+      },
+      {
+        "category": "Canada-PB",
+        "units": 0,
+        "returns": 0,
+        "unit_price_or_net_revenue": 4595.0,
+        "discount": 50.0,
+        "net_revenue": true
+      }
+    ],
+    "author": {
+      "advance": -7000.0,
+      "royalty_total": 655.336,
+      "categories": [
+        {
+          "Category": "Paperback",
+          "Units": 1916,
+          "Returns": 36,
+          "Net Units": 1880,
+          "Lifetime Quantity": "1,880",
+          "Returns to Date": "36",
+          "Unit Price": "$9.99",
+          "Royalty Rate (%)": "3.0%",
+          "Discount": 50.0,
+          "Net Revenue": "",
+          "Value": "$18,781.20",
+          "Royalty": "$563.44"
+        },
+        {
+          "Category": "Canada-PB",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "2.0%",
+          "Discount": 50.0,
+          "Net Revenue": "✅",
+          "Value": "$4,595.00",
+          "Royalty": "$91.90"
+        }
+      ],
+      "last_balance": -7000.0,
+      "balance": -6344.664,
+      "payable": 0.0
+    },
+    "illustrator": {
+      "advance": -5000.0,
+      "royalty_total": 655.336,
+      "categories": [
+        {
+          "Category": "Paperback",
+          "Units": 1916,
+          "Returns": 36,
+          "Net Units": 1880,
+          "Lifetime Quantity": "1,880",
+          "Returns to Date": "36",
+          "Unit Price": "$9.99",
+          "Royalty Rate (%)": "3.0%",
+          "Discount": 50.0,
+          "Net Revenue": "",
+          "Value": "$18,781.20",
+          "Royalty": "$563.44"
+        },
+        {
+          "Category": "Canada-PB",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "2.0%",
+          "Discount": 50.0,
+          "Net Revenue": "✅",
+          "Value": "$4,595.00",
+          "Royalty": "$91.90"
+        }
+      ],
+      "last_balance": -5000.0,
+      "balance": -4344.664,
+      "payable": 0.0
+    },
+    "lifetime_quantity_by_cat": {},
+    "returns_to_date_by_cat": {}
+  },
+  {
+    "book_id": "3ca597d9-c69c-486a-ac67-39851cb124d3",
+    "period_start": "2025-01-01",
+    "period_end": "2025-06-30",
+    "sales_data": [
+      {
+        "category": "Paperback",
+        "units": 507,
+        "returns": 4,
+        "unit_price_or_net_revenue": 9.99,
+        "discount": 50.0,
+        "net_revenue": false
+      },
+      {
+        "category": "Canada-PB",
+        "units": 0,
+        "returns": 0,
+        "unit_price_or_net_revenue": 620.88,
+        "discount": 50.0,
+        "net_revenue": true
+      }
+    ],
+    "author": {
+      "advance": -7000.0,
+      "royalty_total": 163.1667,
+      "categories": [
+        {
+          "Category": "Paperback",
+          "Units": 507,
+          "Returns": 4,
+          "Net Units": 503,
+          "Lifetime Quantity": "503",
+          "Returns to Date": "4",
+          "Unit Price": "$9.99",
+          "Royalty Rate (%)": "3.0%",
+          "Discount": 50.0,
+          "Net Revenue": "",
+          "Value": "$5,024.97",
+          "Royalty": "$150.75"
+        },
+        {
+          "Category": "Canada-PB",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "2.0%",
+          "Discount": 50.0,
+          "Net Revenue": "✅",
+          "Value": "$620.88",
+          "Royalty": "$12.42"
+        }
+      ],
+      "last_balance": -7000.0,
+      "balance": -6836.8333,
+      "payable": 0.0
+    },
+    "illustrator": {
+      "advance": -5000.0,
+      "royalty_total": 163.1667,
+      "categories": [
+        {
+          "Category": "Paperback",
+          "Units": 507,
+          "Returns": 4,
+          "Net Units": 503,
+          "Lifetime Quantity": "503",
+          "Returns to Date": "4",
+          "Unit Price": "$9.99",
+          "Royalty Rate (%)": "3.0%",
+          "Discount": 50.0,
+          "Net Revenue": "",
+          "Value": "$5,024.97",
+          "Royalty": "$150.75"
+        },
+        {
+          "Category": "Canada-PB",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "2.0%",
+          "Discount": 50.0,
+          "Net Revenue": "✅",
+          "Value": "$620.88",
+          "Royalty": "$12.42"
+        }
+      ],
+      "last_balance": -4344.664,
+      "balance": -4181.4973,
+      "payable": 0.0
+    },
+    "lifetime_quantity_by_cat": {},
+    "returns_to_date_by_cat": {}
+  }
+]

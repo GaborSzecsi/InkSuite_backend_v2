@@ -1,0 +1,280 @@
+[
+  {
+    "uid": "3ca597d9-c69c-486a-ac67-39851cb124d3",
+    "book_title": "The Adventures of Penguin and Panda",
+    "book_author": "Brenda Maier",
+    "party": "author",
+    "period_start": "2024-04-23",
+    "period_end": "2024-12-31",
+    "generated_at": "2025-10-16T18:30:23.103668",
+    "sales_data": [
+      {
+        "category": "Paperback",
+        "units": 1916,
+        "returns": 50,
+        "unit_price_or_net_revenue": 9.99,
+        "discount": 50.0,
+        "net_revenue": false
+      },
+      {
+        "category": "Canada-PB",
+        "units": 0,
+        "returns": 0,
+        "unit_price_or_net_revenue": 4595.4,
+        "discount": 50.0,
+        "net_revenue": true
+      }
+    ],
+    "calculations": {
+      "advance": -7000.0,
+      "royalty_total": 637.362,
+      "categories": [
+        {
+          "Category": "Paperback",
+          "Units": 1916,
+          "Returns": 50,
+          "Net Units": 1866,
+          "Lifetime Quantity": "1,866",
+          "Returns to Date": "50",
+          "Unit Price": "$9.99",
+          "Royalty Rate (%)": "3.0%",
+          "Discount": 50.0,
+          "Net Revenue": "",
+          "Value": "$18,641.34",
+          "Royalty": "$559.24"
+        },
+        {
+          "Category": "Canada-PB",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "1.7%",
+          "Discount": 50.0,
+          "Net Revenue": "\u2705",
+          "Value": "$4,595.40",
+          "Royalty": "$78.12"
+        }
+      ],
+      "last_balance": -7000.0,
+      "balance": -6362.638,
+      "payable": 0.0
+    }
+  },
+  {
+    "uid": "3ca597d9-c69c-486a-ac67-39851cb124d3",
+    "book_title": "The Adventures of Penguin and Panda",
+    "book_author": "Brenda Maier",
+    "party": "author",
+    "period_start": "2025-01-01",
+    "period_end": "2025-06-30",
+    "generated_at": "2025-10-16T18:38:08.165892",
+    "sales_data": [
+      {
+        "category": "Paperback",
+        "units": 507,
+        "returns": 4,
+        "unit_price_or_net_revenue": 9.99,
+        "discount": 50.0,
+        "net_revenue": false
+      },
+      {
+        "category": "Canada-PB",
+        "units": 0,
+        "returns": 0,
+        "unit_price_or_net_revenue": 620.88,
+        "discount": 50.0,
+        "net_revenue": true
+      }
+    ],
+    "calculations": {
+      "advance": -7000.0,
+      "royalty_total": 163.1667,
+      "categories": [
+        {
+          "Category": "Paperback",
+          "Units": 507,
+          "Returns": 4,
+          "Net Units": 503,
+          "Lifetime Quantity": "2,383",
+          "Returns to Date": "40",
+          "Unit Price": "$9.99",
+          "Royalty Rate (%)": "3.0%",
+          "Discount": 50.0,
+          "Net Revenue": "",
+          "Value": "$5,024.97",
+          "Royalty": "$150.75"
+        },
+        {
+          "Category": "Canada-PB",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "2.0%",
+          "Discount": 50.0,
+          "Net Revenue": "\u2705",
+          "Value": "$620.88",
+          "Royalty": "$12.42"
+        }
+      ],
+      "last_balance": -6344.664,
+      "balance": -6181.4973,
+      "payable": 0.0
+    }
+  },
+  {
+    "uid": "e972413f-7b98-4c76-a523-cbe0ca5e11ba",
+    "book_title": "Ellie in First Position",
+    "book_author": "Brian Freschi",
+    "party": "author",
+    "period_start": "2023-10-03",
+    "period_end": "2024-06-30",
+    "generated_at": "2025-10-17T12:33:07.330908",
+    "sales_data": [
+      {
+        "category": "Paperback",
+        "units": 1564,
+        "returns": 7,
+        "unit_price_or_net_revenue": 13.99,
+        "discount": 5.0,
+        "net_revenue": false
+      },
+      {
+        "category": "E-book",
+        "units": 0,
+        "returns": 0,
+        "unit_price_or_net_revenue": 85.65,
+        "discount": 0.0,
+        "net_revenue": true
+      }
+    ],
+    "calculations": {
+      "advance": -2000.0,
+      "royalty_total": 1325.7888,
+      "categories": [
+        {
+          "Category": "Paperback",
+          "Units": 1564,
+          "Returns": 7,
+          "Net Units": 1557,
+          "Lifetime Quantity": "1,557",
+          "Returns to Date": "7",
+          "Unit Price": "$13.99",
+          "Royalty Rate (%)": "6.0%",
+          "Discount": 5.0,
+          "Net Revenue": "",
+          "Value": "$21,782.43",
+          "Royalty": "$1,306.95"
+        },
+        {
+          "Category": "E-book",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "25.0%",
+          "Discount": 0,
+          "Net Revenue": "\u2705",
+          "Value": "$75.37",
+          "Royalty": "$18.84"
+        }
+      ],
+      "last_balance": -2000.0,
+      "balance": -674.2112,
+      "payable": 0.0
+    }
+  },
+  {
+    "uid": "3ca597d9-c69c-486a-ac67-39851cb124d3",
+    "book_title": "The Adventures of Penguin and Panda",
+    "book_author": "Brenda Maier",
+    "party": "author",
+    "period_start": "2025-07-01",
+    "period_end": "2025-12-31",
+    "generated_at": "2026-02-10T12:00:47.905323",
+    "sales_data": [
+      {
+        "category": "Hardcover",
+        "units": 0,
+        "returns": 0,
+        "unit_price_or_net_revenue": 13.99,
+        "discount": 0.0,
+        "net_revenue": false
+      },
+      {
+        "category": "Paperback",
+        "units": 0,
+        "returns": 0,
+        "unit_price_or_net_revenue": 9.99,
+        "discount": 0.0,
+        "net_revenue": false
+      },
+      {
+        "category": "E-book",
+        "units": 0,
+        "returns": 0,
+        "unit_price_or_net_revenue": 9.99,
+        "discount": 0.0,
+        "net_revenue": true
+      }
+    ],
+    "calculations": {
+      "advance": -7000.0,
+      "royalty_total": 1.0989,
+      "categories": [
+        {
+          "Category": "Hardcover",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "$13.99",
+          "Royalty Rate (%)": "5.0%",
+          "Discount": 0,
+          "Net Revenue": "",
+          "Value": "$0.00",
+          "Royalty": "$0.00"
+        },
+        {
+          "Category": "Paperback",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "$9.99",
+          "Royalty Rate (%)": "3.0%",
+          "Discount": 0,
+          "Net Revenue": "",
+          "Value": "$0.00",
+          "Royalty": "$0.00"
+        },
+        {
+          "Category": "E-book",
+          "Units": 0,
+          "Returns": 0,
+          "Net Units": 0,
+          "Lifetime Quantity": "0",
+          "Returns to Date": "0",
+          "Unit Price": "",
+          "Royalty Rate (%)": "12.5%",
+          "Discount": 0,
+          "Net Revenue": "\u2705",
+          "Value": "$8.79",
+          "Royalty": "$1.10"
+        }
+      ],
+      "last_balance": -7000.0,
+      "balance": -6998.9011,
+      "payable": 0.0
+    }
+  }
+]

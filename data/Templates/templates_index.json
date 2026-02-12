@@ -1,0 +1,22 @@
+[
+  {
+    "id": "77afd8fd37312af0c92cd0a102c8ab6d",
+    "name": "Publishing Agreement",
+    "filename": "77afd8fd37312af0c92cd0a102c8ab6d_picture_book_author_template.docx",
+    "type": "author",
+    "dealType": "single",
+    "uploadedAt": "2025-11-14T03:34:19.552473Z",
+    "placeholders": null,
+    "previewUrl": "http://127.0.0.1:8000/api/contracts/templates/77afd8fd37312af0c92cd0a102c8ab6d/file"
+  },
+  {
+    "id": "3e5d935a1a3cba248e77f6bbf2b9d2be",
+    "name": "new agreement",
+    "filename": "3e5d935a1a3cba248e77f6bbf2b9d2be_picture_book_author_template.docx",
+    "type": "author",
+    "dealType": "single",
+    "uploadedAt": "2025-11-07T18:59:42.749800Z",
+    "placeholders": null,
+    "previewUrl": "http://127.0.0.1:8000/api/contracts/templates/3e5d935a1a3cba248e77f6bbf2b9d2be/file"
+  }
+]
