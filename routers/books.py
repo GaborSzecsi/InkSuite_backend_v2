@@ -1,26 +1,26 @@
 # marble_app/routers/books.py
 #
 # DROP-IN: S3 is the source of truth for books.json
-# - GET  /api/books            -> reads from S3
-# - POST /api/books            -> upserts and writes back to S3
-# - DELETE /api/books          -> deletes and writes back to S3
-# - POST /api/books/normalize  -> rewrites normalized version back to S3
+# - GET    /api/books            -> reads from S3
+# - POST   /api/books            -> upserts and writes back to S3
+# - DELETE /api/books            -> deletes and writes back to S3
+# - POST   /api/books/normalize  -> rewrites normalized version back to S3
+# - GET    /api/books/health     -> shows resolved env + a quick S3 head check
 #
 # Config via env (defaults match your tenant path):
 #   S3_BOOKS_BUCKET=inksuite-data
 #   S3_BOOKS_KEY=tenants/marble-press/book_data/books.json
-#   AWS_REGION=us-east-2   (optional; boto will infer on EC2)
+#   AWS_REGION=us-east-2 (optional; boto will infer on EC2)
 #
-# IMPORTANT:
-# - EC2 must have an IAM role allowing s3:GetObject/PutObject on that key.
-# - This keeps your existing UI expectations: flat mirrors + Title Case format keys in responses.
+# Debug controls:
+#   BOOKS_S3_STRICT=1   -> If S3 key missing, RAISE 500 (no more silent empty lists)
+#   BOOKS_DEBUG=1       -> Adds more details in errors/logs
 
 import os
 import re
 import math
 import uuid
 import json
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
@@ -33,11 +33,22 @@ router = APIRouter()
 # ----------------------- Config -----------------------
 KEEP_FLAT_MIRRORS: bool = True
 PERSIST_NORMALIZED_ON_GET: bool = False
-MODULE_VERSION = "addr-v6-s3"
+MODULE_VERSION = "addr-v7-s3-debug"
 
 S3_BOOKS_BUCKET = os.getenv("S3_BOOKS_BUCKET", "inksuite-data")
 S3_BOOKS_KEY = os.getenv("S3_BOOKS_KEY", "tenants/marble-press/book_data/books.json")
 AWS_REGION = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")  # optional
+
+BOOKS_S3_STRICT = (os.getenv("BOOKS_S3_STRICT", "0").strip() == "1")
+BOOKS_DEBUG = (os.getenv("BOOKS_DEBUG", "0").strip() == "1")
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+
 
 # ----------------------- S3 helpers -----------------------
 def _s3_client():
@@ -46,45 +57,116 @@ def _s3_client():
         return boto3.client("s3", region_name=AWS_REGION)
     return boto3.client("s3")
 
+
+def _err_code(e: ClientError) -> str:
+    try:
+        return e.response.get("Error", {}).get("Code", "") or ""
+    except Exception:
+        return ""
+
+
+def _s3_head(bucket: str, key: str) -> Dict[str, Any]:
+    s3 = _s3_client()
+    try:
+        r = s3.head_object(Bucket=bucket, Key=key)
+        return {
+            "exists": True,
+            "content_length": r.get("ContentLength"),
+            "etag": (r.get("ETag") or "").strip('"'),
+            "last_modified": r.get("LastModified").isoformat() if r.get("LastModified") else None,
+            "content_type": r.get("ContentType"),
+        }
+    except ClientError as e:
+        code = _err_code(e)
+        # Common: 404 / NoSuchKey / NotFound
+        return {"exists": False, "error_code": code}
+
+
 def _s3_read_json_array(bucket: str, key: str) -> List[Dict[str, Any]]:
     s3 = _s3_client()
     try:
+        if BOOKS_DEBUG:
+            print(f"[BOOKS] READ s3://{bucket}/{key} region={AWS_REGION or '(infer)'} strict={BOOKS_S3_STRICT}")
+
         obj = s3.get_object(Bucket=bucket, Key=key)
         raw = obj["Body"].read()
-        data = json.loads(raw.decode("utf-8"))
+        txt = raw.decode("utf-8")
+
+        data = json.loads(txt)
+
+        # accept {"books":[...]} or [...]
         if isinstance(data, dict) and "books" in data and isinstance(data["books"], list):
             data = data["books"]
+
         if data is None:
             return []
         if not isinstance(data, list):
-            raise HTTPException(status_code=500, detail=f"S3 books.json must be a JSON array, got {type(data).__name__}")
-        # ensure list of dicts
-        out = []
+            raise HTTPException(
+                status_code=500,
+                detail=f"S3 books.json must be a JSON array (or {{'books':[...]}}, got {type(data).__name__})",
+            )
+
+        # ensure list of dicts only
+        out: List[Dict[str, Any]] = []
         for x in data:
             if isinstance(x, dict):
                 out.append(x)
+
         return out
+
     except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchKey", "404"):
+        code = _err_code(e)
+
+        # STOP HIDING THIS WHEN DEBUGGING:
+        # If the key is wrong, returning [] makes the UI look "fine but empty".
+        if code in ("NoSuchKey", "404", "NotFound"):
+            if BOOKS_S3_STRICT:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"books.json not found at s3://{bucket}/{key} (code={code})",
+                ) from e
+            # legacy behavior
             return []
-        raise HTTPException(status_code=500, detail=f"S3 read failed s3://{bucket}/{key}: {code}") from e
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"S3 read failed s3://{bucket}/{key} (code={code})",
+        ) from e
+
+    except UnicodeDecodeError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"books.json at s3://{bucket}/{key} is not valid utf-8: {e}",
+        ) from e
+
     except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"Invalid JSON in s3://{bucket}/{key}: {e}") from e
+        raise HTTPException(
+            status_code=500,
+            detail=f"Invalid JSON in s3://{bucket}/{key}: {e}",
+        ) from e
+
 
 def _s3_write_json_array(bucket: str, key: str, books: List[Dict[str, Any]]) -> None:
     s3 = _s3_client()
     body = json.dumps(books, ensure_ascii=False, indent=2).encode("utf-8")
     try:
+        if BOOKS_DEBUG:
+            print(f"[BOOKS] WRITE s3://{bucket}/{key} bytes={len(body)} region={AWS_REGION or '(infer)'}")
+
         s3.put_object(
             Bucket=bucket,
             Key=key,
             Body=body,
             ContentType="application/json; charset=utf-8",
+            CacheControl="no-cache",  # helps when CloudFront/proxies are involved
         )
     except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        raise HTTPException(status_code=500, detail=f"S3 write failed s3://{bucket}/{key}: {code}") from e
+        code = _err_code(e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"S3 write failed s3://{bucket}/{key} (code={code})",
+        ) from e
+
 
 # ----------------------- Utils ------------------------
 def _clean_nan(obj: Any) -> Any:
@@ -96,10 +178,12 @@ def _clean_nan(obj: Any) -> Any:
         return None
     return obj
 
+
 def _make_key(b: Dict[str, Any]) -> str:
     t = (b.get("title") or "").strip().lower()
     a = (b.get("author") or "").strip().lower()
     return f"{t}__{a}" if (t or a) else ""
+
 
 def _find_index(books: List[Dict[str, Any]], *, key: Optional[str] = None, book_id: Optional[str] = None) -> int:
     for i, b in enumerate(books):
@@ -109,21 +193,27 @@ def _find_index(books: List[Dict[str, Any]], *, key: Optional[str] = None, book_
             return i
     return -1
 
+
 # ---------------- Address normalization ----------------
 _US_STATE_MAP: Dict[str, str] = {
-    "AL":"Alabama","AK":"Alaska","AZ":"Arizona","AR":"Arkansas","CA":"California","CO":"Colorado","CT":"Connecticut",
-    "DE":"Delaware","FL":"Florida","GA":"Georgia","HI":"Hawaii","ID":"Idaho","IL":"Illinois","IN":"Indiana","IA":"Iowa",
-    "KS":"Kansas","KY":"Kentucky","LA":"Louisiana","ME":"Maine","MD":"Maryland","MA":"Massachusetts","MI":"Michigan",
-    "MN":"Minnesota","MS":"Mississippi","MO":"Missouri","MT":"Montana","NE":"Nebraska","NV":"Nevada",
-    "NH":"New Hampshire","NJ":"New Jersey","NM":"New Mexico","NY":"New York","NC":"North Carolina","ND":"North Dakota",
-    "OH":"Ohio","OK":"Oklahoma","OR":"Oregon","PA":"Pennsylvania","RI":"Rhode Island","SC":"South Carolina",
-    "SD":"South Dakota","TN":"Tennessee","TX":"Texas","UT":"Utah","VT":"Vermont","VA":"Virginia","WA":"Washington",
-    "WV":"West Virginia","WI":"Wisconsin","WY":"Wyoming","DC":"District of Columbia",
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
+    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia",
+    "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts",
+    "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri", "MT": "Montana",
+    "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico",
+    "NY": "New York", "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota",
+    "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington",
+    "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
 }
+
 STREET_SUFFIXES = {
-    "ave","avenue","blvd","boulevard","cir","circle","ct","court","dr","drive","hwy","highway",
-    "ln","lane","pkwy","parkway","pl","place","rd","road","st","street","ter","terrace","trl","trail","way"
+    "ave", "avenue", "blvd", "boulevard", "cir", "circle", "ct", "court", "dr", "drive", "hwy", "highway",
+    "ln", "lane", "pkwy", "parkway", "pl", "place", "rd", "road", "st", "street", "ter", "terrace", "trl",
+    "trail", "way",
 }
+
 
 def _to_full_state(state: str) -> str:
     s = (state or "").strip()
@@ -131,16 +221,17 @@ def _to_full_state(state: str) -> str:
         return ""
     return _US_STATE_MAP.get(s.upper(), s)
 
+
 def _fix_country_name(country: str) -> str:
     c = (country or "").strip()
     if not c:
         return ""
-    if c.lower() in {"united sates","united sate","united state"} or c.upper() == "USA":
+    if c.lower() in {"united sates", "united sate", "united state"} or c.upper() == "USA":
         return "United States"
     return c
 
+
 def _split_line1_street_city_state(line1: str, fallback_state: str = "") -> Tuple[str, str, str]:
-    """Split '129 Morro Ave Shell Beach CA' -> street, city, full-state."""
     s = (line1 or "").strip()
     if not s:
         return "", "", _to_full_state(fallback_state)
@@ -153,25 +244,27 @@ def _split_line1_street_city_state(line1: str, fallback_state: str = "") -> Tupl
             if t.lower().strip(".,") in STREET_SUFFIXES:
                 idx = i
         if idx != -1:
-            street = " ".join(tokens[:idx+1]).strip()
-            city = " ".join(tokens[idx+1:]).strip()
+            street = " ".join(tokens[: idx + 1]).strip()
+            city = " ".join(tokens[idx + 1 :]).strip()
             return street, city, _to_full_state(st)
         return s, "", _to_full_state(st)
+
     if fallback_state:
         idx = -1
         for i, t in enumerate(tokens):
             if t.lower().strip(".,") in STREET_SUFFIXES:
                 idx = i
         if idx != -1:
-            street = " ".join(tokens[:idx+1]).strip()
-            city = " ".join(tokens[idx+1:]).strip()
+            street = " ".join(tokens[: idx + 1]).strip()
+            city = " ".join(tokens[idx + 1 :]).strip()
             return street, city, _to_full_state(fallback_state)
         return s, "", _to_full_state(fallback_state)
+
     return s, "", ""
 
+
 def _parse_legacy_address(addr_str: str) -> Dict[str, str]:
-    """Parse legacy 'Street\\nCity, ST ZIP[, Country]' into structured pieces."""
-    out = {"street":"", "city":"", "state":"", "zip":"", "country":""}
+    out = {"street": "", "city": "", "state": "", "zip": "", "country": ""}
     s = (addr_str or "").strip()
     if not s:
         return out
@@ -232,13 +325,16 @@ def _parse_legacy_address(addr_str: str) -> Dict[str, str]:
     out["city"] = tail
     return out
 
-def _address_from_sources(*,
-                          address: Any = None,
-                          street: Optional[str] = None,
-                          city: Optional[str] = None,
-                          state: Optional[str] = None,
-                          zip_code: Optional[str] = None,
-                          country: Optional[str] = None) -> Dict[str, str]:
+
+def _address_from_sources(
+    *,
+    address: Any = None,
+    street: Optional[str] = None,
+    city: Optional[str] = None,
+    state: Optional[str] = None,
+    zip_code: Optional[str] = None,
+    country: Optional[str] = None,
+) -> Dict[str, str]:
     if isinstance(address, dict):
         return {
             "street": (address.get("street") or street or "").strip(),
@@ -260,7 +356,8 @@ def _address_from_sources(*,
             "zip": (zip_code or "").strip(),
             "country": _fix_country_name(country or ""),
         }
-    return {"street":"", "city":"", "state":"", "zip":"", "country":""}
+    return {"street": "", "city": "", "state": "", "zip": "", "country": ""}
+
 
 # ---------------- Formats canonicalization ----------------
 def _to_num(x):
@@ -277,21 +374,22 @@ def _to_num(x):
     except Exception:
         return None
 
-_FORMAT_KEY_MAP = {
-    "format": {"format","Format"},
-    "pub_date": {"pub_date","PubDate","publication_date","PublicationDate"},
-    "isbn": {"isbn","ISBN"},
-    "price_us": {"price_us","Price_us","Price US","Price","price"},
-    "price_can": {"price_can","Price_can","Price CAN"},
-    "loc_number": {"loc_number","LOC","Loc","loc"},
-    "pages": {"pages","Pages"},
-    "tall": {"tall","Tall"},
-    "wide": {"wide","Wide"},
-    "spine": {"spine","Spine"},
-    "weight": {"weight","Weight"},
-}
 
+_FORMAT_KEY_MAP = {
+    "format": {"format", "Format"},
+    "pub_date": {"pub_date", "PubDate", "publication_date", "PublicationDate"},
+    "isbn": {"isbn", "ISBN"},
+    "price_us": {"price_us", "Price_us", "Price US", "Price", "price"},
+    "price_can": {"price_can", "Price_can", "Price CAN"},
+    "loc_number": {"loc_number", "LOC", "Loc", "loc"},
+    "pages": {"pages", "Pages"},
+    "tall": {"tall", "Tall"},
+    "wide": {"wide", "Wide"},
+    "spine": {"spine", "Spine"},
+    "weight": {"weight", "Weight"},
+}
 _ALIAS_LOWER = {a.lower() for s in _FORMAT_KEY_MAP.values() for a in s}
+
 
 def _canon_format_row(row: Any) -> Dict[str, Any]:
     if not isinstance(row, dict):
@@ -309,7 +407,7 @@ def _canon_format_row(row: Any) -> Dict[str, Any]:
             if key_lower not in _ALIAS_LOWER:
                 out[k] = v
             continue
-        if target in {"pages","tall","wide","spine","weight","price_us","price_can"}:
+        if target in {"pages", "tall", "wide", "spine", "weight", "price_us", "price_can"}:
             nv = _to_num(v)
             prev = out.get(target)
             out[target] = nv if nv is not None else prev
@@ -317,21 +415,23 @@ def _canon_format_row(row: Any) -> Dict[str, Any]:
             out[target] = v
     return out
 
+
 def _format_row_for_response(row: Dict[str, Any]) -> Dict[str, Any]:
     r = _canon_format_row(row or {})
     return {
-        "Format": r.get("format",""),
-        "ISBN": r.get("isbn",""),
-        "PubDate": r.get("pub_date",""),
+        "Format": r.get("format", ""),
+        "ISBN": r.get("isbn", ""),
+        "PubDate": r.get("pub_date", ""),
         "Price US": _to_num(r.get("price_us")) or 0,
         "Price CAN": _to_num(r.get("price_can")) or 0,
-        "LOC": r.get("loc_number",""),
+        "LOC": r.get("loc_number", ""),
         "Pages": _to_num(r.get("pages")) or 0,
         "Tall": _to_num(r.get("tall")) or 0,
         "Wide": _to_num(r.get("wide")) or 0,
         "Spine": _to_num(r.get("spine")) or 0,
         "Weight": _to_num(r.get("weight")) or 0,
     }
+
 
 # ---------------- Book normalization -------------------
 def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
@@ -384,7 +484,7 @@ def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
         zip_code=ag.get("address_zip") or out.get("agency_zip"),
         country=ag.get("address_country") or out.get("agency_country"),
     )
-    for k in ["address_str","address_street","address_city","address_state","address_zip","address_country"]:
+    for k in ["address_str", "address_street", "address_city", "address_state", "address_zip", "address_country"]:
         ag.pop(k, None)
     out["author_agent"] = ag
 
@@ -399,7 +499,7 @@ def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
         zip_code=ill.get("address_zip"),
         country=ill.get("address_country"),
     )
-    for k in ["address_str","address_street","address_city","address_state","address_zip","address_country"]:
+    for k in ["address_str", "address_street", "address_city", "address_state", "address_zip", "address_country"]:
         ill.pop(k, None)
 
     ill_ag = ill.get("agent") or {}
@@ -412,20 +512,21 @@ def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
             zip_code=ill_ag.get("address_zip"),
             country=ill_ag.get("address_country"),
         )
-        for k in ["address_str","address_street","address_city","address_state","address_zip","address_country"]:
+        for k in ["address_str", "address_street", "address_city", "address_state", "address_zip", "address_country"]:
             ill_ag.pop(k, None)
         ill["agent"] = ill_ag
 
     out["illustrator"] = ill
 
     for k in [
-        "author_street","author_city","author_state","author_zip","author_country",
-        "author_address_street","author_address_city","author_address_state","author_address_zip","author_address_country",
-        "agency_street","agency_city","agency_state","agency_zip","agency_country",
+        "author_street", "author_city", "author_state", "author_zip", "author_country",
+        "author_address_street", "author_address_city", "author_address_state", "author_address_zip", "author_address_country",
+        "agency_street", "agency_city", "agency_state", "agency_zip", "agency_country",
     ]:
         out.pop(k, None)
 
     return out
+
 
 def _add_flat_mirrors(b: Dict[str, Any]) -> Dict[str, Any]:
     if not KEEP_FLAT_MIRRORS:
@@ -433,20 +534,21 @@ def _add_flat_mirrors(b: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(b)
 
     aa = out.get("author_address") or {}
-    out["author_street"] = aa.get("street","")
-    out["author_city"] = aa.get("city","")
-    out["author_state"] = aa.get("state","")
-    out["author_zip"] = aa.get("zip","")
-    out["author_country"] = aa.get("country","")
+    out["author_street"] = aa.get("street", "")
+    out["author_city"] = aa.get("city", "")
+    out["author_state"] = aa.get("state", "")
+    out["author_zip"] = aa.get("zip", "")
+    out["author_country"] = aa.get("country", "")
 
     ag = out.get("author_agent") or {}
     ag_addr = ag.get("address") or {}
-    out["agency_street"] = ag_addr.get("street","")
-    out["agency_city"] = ag_addr.get("city","")
-    out["agency_state"] = ag_addr.get("state","")
-    out["agency_zip"] = ag_addr.get("zip","")
-    out["agency_country"] = ag_addr.get("country","")
+    out["agency_street"] = ag_addr.get("street", "")
+    out["agency_city"] = ag_addr.get("city", "")
+    out["agency_state"] = ag_addr.get("state", "")
+    out["agency_zip"] = ag_addr.get("zip", "")
+    out["agency_country"] = ag_addr.get("country", "")
     return out
+
 
 def _normalize_book_for_response(b: Dict[str, Any]) -> Dict[str, Any]:
     nested = _normalize_book_nested_only(b)
@@ -455,15 +557,22 @@ def _normalize_book_for_response(b: Dict[str, Any]) -> Dict[str, Any]:
     out["formats"] = [_format_row_for_response(_canon_format_row(r)) for r in fmt_rows]
     return out
 
+
 # ----------------------- Routes -----------------------
 @router.get("/books/health")
 def books_health():
+    head = _s3_head(S3_BOOKS_BUCKET, S3_BOOKS_KEY)
     return {
         "status": "ok",
         "version": MODULE_VERSION,
         "s3_bucket": S3_BOOKS_BUCKET,
         "s3_key": S3_BOOKS_KEY,
+        "aws_region": AWS_REGION,
+        "strict": BOOKS_S3_STRICT,
+        "debug": BOOKS_DEBUG,
+        "s3_head": head,
     }
+
 
 @router.post("/books/normalize")
 def normalize_books():
@@ -472,17 +581,18 @@ def normalize_books():
     _s3_write_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY, _clean_nan(nested_only))
     return {"ok": True, "count": len(nested_only)}
 
+
 @router.get("/books", response_model=List[Dict[str, Any]])
 def get_books():
     books = _s3_read_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY)
     normalized = [_normalize_book_for_response(b) for b in books]
 
-    # Optional: persist the nested-only normalized form back to S3
     if PERSIST_NORMALIZED_ON_GET:
         nested_only = [_normalize_book_nested_only(b) for b in books]
         _s3_write_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY, _clean_nan(nested_only))
 
     return _clean_nan(normalized)
+
 
 @router.post("/books", response_model=Dict[str, Any])
 async def save_book(request: Request):
@@ -491,37 +601,32 @@ async def save_book(request: Request):
     SAVE nested-only (lower-case canonical format keys) to S3,
     RETURN flat mirrors + Title Case formats for UI.
     """
-    try:
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
 
-        books: List[Dict[str, Any]] = _s3_read_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY)
+    books: List[Dict[str, Any]] = _s3_read_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY)
+    incoming = _normalize_book_nested_only(body)
 
-        incoming = _normalize_book_nested_only(body)
+    incoming_id = str(incoming.get("id") or "")
+    key = _make_key(incoming)
 
-        incoming_id = str(incoming.get("id") or "")
-        key = _make_key(incoming)
+    if incoming_id:
+        idx = _find_index(books, book_id=incoming_id)
+    else:
+        idx = _find_index(books, key=key) if key else -1
 
-        if incoming_id:
-            idx = _find_index(books, book_id=incoming_id)
-        else:
-            idx = _find_index(books, key=key) if key else -1
+    if idx >= 0:
+        merged = {**books[idx], **incoming}
+        books[idx] = _normalize_book_nested_only(merged)
+        saved = books[idx]
+    else:
+        books.append(incoming)
+        saved = incoming
 
-        if idx >= 0:
-            merged = {**books[idx], **incoming}
-            books[idx] = _normalize_book_nested_only(merged)
-            saved = books[idx]
-        else:
-            books.append(incoming)
-            saved = incoming
+    _s3_write_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY, _clean_nan(books))
+    return _clean_nan(_normalize_book_for_response(saved))
 
-        _s3_write_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY, _clean_nan(books))
-        return _clean_nan(_normalize_book_for_response(saved))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/books", status_code=status.HTTP_204_NO_CONTENT)
 def delete_book(title: str, author: str):
