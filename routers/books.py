@@ -1,26 +1,90 @@
 # marble_app/routers/books.py
+#
+# DROP-IN: S3 is the source of truth for books.json
+# - GET  /api/books            -> reads from S3
+# - POST /api/books            -> upserts and writes back to S3
+# - DELETE /api/books          -> deletes and writes back to S3
+# - POST /api/books/normalize  -> rewrites normalized version back to S3
+#
+# Config via env (defaults match your tenant path):
+#   S3_BOOKS_BUCKET=inksuite-data
+#   S3_BOOKS_KEY=tenants/marble-press/book_data/books.json
+#   AWS_REGION=us-east-2   (optional; boto will infer on EC2)
+#
+# IMPORTANT:
+# - EC2 must have an IAM role allowing s3:GetObject/PutObject on that key.
+# - This keeps your existing UI expectations: flat mirrors + Title Case format keys in responses.
 
 import os
 import re
 import math
 import uuid
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Request, status
-from marble_app.services.file_ops import load_json, save_json
+import boto3
+from botocore.exceptions import ClientError
 
-# Router (main.py likely uses: app.include_router(books.router, prefix="/api"))
+from fastapi import APIRouter, HTTPException, Request, status
+
 router = APIRouter()
 
 # ----------------------- Config -----------------------
-# Keep flat fields (author_street/author_city/etc.) in responses for the current UI.
 KEEP_FLAT_MIRRORS: bool = True
-
-# Set True briefly and hit GET /api/books once if you want to rewrite the file on GET.
 PERSIST_NORMALIZED_ON_GET: bool = False
+MODULE_VERSION = "addr-v6-s3"
 
-MODULE_VERSION = "addr-v5"
+S3_BOOKS_BUCKET = os.getenv("S3_BOOKS_BUCKET", "inksuite-data")
+S3_BOOKS_KEY = os.getenv("S3_BOOKS_KEY", "tenants/marble-press/book_data/books.json")
+AWS_REGION = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")  # optional
+
+# ----------------------- S3 helpers -----------------------
+def _s3_client():
+    # On EC2 with instance role, this just works. Region can be inferred.
+    if AWS_REGION:
+        return boto3.client("s3", region_name=AWS_REGION)
+    return boto3.client("s3")
+
+def _s3_read_json_array(bucket: str, key: str) -> List[Dict[str, Any]]:
+    s3 = _s3_client()
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        raw = obj["Body"].read()
+        data = json.loads(raw.decode("utf-8"))
+        if isinstance(data, dict) and "books" in data and isinstance(data["books"], list):
+            data = data["books"]
+        if data is None:
+            return []
+        if not isinstance(data, list):
+            raise HTTPException(status_code=500, detail=f"S3 books.json must be a JSON array, got {type(data).__name__}")
+        # ensure list of dicts
+        out = []
+        for x in data:
+            if isinstance(x, dict):
+                out.append(x)
+        return out
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404"):
+            return []
+        raise HTTPException(status_code=500, detail=f"S3 read failed s3://{bucket}/{key}: {code}") from e
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Invalid JSON in s3://{bucket}/{key}: {e}") from e
+
+def _s3_write_json_array(bucket: str, key: str, books: List[Dict[str, Any]]) -> None:
+    s3 = _s3_client()
+    body = json.dumps(books, ensure_ascii=False, indent=2).encode("utf-8")
+    try:
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body,
+            ContentType="application/json; charset=utf-8",
+        )
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        raise HTTPException(status_code=500, detail=f"S3 write failed s3://{bucket}/{key}: {code}") from e
 
 # ----------------------- Utils ------------------------
 def _clean_nan(obj: Any) -> Any:
@@ -32,25 +96,6 @@ def _clean_nan(obj: Any) -> Any:
         return None
     return obj
 
-def _books_path() -> Path:
-    env = os.getenv("BOOKS_JSON")
-    if env:
-        p = Path(env).expanduser()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        return p
-    here = Path(__file__).resolve()
-    for candidate in [
-        here.parents[1] / "Book_data" / "books.json",
-        here.parents[1] / "data" / "books.json",
-    ]:
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        return candidate
-    fallback = here.parent / "books.json"
-    fallback.parent.mkdir(parents=True, exist_ok=True)
-    return fallback
-
-DATA_PATH = _books_path()
-
 def _make_key(b: Dict[str, Any]) -> str:
     t = (b.get("title") or "").strip().lower()
     a = (b.get("author") or "").strip().lower()
@@ -58,7 +103,7 @@ def _make_key(b: Dict[str, Any]) -> str:
 
 def _find_index(books: List[Dict[str, Any]], *, key: Optional[str] = None, book_id: Optional[str] = None) -> int:
     for i, b in enumerate(books):
-        if book_id and b.get("id") == book_id:
+        if book_id and str(b.get("id") or "") == str(book_id):
             return i
         if key and _make_key(b) == key:
             return i
@@ -100,7 +145,6 @@ def _split_line1_street_city_state(line1: str, fallback_state: str = "") -> Tupl
     if not s:
         return "", "", _to_full_state(fallback_state)
     tokens = s.split()
-    # Peel off trailing 2-letter state if present
     if tokens and len(tokens[-1]) == 2 and tokens[-1].isalpha():
         st = tokens[-1]
         tokens = tokens[:-1]
@@ -113,7 +157,6 @@ def _split_line1_street_city_state(line1: str, fallback_state: str = "") -> Tupl
             city = " ".join(tokens[idx+1:]).strip()
             return street, city, _to_full_state(st)
         return s, "", _to_full_state(st)
-    # Fallback: use given state, still try to split street/city
     if fallback_state:
         idx = -1
         for i, t in enumerate(tokens):
@@ -133,7 +176,6 @@ def _parse_legacy_address(addr_str: str) -> Dict[str, str]:
     if not s:
         return out
 
-    # Strip trailing country if present
     m = re.search(r"\s*,\s*(USA|United States|United Sates|United State|Canada)$", s, re.I)
     if m:
         out["country"] = _fix_country_name(m.group(1))
@@ -143,7 +185,6 @@ def _parse_legacy_address(addr_str: str) -> Dict[str, str]:
     if not lines:
         return out
 
-    # Single line "... ST ZIP"
     if len(lines) == 1:
         single = lines[0]
         m = re.match(r"^(.*?)(?:,)?\s+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$", single)
@@ -155,11 +196,9 @@ def _parse_legacy_address(addr_str: str) -> Dict[str, str]:
         out["street"] = single
         return out
 
-    # 2+ lines
     line1 = lines[0]
     tail = lines[-1]
 
-    # ST ZIP or ST, ZIP
     m = re.match(r"^([A-Za-z]{2}),?\s+(\d{5}(?:-\d{4})?)$", tail)
     if m:
         st, z = m.group(1), m.group(2)
@@ -167,7 +206,6 @@ def _parse_legacy_address(addr_str: str) -> Dict[str, str]:
         out.update({"street": street, "city": city, "state": state_full, "zip": z})
         return out
 
-    # City, ST ZIP
     m = re.match(r"^(.+?),\s*([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$", tail)
     if m:
         out["street"] = line1
@@ -176,7 +214,6 @@ def _parse_legacy_address(addr_str: str) -> Dict[str, str]:
         out["zip"] = m.group(3).strip()
         return out
 
-    # City, ST
     m = re.match(r"^(.+?),\s*([A-Za-z]{2})$", tail)
     if m:
         out["street"] = line1
@@ -184,7 +221,6 @@ def _parse_legacy_address(addr_str: str) -> Dict[str, str]:
         out["state"] = _to_full_state(m.group(2).strip())
         return out
 
-    # City ZIP
     m = re.match(r"^(.+?)\s+(\d{5}(?:-\d{4})?)$", tail)
     if m:
         out["street"] = line1
@@ -192,7 +228,6 @@ def _parse_legacy_address(addr_str: str) -> Dict[str, str]:
         out["zip"] = m.group(2).strip()
         return out
 
-    # Fallback: line1 as street, tail as city
     out["street"] = line1
     out["city"] = tail
     return out
@@ -204,7 +239,6 @@ def _address_from_sources(*,
                           state: Optional[str] = None,
                           zip_code: Optional[str] = None,
                           country: Optional[str] = None) -> Dict[str, str]:
-    # Prefer structured dict
     if isinstance(address, dict):
         return {
             "street": (address.get("street") or street or "").strip(),
@@ -213,13 +247,11 @@ def _address_from_sources(*,
             "zip": (address.get("zip") or zip_code or "").strip(),
             "country": _fix_country_name(address.get("country") or country or ""),
         }
-    # Legacy string
     if isinstance(address, str):
         parsed = _parse_legacy_address(address)
         parsed["state"] = _to_full_state(parsed["state"])
         parsed["country"] = _fix_country_name(parsed["country"])
         return parsed
-    # Fallback fields only
     if street or city or state or zip_code or country:
         return {
             "street": (street or "").strip(),
@@ -233,16 +265,18 @@ def _address_from_sources(*,
 # ---------------- Formats canonicalization ----------------
 def _to_num(x):
     try:
-        if x is None: return None
-        if isinstance(x, (int, float)): return x
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return x
         s = str(x).strip()
-        if s == "": return None
+        if s == "":
+            return None
         f = float(s)
         return int(f) if f.is_integer() else f
     except Exception:
         return None
 
-# target (lower-case) -> accepted raw keys (various cases)
 _FORMAT_KEY_MAP = {
     "format": {"format","Format"},
     "pub_date": {"pub_date","PubDate","publication_date","PublicationDate"},
@@ -260,39 +294,30 @@ _FORMAT_KEY_MAP = {
 _ALIAS_LOWER = {a.lower() for s in _FORMAT_KEY_MAP.values() for a in s}
 
 def _canon_format_row(row: Any) -> Dict[str, Any]:
-    """Return a dict with one canonical, lower-case set of keys only."""
     if not isinstance(row, dict):
         return {}
     out: Dict[str, Any] = {}
-    # Build reverse map raw_key_lower -> target
     rev = {}
     for target, raws in _FORMAT_KEY_MAP.items():
         for rk in raws:
             rev[rk.lower()] = target
 
-    # Map known aliases to their target key
     for k, v in row.items():
         key_lower = str(k).lower()
         target = rev.get(key_lower)
         if not target:
-            # keep unknown keys that are not aliases
             if key_lower not in _ALIAS_LOWER:
                 out[k] = v
             continue
         if target in {"pages","tall","wide","spine","weight","price_us","price_can"}:
             nv = _to_num(v)
             prev = out.get(target)
-            # prefer non-null
             out[target] = nv if nv is not None else prev
         else:
             out[target] = v
     return out
 
 def _format_row_for_response(row: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Build Title Case response row with a single set of keys.
-    Input should already be canonical lower-case (use _canon_format_row first).
-    """
     r = _canon_format_row(row or {})
     return {
         "Format": r.get("format",""),
@@ -312,11 +337,9 @@ def _format_row_for_response(row: Dict[str, Any]) -> Dict[str, Any]:
 def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(b)
 
-    # Ensure id
     if not out.get("id"):
         out["id"] = str(uuid.uuid4())
 
-    # Clean formats: drop row-level "US School Grade" and canonicalize keys
     if isinstance(out.get("formats"), list):
         cleaned = []
         for row in out["formats"]:
@@ -324,27 +347,23 @@ def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
                 r = dict(row)
                 r.pop("US School Grade", None)
                 r.pop("us_school_grade", None)
-                r = _canon_format_row(r)  # <- single lower-case set only
+                r = _canon_format_row(r)
                 cleaned.append(r)
             else:
                 cleaned.append(_canon_format_row({}))
         out["formats"] = cleaned
 
-    # Top-level "US School Grade" -> "us_grade"
     if isinstance(out.get("US School Grade"), str) and not out.get("us_grade"):
         out["us_grade"] = out.pop("US School Grade")
 
-    # series None -> ""
     if out.get("series") is None:
         out["series"] = ""
-    # series_volume from marble_app.volume_number if provided
     if out.get("volume_number") is not None and out.get("series_volume") is None:
         try:
             out["series_volume"] = int(out["volume_number"])
         except Exception:
             pass
 
-    # Author address
     out["author_address"] = _address_from_sources(
         address=out.get("author_address"),
         street=out.get("author_street") or out.get("author_address_street"),
@@ -354,7 +373,6 @@ def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
         country=out.get("author_country") or out.get("author_address_country"),
     )
 
-    # Author agent
     ag = out.get("author_agent") or {}
     if not isinstance(ag, dict):
         ag = {}
@@ -366,12 +384,10 @@ def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
         zip_code=ag.get("address_zip") or out.get("agency_zip"),
         country=ag.get("address_country") or out.get("agency_country"),
     )
-    # Drop any flat mirrors inside agent
     for k in ["address_str","address_street","address_city","address_state","address_zip","address_country"]:
         ag.pop(k, None)
     out["author_agent"] = ag
 
-    # Illustrator
     ill = out.get("illustrator") or {}
     if not isinstance(ill, dict):
         ill = {}
@@ -386,7 +402,6 @@ def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
     for k in ["address_str","address_street","address_city","address_state","address_zip","address_country"]:
         ill.pop(k, None)
 
-    # Illustrator agent
     ill_ag = ill.get("agent") or {}
     if isinstance(ill_ag, dict):
         ill_ag["address"] = _address_from_sources(
@@ -403,7 +418,6 @@ def _normalize_book_nested_only(b: Dict[str, Any]) -> Dict[str, Any]:
 
     out["illustrator"] = ill
 
-    # Drop root-level flat mirrors (disk stays clean)
     for k in [
         "author_street","author_city","author_state","author_zip","author_country",
         "author_address_street","author_address_city","author_address_state","author_address_zip","author_address_country",
@@ -417,6 +431,7 @@ def _add_flat_mirrors(b: Dict[str, Any]) -> Dict[str, Any]:
     if not KEEP_FLAT_MIRRORS:
         return b
     out = dict(b)
+
     aa = out.get("author_address") or {}
     out["author_street"] = aa.get("street","")
     out["author_city"] = aa.get("city","")
@@ -434,14 +449,8 @@ def _add_flat_mirrors(b: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 def _normalize_book_for_response(b: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Ensure addresses are structured, flat mirrors added, and
-    formats are emitted with a single Title Case key set (no dupes).
-    """
     nested = _normalize_book_nested_only(b)
     out = _add_flat_mirrors(nested)
-
-    # Canonicalize formats for response (Title Case only)
     fmt_rows = out.get("formats") or []
     out["formats"] = [_format_row_for_response(_canon_format_row(r)) for r in fmt_rows]
     return out
@@ -449,40 +458,46 @@ def _normalize_book_for_response(b: Dict[str, Any]) -> Dict[str, Any]:
 # ----------------------- Routes -----------------------
 @router.get("/books/health")
 def books_health():
-    return {"status": "ok", "path": str(DATA_PATH), "version": MODULE_VERSION}
+    return {
+        "status": "ok",
+        "version": MODULE_VERSION,
+        "s3_bucket": S3_BOOKS_BUCKET,
+        "s3_key": S3_BOOKS_KEY,
+    }
 
-# One-time maintenance endpoint to rewrite books.json in nested address shape
 @router.post("/books/normalize")
 def normalize_books():
-    books = load_json(str(DATA_PATH), default=[])
+    books = _s3_read_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY)
     nested_only = [_normalize_book_nested_only(b) for b in books]
-    save_json(str(DATA_PATH), _clean_nan(nested_only))
+    _s3_write_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY, _clean_nan(nested_only))
     return {"ok": True, "count": len(nested_only)}
 
 @router.get("/books", response_model=List[Dict[str, Any]])
 def get_books():
-    books = load_json(str(DATA_PATH), default=[])
+    books = _s3_read_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY)
     normalized = [_normalize_book_for_response(b) for b in books]
+
+    # Optional: persist the nested-only normalized form back to S3
     if PERSIST_NORMALIZED_ON_GET:
         nested_only = [_normalize_book_nested_only(b) for b in books]
-        save_json(str(DATA_PATH), _clean_nan(nested_only))
+        _s3_write_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY, _clean_nan(nested_only))
+
     return _clean_nan(normalized)
 
 @router.post("/books", response_model=Dict[str, Any])
 async def save_book(request: Request):
     """
     Upsert a book by (title, author) or id.
-    We SAVE nested-only (with lower-case canonical format keys) to disk,
-    and RETURN with flat mirrors + Title Case formats for UI.
+    SAVE nested-only (lower-case canonical format keys) to S3,
+    RETURN flat mirrors + Title Case formats for UI.
     """
     try:
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Request body must be a JSON object")
 
-        books: List[Dict[str, Any]] = load_json(str(DATA_PATH), default=[])
+        books: List[Dict[str, Any]] = _s3_read_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY)
 
-        # Normalize to nested-only BEFORE merging/saving
         incoming = _normalize_book_nested_only(body)
 
         incoming_id = str(incoming.get("id") or "")
@@ -501,7 +516,7 @@ async def save_book(request: Request):
             books.append(incoming)
             saved = incoming
 
-        save_json(str(DATA_PATH), _clean_nan(books))
+        _s3_write_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY, _clean_nan(books))
         return _clean_nan(_normalize_book_for_response(saved))
     except HTTPException:
         raise
@@ -511,9 +526,9 @@ async def save_book(request: Request):
 @router.delete("/books", status_code=status.HTTP_204_NO_CONTENT)
 def delete_book(title: str, author: str):
     target = f"{(title or '').strip().lower()}__{(author or '').strip().lower()}"
-    books: List[Dict[str, Any]] = load_json(str(DATA_PATH), default=[])
+    books: List[Dict[str, Any]] = _s3_read_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY)
     remaining = [b for b in books if _make_key(b) != target]
     if len(remaining) == len(books):
         raise HTTPException(status_code=404, detail="Book not found")
-    save_json(str(DATA_PATH), _clean_nan(remaining))
+    _s3_write_json_array(S3_BOOKS_BUCKET, S3_BOOKS_KEY, _clean_nan(remaining))
     return

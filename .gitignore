@@ -1,12 +1,18 @@
-_pycache_/
-*.pyc
+# Python
 .venv/
 venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Env / secrets
 .env
-.env.local
-.DS._Store
-Thumbs.db
-data/uploads/
-uploads
-*.log
+*.env
+
+# Runtime data (DO NOT COMMIT)
 uploads/
+data/
+book_data/
+*.zip
+*.log
