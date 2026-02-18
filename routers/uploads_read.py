@@ -3,9 +3,9 @@ import os
 from typing import Any, Dict, List, Optional
 
 import boto3
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from botocore.config import Config
-from botocore.exceptions import ClientError, NoCredentialsError, EndpointConnectionError
+from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 
 router = APIRouter(prefix="/api/uploads", tags=["Uploads"])
 
@@ -22,43 +22,53 @@ UPLOADS_PREFIX = (
 
 PRESIGN_EXPIRES = int(os.getenv("UPLOADS_PRESIGN_EXPIRES", "3600"))
 
-# ----------------------- S3 Client -----------------------
+# Optional: turn on a bit more debugging in responses (safe)
+UPLOADS_DEBUG = (os.getenv("UPLOADS_DEBUG") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _endpoint_url() -> str:
+    # Force regional endpoint. This is the key to avoiding "global host" presign issues.
+    return f"https://s3.{AWS_REGION}.amazonaws.com"
+
+
 def s3():
     """
-    IMPORTANT:
-    - Force the regional endpoint so presigned URLs do NOT use bucket.s3.amazonaws.com (global),
-      which can 403 for non-us-east-1 buckets.
-    - With endpoint_url set, presigned URLs should validate correctly for AWS_REGION.
+    Critical:
+      - endpoint_url forces regional signing host: s3.<region>.amazonaws.com
+      - addressing_style=virtual yields URLs like:
+          https://<bucket>.s3.<region>.amazonaws.com/<key>?X-Amz-...
+        (this is the form you allow in next.config remotePatterns)
+      - signature_version s3v4 is required
     """
     return boto3.client(
         "s3",
         region_name=AWS_REGION,
-        endpoint_url=f"https://s3.{AWS_REGION}.amazonaws.com",
+        endpoint_url=_endpoint_url(),
         config=Config(
             signature_version="s3v4",
             retries={"max_attempts": 5, "mode": "standard"},
+            s3={"addressing_style": "virtual"},
         ),
     )
 
+
 def _is_cover(name: str) -> bool:
     n = (name or "").lower()
-    return (
-        n.endswith("__cover.jpg")
-        or n.endswith("__cover.jpeg")
-        or n.endswith("__cover.png")
-        or n.endswith("__cover.webp")
-    )
+    return n.endswith(("__cover.jpg", "__cover.jpeg", "__cover.png", "__cover.webp"))
 
-# ----------------------- Routes -----------------------
+
 @router.get("/health")
 def uploads_health():
-    return {
+    out = {
         "ok": True,
         "region": AWS_REGION,
         "bucket": S3_BUCKET,
         "uploadsPrefix": UPLOADS_PREFIX,
         "presignExpires": PRESIGN_EXPIRES,
+        "endpointUrl": _endpoint_url(),
     }
+    return out
+
 
 @router.get("/book-assets")
 def list_book_assets(bookUid: str = Query(...)):
@@ -91,16 +101,21 @@ def list_book_assets(bookUid: str = Query(...)):
 
                 name = key.split("/")[-1]
 
+                # Presign using the *same client* (regional endpoint + virtual addressing)
                 url = client.generate_presigned_url(
                     "get_object",
                     Params={"Bucket": S3_BUCKET, "Key": key},
                     ExpiresIn=PRESIGN_EXPIRES,
                 )
 
-                item = {"name": name, "url": url, "size": int(obj.get("Size") or 0)}
+                item = {
+                    "name": name,
+                    "url": url,
+                    "size": int(obj.get("Size") or 0),
+                }
 
                 if _is_cover(name):
-                    # pick the first cover encountered (or overwrite; your choice)
+                    # Prefer the first "cover" found; if multiple, last one wins (fine either way)
                     cover = item
                 else:
                     items.append(item)
@@ -112,14 +127,25 @@ def list_book_assets(bookUid: str = Query(...)):
             else:
                 break
 
-        return {"bookUid": book_uid, "cover": cover, "files": items}
+        payload: Dict[str, Any] = {"bookUid": book_uid, "cover": cover, "files": items}
+
+        if UPLOADS_DEBUG:
+            payload["debug"] = {
+                "prefix": prefix,
+                "endpointUrl": _endpoint_url(),
+                "region": AWS_REGION,
+                "bucket": S3_BUCKET,
+                "count": len(items) + (1 if cover else 0),
+            }
+
+        return payload
 
     except (NoCredentialsError, EndpointConnectionError) as e:
         raise HTTPException(status_code=500, detail=f"S3 auth/connection error: {e}")
     except ClientError as e:
-        # include useful error code without dumping huge XML
-        code = e.response.get("Error", {}).get("Code", "")
-        msg = e.response.get("Error", {}).get("Message", "")
+        err = e.response.get("Error", {}) if hasattr(e, "response") else {}
+        code = err.get("Code", "")
+        msg = err.get("Message", "")
         raise HTTPException(status_code=500, detail=f"S3 client error {code}: {msg or str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
