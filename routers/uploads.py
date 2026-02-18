@@ -1,5 +1,7 @@
+# marble_app/routers/uploads.py
 import os, io, time, pathlib, mimetypes
 from typing import Literal, Optional, Any, Dict, List
+
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
 from pydantic import BaseModel
 from PIL import Image
@@ -42,25 +44,31 @@ def _clean_name(name: str) -> str:
 # ----------------------------
 # S3 config for LISTING assets
 # ----------------------------
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-2").strip()
-S3_BUCKET = os.environ.get("S3_BUCKET", "inksuite-data").strip()
+AWS_REGION = (os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-2").strip()
+S3_BUCKET = (os.environ.get("S3_BUCKET") or "inksuite-data").strip()
 
-# Your real uploads location per examples:
 # s3://inksuite-data/tenants/marble-press/data/uploads/<uid>/<uid>__cover.jpg
-UPLOADS_S3_PREFIX = os.environ.get("UPLOADS_S3_PREFIX", "tenants/marble-press/data/uploads").strip().rstrip("/")
+UPLOADS_S3_PREFIX = (os.environ.get("UPLOADS_S3_PREFIX") or "tenants/marble-press/data/uploads").strip().rstrip("/")
 
-# Toggle off S3 listing in local dev if you want
 USE_UPLOADS_S3 = os.environ.get("USE_UPLOADS_S3", "1").strip().lower() not in ("0","false","no")
 
-# If bucket is private, return presigned URLs (recommended)
 UPLOADS_USE_PRESIGNED = os.environ.get("UPLOADS_USE_PRESIGNED", "1").strip().lower() not in ("0","false","no")
 UPLOADS_PRESIGN_EXPIRES = int(os.environ.get("UPLOADS_PRESIGN_EXPIRES", "3600"))
 
 def _s3_client():
+    """
+    CRITICAL FIX:
+    Force the regional endpoint so presigned URLs validate in us-east-2 and
+    do NOT end up as bucket.s3.amazonaws.com (global), which can 403.
+    """
     return boto3.client(
         "s3",
         region_name=AWS_REGION,
-        config=Config(retries={"max_attempts": 5, "mode": "standard"}),
+        endpoint_url=f"https://s3.{AWS_REGION}.amazonaws.com",
+        config=Config(
+            signature_version="s3v4",
+            retries={"max_attempts": 5, "mode": "standard"},
+        ),
     )
 
 def _guess_kind(filename: str) -> str:
@@ -75,8 +83,18 @@ def _guess_kind(filename: str) -> str:
         return "w9"
     return "other"
 
+def _is_cover(name: str) -> bool:
+    n = (name or "").lower()
+    return (
+        n.endswith("__cover.jpg")
+        or n.endswith("__cover.jpeg")
+        or n.endswith("__cover.png")
+        or n.endswith("__cover.webp")
+    )
+
 def _s3_url_for_key(key: str) -> str:
     if not UPLOADS_USE_PRESIGNED:
+        # public-style URL (only works if object is public or via CloudFront)
         return f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{key}"
     s3 = _s3_client()
     return s3.generate_presigned_url(
@@ -107,41 +125,48 @@ def list_book_assets(bookUid: str = Query(...)):
     if not uid:
         raise HTTPException(status_code=400, detail="bookUid is required")
 
-    # 1) Try S3 listing first (this matches your production architecture)
+    # S3 listing first
     if USE_UPLOADS_S3:
         if not S3_BUCKET or not UPLOADS_S3_PREFIX:
-            # This is the error you are currently seeing
             raise HTTPException(status_code=500, detail="Uploads S3 config missing (need S3_BUCKET and UPLOADS_S3_PREFIX)")
 
         prefix = f"{UPLOADS_S3_PREFIX}/{uid}/"
         s3 = _s3_client()
 
         try:
-            items: List[Dict[str, Any]] = []
+            files: List[Dict[str, Any]] = []
+            cover: Optional[Dict[str, Any]] = None
             token: Optional[str] = None
 
             while True:
-                kwargs = {"Bucket": S3_BUCKET, "Prefix": prefix, "MaxKeys": 1000}
+                kwargs: Dict[str, Any] = {"Bucket": S3_BUCKET, "Prefix": prefix, "MaxKeys": 1000}
                 if token:
                     kwargs["ContinuationToken"] = token
 
                 resp = s3.list_objects_v2(**kwargs)
 
-                for obj in resp.get("Contents", []) or []:
+                for obj in (resp.get("Contents") or []):
                     key = obj.get("Key") or ""
                     if not key or key.endswith("/"):
                         continue
-                    filename = key.split("/")[-1]
-                    items.append({
-                        "filename": filename,
-                        "key": key,
+
+                    name = key.split("/")[-1]
+                    item = {
+                        "name": name,
                         "url": _s3_url_for_key(key),
-                        "size": obj.get("Size", 0),
+                        "size": int(obj.get("Size") or 0),
+                        # extra fields are harmless; UI will ignore them
+                        "key": key,
+                        "kind": _guess_kind(name),
+                        "mime": mimetypes.guess_type(name)[0] or "application/octet-stream",
                         "lastModified": (obj.get("LastModified").isoformat() if obj.get("LastModified") else None),
-                        "kind": _guess_kind(filename),
-                        "mime": mimetypes.guess_type(filename)[0] or "application/octet-stream",
                         "source": "s3",
-                    })
+                    }
+
+                    if _is_cover(name):
+                        cover = {"name": name, "url": item["url"], "size": item["size"]}
+                    else:
+                        files.append({"name": name, "url": item["url"], "size": item["size"]})
 
                 if resp.get("IsTruncated"):
                     token = resp.get("NextContinuationToken")
@@ -150,38 +175,40 @@ def list_book_assets(bookUid: str = Query(...)):
                 else:
                     break
 
-            # If no objects, return [] (do NOT 500)
-            return items
+            # IMPORTANT: match frontend expectation
+            return {"bookUid": uid, "cover": cover, "files": files}
 
         except (EndpointConnectionError, NoCredentialsError) as e:
-            s3_err = str(e)
+            s3_err = f"S3 auth/connection error: {e}"
         except ClientError as e:
-            s3_err = str(e)
+            code = e.response.get("Error", {}).get("Code", "")
+            msg = e.response.get("Error", {}).get("Message", "")
+            s3_err = f"S3 client error {code}: {msg or str(e)}"
         except Exception as e:
             s3_err = str(e)
     else:
         s3_err = "S3 listing disabled via USE_UPLOADS_S3"
 
-    # 2) Local fallback listing (for dev)
+    # Local fallback listing (dev)
     local_dir = pathlib.Path(DATA_UPLOAD_DIR) / uid
     if local_dir.exists() and local_dir.is_dir():
-        out: List[Dict[str, Any]] = []
+        files: List[Dict[str, Any]] = []
+        cover: Optional[Dict[str, Any]] = None
+
         for p in sorted(local_dir.rglob("*")):
             if not p.is_file():
                 continue
             rel = p.relative_to(pathlib.Path(DATA_UPLOAD_DIR)).as_posix()
-            filename = p.name
-            out.append({
-                "filename": filename,
-                "key": rel,
-                "url": f"/static/uploads/{rel}",
-                "size": p.stat().st_size,
-                "lastModified": None,
-                "kind": _guess_kind(filename),
-                "mime": mimetypes.guess_type(filename)[0] or "application/octet-stream",
-                "source": "local",
-            })
-        return out
+            name = p.name
+            url = f"/static/uploads/{rel}"
+            size = int(p.stat().st_size)
+
+            if _is_cover(name):
+                cover = {"name": name, "url": url, "size": size}
+            else:
+                files.append({"name": name, "url": url, "size": size})
+
+        return {"bookUid": uid, "cover": cover, "files": files}
 
     raise HTTPException(
         status_code=500,
@@ -195,7 +222,7 @@ def list_book_assets(bookUid: str = Query(...)):
 async def upload_file(
     file: UploadFile = File(...),
     kind: UploadKind = Form(...),
-    book_key: str = Form("")
+    book_key: str = Form(""),
 ):
     allowed = ALLOWED.get(kind, set())
     mime = file.content_type or ""
@@ -235,6 +262,12 @@ async def upload_file(
     url = f"/static/uploads/{_clean_name(book_key) or '_'}/{safe_name}"
 
     return UploadResponse(
-        ok=True, url=url, filename=file.filename or safe_name,
-        mime=mime, size=size, width=width, height=height, dpi=dpi_tuple
+        ok=True,
+        url=url,
+        filename=file.filename or safe_name,
+        mime=mime,
+        size=size,
+        width=width,
+        height=height,
+        dpi=dpi_tuple,
     )
