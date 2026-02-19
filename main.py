@@ -1,20 +1,25 @@
-# marble_app/main.py
+# InkSuite_backend_v2/main.py — run from project root: python -m uvicorn main:app
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+# Add project root so "routers", "models", "services", "app" are importable
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from dotenv import load_dotenv
+ENV_PATH = PROJECT_ROOT / ".env"
+if not ENV_PATH.exists():
+    ENV_PATH = PROJECT_ROOT.parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH, override=False)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-
-# --- Load .env early (before importing routers that may read env vars) ---
-from dotenv import load_dotenv
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent  # folder containing "marble_app"
-ENV_PATH = PROJECT_ROOT / ".env"
-load_dotenv(dotenv_path=ENV_PATH, override=False)
 
 # ---------------------------------------------------------------------
 # App (CREATE ONCE)
@@ -37,15 +42,50 @@ DRAFTS_DIR = BASE_DATA_DIR / "TempDraftContracts"
 DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------
-# Import routers (AFTER env load)
+# Auth router (app package). If it fails to load, register a fallback so /auth/login exists and returns 503.
 # ---------------------------------------------------------------------
-from marble_app.routers import books, royalty, uploads, banking, ingest
-from marble_app.routers import templates as contracts_templates
-from marble_app.routers import deal_memo_drafts
-from marble_app.routers.contract_docs import router as contract_docs_router
-from marble_app.routers.financials import router as financials_router
-from marble_app.routers import financialuploads  # if you want /financials/upload etc
-from marble_app.routers import uploads_read
+_auth_load_error: str | None = None
+try:
+    from app.auth.router import router as auth_router
+    app.include_router(auth_router, tags=["Auth"])
+except Exception as e:
+    auth_router = None
+    _auth_load_error = str(e)
+    import traceback
+    traceback.print_exc()
+    # Fallback: so frontend gets 503 "Auth not available" instead of 404
+    from fastapi import APIRouter
+    _auth_fallback = APIRouter(prefix="/auth", tags=["Auth"])
+
+    @_auth_fallback.post("/login")
+    def _auth_fallback_login():
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Auth module failed to load. Check backend startup logs. Error: " + (_auth_load_error or "unknown")},
+        )
+
+    @_auth_fallback.get("/me")
+    def _auth_fallback_me():
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content={"detail": "Auth not available"})
+
+    @_auth_fallback.post("/logout")
+    def _auth_fallback_logout():
+        return {"ok": True}
+
+    app.include_router(_auth_fallback)
+
+# ---------------------------------------------------------------------
+# Import routers (local packages: routers, models, services)
+# ---------------------------------------------------------------------
+from routers import books, royalty, uploads, banking, ingest
+from routers import templates as contracts_templates
+from routers import deal_memo_drafts
+from routers.contract_docs import router as contract_docs_router
+from routers.financials import router as financials_router
+from routers import financialuploads
+from routers import uploads_read
 
 app.include_router(uploads_read.router)
 
@@ -80,6 +120,25 @@ app.include_router(financialuploads.router, prefix="/api", tags=["Financial Uplo
 # ---------------------------------------------------------------------
 app.mount("/static/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 app.mount("/static/templates", StaticFiles(directory=str(TEMPLATES_DIR)), name="templates")
+
+# ---------------------------------------------------------------------
+# Deny-by-default auth: 401 for /api/* without valid token (when REQUIRE_AUTH=1)
+# ---------------------------------------------------------------------
+REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").strip().lower() in ("1", "true", "yes")
+
+def _has_auth_header(request) -> bool:
+    auth = request.headers.get("Authorization") or ""
+    return auth.strip().lower().startswith("bearer ") and len(auth.strip()) > 7
+
+@app.middleware("http")
+async def require_auth_middleware(request, call_next):
+    if not REQUIRE_AUTH:
+        return await call_next(request)
+    path = request.scope.get("path", "")
+    if path.startswith("/api/") and not path.startswith("/api/auth") and path != "/api":
+        if not _has_auth_header(request):
+            return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+    return await call_next(request)
 
 # ---------------------------------------------------------------------
 # CORS (DROP-IN)

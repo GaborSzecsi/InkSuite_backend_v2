@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
-from marble_app.services.camcat_ingest import ingest_onix
+from services.camcat_ingest import ingest_onix
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 

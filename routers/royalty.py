@@ -14,16 +14,13 @@ import os, glob, shutil, subprocess, tempfile
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from marble_app.models.royalty import (
+from models.royalty import (
     Book,
     RoyaltyStatementRequest,
 )
 
-from marble_app.services.royalty_calculator import RoyaltyCalculator
-
-# ✅ S3 books (single source of truth on AWS)
-# This must exist in your repo: marble_app/services/s3_books.py with load_books()
-from marble_app.services.s3_books import load_books
+from services.royalty_calculator import RoyaltyCalculator
+from services.s3_books import load_books
 
 
 # -----------------------------

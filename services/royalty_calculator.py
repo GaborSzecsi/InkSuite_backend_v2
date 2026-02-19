@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 from typing import List, Dict, Any
 
-from marble_app.models.royalty import (
+from models.royalty import (
     Book,
     SalesData,
     RoyaltyCalculation,
@@ -11,7 +11,7 @@ from marble_app.models.royalty import (
     RoyaltyStatement,
     RoyaltyStatementRequest,
 )
-from marble_app.services.file_ops import load_json, save_json
+from services.file_ops import load_json, save_json
 
 BOOKS_PATH = Path(r"C:\Users\szecs\Documents\marble_app\book_data\books.json")
 
