@@ -1,4 +1,3 @@
-# app/auth/service.py
 from __future__ import annotations
 
 import base64
@@ -13,6 +12,12 @@ from botocore.exceptions import ClientError
 from jose import JWTError, jwt
 
 from app.core.config import settings
+
+# NEW: DB helper
+try:
+    from app.core.db import db_conn
+except Exception:
+    db_conn = None  # allows local/dev runs without DB
 
 
 # -----------------------------
@@ -44,6 +49,7 @@ def validate_login(email: str, password: str, tenant_slug: str | None = None) ->
     """
     if not (settings.cognito_user_pool_id and settings.cognito_client_id):
         raise RuntimeError("Cognito not configured: set COGNITO_USER_POOL_ID and COGNITO_CLIENT_ID")
+
     auth_params: Dict[str, str] = {"USERNAME": email.strip(), "PASSWORD": password}
     sh = _secret_hash(email)
     if sh:
@@ -57,15 +63,12 @@ def validate_login(email: str, password: str, tenant_slug: str | None = None) ->
         )
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
-        # Wrong creds / user not found
         if code in ("NotAuthorizedException", "UserNotFoundException"):
             return None
-        # Typical challenge flows
         if code in ("PasswordResetRequiredException", "UserNotConfirmedException"):
             raise ValueError(code)
         raise
 
-    # Challenge?
     if resp.get("ChallengeName"):
         raise ValueError(resp["ChallengeName"])
 
@@ -77,7 +80,7 @@ def validate_login(email: str, password: str, tenant_slug: str | None = None) ->
     refresh_token = ar.get("RefreshToken")
     token_type = ar.get("TokenType", "Bearer")
 
-    # Decode (verified) access token to provide user claims in response
+    # Verified claims (strict)
     user_claims = get_current_user_from_token(access_token) or {}
 
     return {
@@ -97,10 +100,9 @@ _JWKS_TTL_SECONDS = 3600
 
 
 def _issuer() -> str:
-    # If config computed jwks/issuer, use them
     iss = getattr(settings, "cognito_issuer", "") or ""
     if iss:
-        return iss
+        return iss.rstrip("/")
     return f"https://cognito-idp.{settings.cognito_region}.amazonaws.com/{settings.cognito_user_pool_id}"
 
 
@@ -111,22 +113,46 @@ def _jwks_url() -> str:
     return f"{_issuer()}/.well-known/jwks.json"
 
 
-def _get_jwks() -> dict:
-    global _JWKS_CACHE, _JWKS_CACHE_AT
-    now = time.time()
-    if _JWKS_CACHE and (now - _JWKS_CACHE_AT) < _JWKS_TTL_SECONDS:
-        return _JWKS_CACHE
-
+def _fetch_jwks() -> dict:
     r = requests.get(_jwks_url(), timeout=5)
     r.raise_for_status()
-    _JWKS_CACHE = r.json()
+    return r.json()
+
+
+def _get_jwks(force_refresh: bool = False) -> dict:
+    global _JWKS_CACHE, _JWKS_CACHE_AT
+    now = time.time()
+    if not force_refresh and _JWKS_CACHE and (now - _JWKS_CACHE_AT) < _JWKS_TTL_SECONDS:
+        return _JWKS_CACHE
+
+    _JWKS_CACHE = _fetch_jwks()
     _JWKS_CACHE_AT = now
     return _JWKS_CACHE
 
 
+def _get_signing_key_for_kid(kid: str) -> dict | None:
+    # First try cached JWKS
+    jwks = _get_jwks(force_refresh=False)
+    key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+    if key:
+        return key
+
+    # Key rotation hardening: refresh once immediately
+    jwks = _get_jwks(force_refresh=True)
+    return next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+
+
 def get_current_user_from_token(token: str | None) -> Optional[dict]:
     """
-    Strictly verifies Cognito ACCESS token.
+    Strictly verifies a Cognito ACCESS token.
+
+    Enforces:
+      - signature via JWKS (kid-matched key)
+      - iss
+      - exp
+      - token_use == "access"
+      - client id matches (via client_id claim; aud fallback if present)
+
     Returns claims dict if valid, else None.
     """
     if not token:
@@ -138,24 +164,117 @@ def get_current_user_from_token(token: str | None) -> Optional[dict]:
         if not kid:
             return None
 
-        jwks = _get_jwks()
-        key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+        key = _get_signing_key_for_kid(kid)
         if not key:
             return None
 
+        # For Cognito ACCESS tokens, aud is not always reliable across configs.
+        # Verify signature/iss/exp, then enforce client_id ourselves.
         claims = jwt.decode(
             token,
             key,
             algorithms=["RS256"],
-            audience=settings.cognito_client_id,
             issuer=_issuer(),
-            options={"verify_aud": True, "verify_iss": True, "verify_exp": True},
+            options={
+                "verify_signature": True,
+                "verify_iss": True,
+                "verify_exp": True,
+                "verify_aud": False,
+            },
         )
 
-        # Only allow access tokens to authenticate API calls
         if claims.get("token_use") != "access":
             return None
 
+        expected_client_id = settings.cognito_client_id
+
+        token_client_id = claims.get("client_id")
+        token_aud = claims.get("aud")
+
+        # Accept if either claim matches our configured client id
+        if token_client_id != expected_client_id and token_aud != expected_client_id:
+            return None
+
         return claims
+
     except (JWTError, Exception):
         return None
+
+
+# -----------------------------
+# NEW: DB-backed "me" enrichment
+# -----------------------------
+def _db_available() -> bool:
+    if db_conn is None:
+        return False
+    return bool((os.environ.get("DATABASE_URL") or "").strip())
+
+
+def get_me_payload_from_claims(claims: dict) -> dict:
+    """
+    Returns a stable response for /api/auth/me:
+      - loggedIn: True
+      - user: Cognito claims (as before) PLUS platform_role
+      - tenants: list[{tenant_slug, role}]
+    If DB isn't configured yet, returns tenants=[] and platform_role='user' (unless present in DB later).
+    """
+    sub = (claims or {}).get("sub")
+    email = (claims or {}).get("email") or "unknown"
+
+    # Default/fallback shape (keeps UI working even during migration)
+    out = {
+        "loggedIn": True,
+        "user": dict(claims or {}),
+        "tenants": [],
+    }
+
+    if not sub or not _db_available():
+        # Keep claims-only behavior (migration-safe)
+        out["user"].setdefault("platform_role", "user")
+        return out
+
+    try:
+        with db_conn() as conn, conn.cursor() as cur:
+            # Upsert user (email is best-effort; access tokens often don't include email)
+            cur.execute(
+                """
+                INSERT INTO users (cognito_sub, email)
+                VALUES (%s, %s)
+                ON CONFLICT (cognito_sub)
+                DO UPDATE SET email = EXCLUDED.email
+                """,
+                (sub, email),
+            )
+
+            cur.execute(
+                "SELECT id, email, platform_role FROM users WHERE cognito_sub = %s",
+                (sub,),
+            )
+            row = cur.fetchone()
+            if not row:
+                out["user"].setdefault("platform_role", "user")
+                return out
+
+            user_id, db_email, platform_role = row
+
+            cur.execute(
+                """
+                SELECT t.slug, m.role
+                FROM memberships m
+                JOIN tenants t ON t.id = m.tenant_id
+                WHERE m.user_id = %s
+                ORDER BY t.slug
+                """,
+                (user_id,),
+            )
+            tenants = [{"tenant_slug": r[0], "role": r[1]} for r in cur.fetchall()]
+
+        out["user"]["email"] = db_email or out["user"].get("email") or "unknown"
+        out["user"]["platform_role"] = platform_role or "user"
+        out["tenants"] = tenants
+        return out
+
+    except Exception:
+        # Never break /me during migration—fallback to claims-only
+        out["user"].setdefault("platform_role", "user")
+        return out

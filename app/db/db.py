@@ -1,0 +1,38 @@
+# app/core/db.py
+from __future__ import annotations
+
+import os
+from contextlib import contextmanager
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+import psycopg
+
+
+def _normalize_database_url(raw: str) -> str:
+    """
+    Accept SQLAlchemy-style URLs (postgresql+psycopg://) and convert to psycopg (postgresql://).
+    Ensure sslmode=require unless explicitly provided.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        raise RuntimeError("DATABASE_URL is not set")
+
+    if raw.startswith("postgresql+psycopg://"):
+        raw = "postgresql://" + raw[len("postgresql+psycopg://") :]
+
+    u = urlparse(raw)
+    q = dict(parse_qsl(u.query, keep_blank_values=True))
+    q.setdefault("sslmode", "require")
+
+    return urlunparse((u.scheme, u.netloc, u.path, u.params, urlencode(q), u.fragment))
+
+
+@contextmanager
+def db_conn():
+    """
+    Context manager that returns an autocommit psycopg connection.
+    """
+    dsn = _normalize_database_url(os.environ.get("DATABASE_URL", ""))
+    with psycopg.connect(dsn) as conn:
+        conn.autocommit = True
+        yield conn
