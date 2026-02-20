@@ -44,9 +44,11 @@ DRAFTS_DIR = BASE_DATA_DIR / "TempDraftContracts"
 DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------
-# Auth router
+# Auth + Tenants + Invites (app)
 # ---------------------------------------------------------------------
 from app.auth.router import router as auth_router  # noqa: E402
+from app.tenants.router import router as tenants_router  # noqa: E402
+from app.invites.router import router as invites_router  # noqa: E402
 
 # ---------------------------------------------------------------------
 # Import routers (AFTER env load) - routers package is at project root (routers/)
@@ -59,20 +61,20 @@ from routers.contract_docs import router as contract_docs_router  # noqa: E402
 from routers.financials import router as financials_router  # noqa: E402
 from routers import financialuploads  # noqa: E402
 from routers import uploads_read  # noqa: E402
-from app.tenants.router import router as tenants_router
 
 # ---------------------------------------------------------------------
 # Routers (mount ONCE, consistently)
 # ---------------------------------------------------------------------
 # Auth router has prefix="/auth" inside router.py, so this yields /api/auth/login, /api/auth/me, etc.
 app.include_router(auth_router, prefix="/api")
+app.include_router(tenants_router, prefix="/api")
+app.include_router(invites_router, prefix="/api")
 
 # Uploads read router: mount ONCE.
 # If uploads_read has absolute paths like "/api/uploads/book-assets" inside it, mount WITHOUT prefix.
 # If it has relative paths like "/uploads/book-assets", mount WITH prefix="/api".
 # Your earlier uploads_read patterns used absolute /api/... paths, so keep it unprefixed:
 app.include_router(uploads_read.router)
-app.include_router(tenants_router, prefix="/api")
 
 # Core
 app.include_router(royalty.router, prefix="/api", tags=["Royalty"])
@@ -126,8 +128,8 @@ async def require_auth_middleware(request, call_next):
     if not path.startswith("/api/"):
         return await call_next(request)
 
-    # allow auth endpoints
-    if path.startswith("/api/auth"):
+    # allow auth and public invite endpoints
+    if path.startswith("/api/auth") or path.startswith("/api/invites"):
         return await call_next(request)
 
     token = _bearer_token_from_header(request.headers.get("Authorization"))
@@ -145,6 +147,31 @@ async def require_auth_middleware(request, call_next):
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 
     request.state.user_claims = claims
+
+    # Restrict /api/royalty to tenant_admin (or superadmin) for the given X-Tenant
+    if path.startswith("/api/royalty"):
+        tenant_slug = (request.headers.get("X-Tenant") or "").strip()
+        if not tenant_slug:
+            return JSONResponse(status_code=403, content={"detail": "X-Tenant header required for royalty"})
+        try:
+            from app.auth.service import get_user_db_record_from_claims, get_memberships_for_user, is_superadmin
+            from app.tenants.resolver import resolve_tenant
+            user = get_user_db_record_from_claims(claims)
+            if not user:
+                return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+            if is_superadmin(user.get("platform_role")):
+                pass  # allow
+            else:
+                tenant = resolve_tenant(tenant_slug)
+                if not tenant:
+                    return JSONResponse(status_code=403, content={"detail": "Tenant not found"})
+                memberships = get_memberships_for_user(user["id"])
+                role = next((m["role"] for m in memberships if (m.get("tenant_slug") or "").lower() == tenant_slug.lower()), None)
+                if role != "tenant_admin":
+                    return JSONResponse(status_code=403, content={"detail": "Royalty calculator is restricted to admins"})
+        except Exception:
+            return JSONResponse(status_code=403, content={"detail": "Forbidden"})
+
     return await call_next(request)
 
 # ---------------------------------------------------------------------

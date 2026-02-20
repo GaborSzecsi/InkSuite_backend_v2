@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
-from app.auth.service import validate_login
+from app.auth.service import validate_login, get_me_payload_from_claims
 
 # IMPORTANT:
 # This router is designed to be mounted with prefix="/api" in main.py
@@ -64,4 +64,4 @@ async def logout(response: Response):
 
 @router.get("/me")
 async def me(user: dict = Depends(get_current_user)):
-    return {"loggedIn": True, "user": user}
+    return get_me_payload_from_claims(user)

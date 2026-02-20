@@ -524,3 +524,173 @@ def accept_invite(*, claims: dict, token: str, require_email_match: bool = True)
         cur.execute("UPDATE invites SET accepted_at = now() WHERE id = %s", (invite_id,))
 
     return {"tenant_slug": tenant_slug, "role": role}
+
+
+def get_invite_by_token(token: str) -> Optional[dict]:
+    """
+    Public: get invite details by token (for accept-invite page).
+    Returns { tenant_name, email, role, expires_at } or None if invalid/expired/accepted.
+    """
+    if not _db_available():
+        return None
+    token = (token or "").strip()
+    if not token:
+        return None
+    now = datetime.now(timezone.utc)
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT i.email, i.role, i.expires_at, i.accepted_at, t.name AS tenant_name
+            FROM invites i
+            JOIN tenants t ON t.id = i.tenant_id
+            WHERE i.token = %s
+            """,
+            (token,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    email, role, expires_at, accepted_at, tenant_name = row
+    if accepted_at is not None:
+        return None
+    if expires_at is not None:
+        exp = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at
+        if now > exp:
+            return None
+    return {
+        "tenant_name": tenant_name or "",
+        "email": email or "",
+        "role": role or "",
+        "expires_at": expires_at.isoformat() if expires_at else None,
+    }
+
+
+def register_and_accept_invite(
+    *,
+    token: str,
+    email: str,
+    password: str,
+    full_name: str,
+    phone: str = "",
+    username: str | None = None,
+) -> dict:
+    """
+    Public: validate invite token, create Cognito user (sign_up + confirm),
+    create users row and membership, mark invite accepted.
+    Returns { access_token, refresh_token, token_type, user } for immediate login.
+    """
+    if not (settings.cognito_user_pool_id and settings.cognito_client_id):
+        raise RuntimeError("Cognito not configured")
+    if not _db_available():
+        raise RuntimeError("DB not configured")
+
+    token = (token or "").strip()
+    email_lc = _lower(email)
+    if not token or not email_lc or not password:
+        raise ValueError("invalid_request")
+
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT i.id, i.tenant_id, i.email, i.role, i.expires_at, i.accepted_at, t.slug
+            FROM invites i
+            JOIN tenants t ON t.id = i.tenant_id
+            WHERE i.token = %s
+            """,
+            (token,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise ValueError("invalid_token")
+    invite_id, tenant_id, invite_email, role, expires_at, accepted_at, tenant_slug = row
+    if accepted_at is not None:
+        raise ValueError("already_accepted")
+    now = datetime.now(timezone.utc)
+    exp = expires_at.replace(tzinfo=timezone.utc) if expires_at and expires_at.tzinfo is None else expires_at
+    if expires_at is not None and now > exp:
+        raise ValueError("expired")
+    if _lower(invite_email) != email_lc:
+        raise ValueError("email_mismatch")
+
+    # Cognito: sign up with email as username
+    login_name = username.strip() if isinstance(username, str) and username else email_lc
+    attrs = [
+        {"Name": "email", "Value": email_lc},
+        {"Name": "name", "Value": (full_name or "").strip() or email_lc},
+    ]
+    if (phone or "").strip():
+        attrs.append({"Name": "phone_number", "Value": phone.strip()})
+    sh = _secret_hash(login_name)
+    params: Dict[str, Any] = {
+        "ClientId": settings.cognito_client_id,
+        "Username": login_name,
+        "Password": password,
+        "UserAttributes": attrs,
+    }
+    if sh:
+        params["SecretHash"] = sh
+
+    try:
+        resp = _cognito().sign_up(**params)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code == "UsernameExistsException":
+            raise ValueError("username_exists")
+        if code == "InvalidPasswordException":
+            raise ValueError("invalid_password")
+        raise
+
+    user_sub = resp.get("UserSub")
+    if not user_sub:
+        raise RuntimeError("Cognito sign_up did not return UserSub")
+
+    # Auto-confirm so they can sign in with password
+    try:
+        _cognito().admin_confirm_sign_up(
+            UserPoolId=settings.cognito_user_pool_id,
+            Username=login_name,
+        )
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "NotAuthorizedException":
+            raise
+
+    # Insert user row and membership, mark invite accepted
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO users (cognito_sub, email)
+            VALUES (%s, %s)
+            ON CONFLICT (cognito_sub) DO UPDATE SET email = EXCLUDED.email
+            RETURNING id
+            """,
+            (user_sub, email_lc),
+        )
+        user_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            INSERT INTO memberships (tenant_id, user_id, role)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role
+            """,
+            (tenant_id, user_id, _lower(role)),
+        )
+        cur.execute("UPDATE invites SET accepted_at = now() WHERE id = %s", (invite_id,))
+
+    # Log them in
+    result = validate_login(login_name, password, tenant_slug=None)
+    if not result:
+        return {
+            "ok": True,
+            "message": "Account created. Please sign in.",
+            "tenant_slug": tenant_slug,
+            "role": role,
+        }
+    return {
+        "ok": True,
+        "access_token": result["access_token"],
+        "refresh_token": result.get("refresh_token"),
+        "token_type": result.get("token_type", "Bearer"),
+        "user": result.get("user", {}),
+        "tenant_slug": tenant_slug,
+        "role": role,
+    }
