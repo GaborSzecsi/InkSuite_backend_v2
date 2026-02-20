@@ -59,6 +59,7 @@ from routers.contract_docs import router as contract_docs_router  # noqa: E402
 from routers.financials import router as financials_router  # noqa: E402
 from routers import financialuploads  # noqa: E402
 from routers import uploads_read  # noqa: E402
+from app.tenants.router import router as tenants_router
 
 # ---------------------------------------------------------------------
 # Routers (mount ONCE, consistently)
@@ -71,6 +72,7 @@ app.include_router(auth_router, prefix="/api")
 # If it has relative paths like "/uploads/book-assets", mount WITH prefix="/api".
 # Your earlier uploads_read patterns used absolute /api/... paths, so keep it unprefixed:
 app.include_router(uploads_read.router)
+app.include_router(tenants_router, prefix="/api")
 
 # Core
 app.include_router(royalty.router, prefix="/api", tags=["Royalty"])

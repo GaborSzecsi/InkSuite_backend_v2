@@ -1,9 +1,13 @@
+# app/auth/service.py  (COMPLETE DROP-IN)
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
+import os
+import secrets
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import boto3
@@ -13,7 +17,7 @@ from jose import JWTError, jwt
 
 from app.core.config import settings
 
-# NEW: DB helper
+# DB helper (psycopg v3)
 try:
     from app.core.db import db_conn
 except Exception:
@@ -187,7 +191,6 @@ def get_current_user_from_token(token: str | None) -> Optional[dict]:
             return None
 
         expected_client_id = settings.cognito_client_id
-
         token_client_id = claims.get("client_id")
         token_aud = claims.get("aud")
 
@@ -202,7 +205,7 @@ def get_current_user_from_token(token: str | None) -> Optional[dict]:
 
 
 # -----------------------------
-# NEW: DB-backed "me" enrichment
+# DB-backed "me" enrichment
 # -----------------------------
 def _db_available() -> bool:
     if db_conn is None:
@@ -210,18 +213,20 @@ def _db_available() -> bool:
     return bool((os.environ.get("DATABASE_URL") or "").strip())
 
 
+def _lower(s: str | None) -> str:
+    return (s or "").strip().lower()
+
+
 def get_me_payload_from_claims(claims: dict) -> dict:
     """
-    Returns a stable response for /api/auth/me:
+    Stable response for /api/auth/me:
       - loggedIn: True
-      - user: Cognito claims (as before) PLUS platform_role
+      - user: claims + platform_role (+ canonical email if present in DB)
       - tenants: list[{tenant_slug, role}]
-    If DB isn't configured yet, returns tenants=[] and platform_role='user' (unless present in DB later).
     """
     sub = (claims or {}).get("sub")
-    email = (claims or {}).get("email") or "unknown"
+    token_email = _lower((claims or {}).get("email"))
 
-    # Default/fallback shape (keeps UI working even during migration)
     out = {
         "loggedIn": True,
         "user": dict(claims or {}),
@@ -229,21 +234,26 @@ def get_me_payload_from_claims(claims: dict) -> dict:
     }
 
     if not sub or not _db_available():
-        # Keep claims-only behavior (migration-safe)
         out["user"].setdefault("platform_role", "user")
         return out
 
     try:
         with db_conn() as conn, conn.cursor() as cur:
-            # Upsert user (email is best-effort; access tokens often don't include email)
+            # Insert email if present; on conflict don't overwrite existing with blank.
+            # NOTE: Your schema requires users.email NOT NULL. If token lacks email,
+            # we set to 'unknown' on insert only, and we do not overwrite a real email later.
             cur.execute(
                 """
                 INSERT INTO users (cognito_sub, email)
-                VALUES (%s, %s)
+                VALUES (%s, COALESCE(NULLIF(%s,''), 'unknown'))
                 ON CONFLICT (cognito_sub)
-                DO UPDATE SET email = EXCLUDED.email
+                DO UPDATE SET
+                    email = CASE
+                        WHEN EXCLUDED.email <> 'unknown' THEN EXCLUDED.email
+                        ELSE users.email
+                    END
                 """,
-                (sub, email),
+                (sub, token_email),
             )
 
             cur.execute(
@@ -270,11 +280,247 @@ def get_me_payload_from_claims(claims: dict) -> dict:
             tenants = [{"tenant_slug": r[0], "role": r[1]} for r in cur.fetchall()]
 
         out["user"]["email"] = db_email or out["user"].get("email") or "unknown"
-        out["user"]["platform_role"] = platform_role or "user"
+        out["user"]["platform_role"] = platform_role or out["user"].get("platform_role") or "user"
         out["tenants"] = tenants
         return out
 
-    except Exception:
-        # Never break /me during migration—fallback to claims-only
+    except Exception as e:
+        # Never break /me. Log for debugging.
+        try:
+            import logging
+
+            logging.getLogger("auth").exception("DB-backed /auth/me failed: %s", e)
+        except Exception:
+            pass
+
         out["user"].setdefault("platform_role", "user")
         return out
+
+
+# -----------------------------
+# Tenant roles + invitations
+# -----------------------------
+TENANT_ADMIN = "tenant_admin"
+TENANT_EDITOR = "tenant_editor"
+TENANT_ALLOWED = {TENANT_ADMIN, TENANT_EDITOR}
+
+
+def is_superadmin(platform_role: str | None) -> bool:
+    return _lower(platform_role) == "superadmin"
+
+
+def get_user_db_record_from_claims(claims: dict) -> Optional[dict]:
+    """
+    Ensures a users row exists, then returns {id, email, platform_role}.
+    """
+    if not _db_available():
+        return None
+
+    sub = (claims or {}).get("sub")
+    if not sub:
+        return None
+
+    token_email = _lower((claims or {}).get("email"))
+
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO users (cognito_sub, email)
+            VALUES (%s, COALESCE(NULLIF(%s,''), 'unknown'))
+            ON CONFLICT (cognito_sub)
+            DO UPDATE SET
+                email = CASE
+                    WHEN EXCLUDED.email <> 'unknown' THEN EXCLUDED.email
+                    ELSE users.email
+                END
+            """,
+            (sub, token_email),
+        )
+        cur.execute("SELECT id, email, platform_role FROM users WHERE cognito_sub = %s", (sub,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "email": row[1], "platform_role": row[2]}
+
+
+def get_memberships_for_user(user_id) -> list[dict]:
+    """
+    Returns list[{tenant_id, tenant_slug, role}]
+    """
+    if not _db_available():
+        return []
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT t.id, t.slug, m.role
+            FROM memberships m
+            JOIN tenants t ON t.id = m.tenant_id
+            WHERE m.user_id = %s
+            ORDER BY t.slug
+            """,
+            (user_id,),
+        )
+        return [{"tenant_id": r[0], "tenant_slug": r[1], "role": r[2]} for r in cur.fetchall()]
+
+
+def require_tenant_role(
+    *,
+    claims: dict,
+    tenant_slug: str,
+    allowed_roles: set[str],
+) -> dict:
+    """
+    Enforce tenant-scoped authorization.
+
+    Returns:
+      {
+        "user": {id,email,platform_role},
+        "memberships": [...],
+        "tenant": {id,slug,role}
+      }
+
+    Superadmin bypasses membership requirement.
+    Raises ValueError("unauthorized") or ValueError("forbidden").
+    """
+    if not claims or not claims.get("sub"):
+        raise ValueError("unauthorized")
+
+    user = get_user_db_record_from_claims(claims)
+    if not user:
+        raise ValueError("unauthorized")
+
+    if is_superadmin(user.get("platform_role")):
+        return {
+            "user": user,
+            "memberships": [],
+            "tenant": {"id": None, "slug": tenant_slug, "role": "superadmin"},
+        }
+
+    memberships = get_memberships_for_user(user["id"])
+    slug = _lower(tenant_slug)
+    allowed = {_lower(r) for r in allowed_roles}
+
+    for m in memberships:
+        if _lower(m["tenant_slug"]) == slug and _lower(m["role"]) in allowed:
+            return {
+                "user": user,
+                "memberships": memberships,
+                "tenant": {"id": m["tenant_id"], "slug": m["tenant_slug"], "role": m["role"]},
+            }
+
+    raise ValueError("forbidden")
+
+
+def create_invite(
+    *,
+    invited_by_user_id,
+    tenant_slug: str,
+    email: str,
+    role: str,
+    ttl_hours: int = 72,
+) -> dict:
+    """
+    Creates an invite and returns:
+      {invite_id, token, expires_at, tenant_slug, email, role}
+    """
+    if not _db_available():
+        raise RuntimeError("DB not configured")
+
+    email_lc = _lower(email)
+    role_lc = _lower(role)
+    if role_lc not in TENANT_ALLOWED:
+        raise ValueError("invalid_role")
+
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=int(ttl_hours or 72))
+
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM tenants WHERE lower(slug)=lower(%s)", (tenant_slug,))
+        tr = cur.fetchone()
+        if not tr:
+            raise ValueError("tenant_not_found")
+        tenant_id = tr[0]
+
+        cur.execute(
+            """
+            INSERT INTO invites (tenant_id, email, role, token, invited_by, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (tenant_id, email_lc, role_lc, token, invited_by_user_id, expires_at.replace(tzinfo=None)),
+        )
+        invite_id = cur.fetchone()[0]
+
+    return {
+        "invite_id": str(invite_id),
+        "token": token,
+        "expires_at": expires_at.isoformat(),
+        "tenant_slug": tenant_slug,
+        "email": email_lc,
+        "role": role_lc,
+    }
+
+
+def accept_invite(*, claims: dict, token: str, require_email_match: bool = True) -> dict:
+    """
+    Accepts an invite for the authenticated user:
+      - token exists, not expired, not accepted
+      - optionally require invite email matches Cognito email claim
+      - upserts membership role
+      - marks invite accepted
+
+    Returns: {tenant_slug, role}
+    """
+    if not _db_available():
+        raise RuntimeError("DB not configured")
+
+    user = get_user_db_record_from_claims(claims)
+    if not user:
+        raise ValueError("unauthorized")
+
+    token = (token or "").strip()
+    if not token:
+        raise ValueError("invalid_token")
+
+    token_email = _lower((claims or {}).get("email"))
+    now = datetime.utcnow()
+
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT i.id, i.tenant_id, i.email, i.role, i.expires_at, i.accepted_at, t.slug
+            FROM invites i
+            JOIN tenants t ON t.id = i.tenant_id
+            WHERE i.token = %s
+            """,
+            (token,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("invalid_token")
+
+        invite_id, tenant_id, invite_email, role, expires_at, accepted_at, tenant_slug = row
+
+        if accepted_at is not None:
+            raise ValueError("already_accepted")
+        if expires_at is not None and now > expires_at:
+            raise ValueError("expired")
+
+        if require_email_match:
+            if not token_email or _lower(invite_email) != token_email:
+                raise ValueError("email_mismatch")
+
+        # Upsert membership (requires UNIQUE (tenant_id, user_id) or PK)
+        cur.execute(
+            """
+            INSERT INTO memberships (tenant_id, user_id, role)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (tenant_id, user_id)
+            DO UPDATE SET role = EXCLUDED.role
+            """,
+            (tenant_id, user["id"], role),
+        )
+
+        cur.execute("UPDATE invites SET accepted_at = now() WHERE id = %s", (invite_id,))
+
+    return {"tenant_slug": tenant_slug, "role": role}
