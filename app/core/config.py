@@ -26,6 +26,12 @@ class Settings:
         self.cognito_client_secret = _env("COGNITO_CLIENT_SECRET")  # only if app client has a secret
         self.allow_origins = _env("ALLOW_ORIGINS")
         self.node_env = _env("NODE_ENV", "development")
+        # WOPI (Collabora Online)
+        self.wopi_access_token_secret = _env("WOPI_ACCESS_TOKEN_SECRET") or _env("WOPI_SECRET") or "inksuite-wopi-dev-secret-change-in-production"
+        self.wopi_token_ttl_sec = int(_env("WOPI_TOKEN_TTL_SEC", "3600"))
+        # In production set PUBLIC_BASE_URL=https://api.inksuite.io so WOPI URLs are reachable by Collabora
+        self.public_base_url = (_env("PUBLIC_BASE_URL") or "http://host.docker.internal:8000").rstrip("/")
+        self.collabora_code_url = (_env("COLLABORA_CODE_URL") or _env("COLLABORA_EDITOR_URL") or "http://localhost:9980").rstrip("/")
 
 
 _settings: Settings | None = None

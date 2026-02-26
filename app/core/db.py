@@ -16,7 +16,10 @@ def _normalize_database_url(raw: str) -> str:
         raw = "postgresql://" + raw[len("postgresql+psycopg://") :]
     u = urlparse(raw)
     q = dict(parse_qsl(u.query, keep_blank_values=True))
-    q.setdefault("sslmode", "require")
+    # Use "prefer" so tunnel/local Postgres without SSL still connect; set ?sslmode=require in URL for strict SSL.
+    q.setdefault("sslmode", "prefer")
+    # Avoid hanging if DB is unreachable (e.g. wrong host, firewall); use 30s for slow tunnels.
+    q.setdefault("connect_timeout", "30")
     return urlunparse((u.scheme, u.netloc, u.path, u.params, urlencode(q), u.fragment))
 
 

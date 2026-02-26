@@ -1,9 +1,14 @@
+# InkSuite_backend_v2 entry point.
+# Start with: python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+# Do NOT use models.royalty:app (that app has no /api/tenants or /api/auth).
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
 
+import psycopg
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -25,6 +30,41 @@ load_dotenv(dotenv_path=ENV_PATH, override=False)
 # App
 # ---------------------------------------------------------------------
 app = FastAPI(title="InkSuite API", version="1.0.0")
+logger = logging.getLogger(__name__)
+
+
+@app.exception_handler(psycopg.Error)
+async def db_error_handler(request, exc: psycopg.Error):
+    """Return 503 on DB connection/query errors so clients get a clear response instead of 500 + traceback."""
+    logger.warning("Database error: %s", exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "Service temporarily unavailable. The database is unreachable—ensure PostgreSQL is running and DATABASE_URL is correct in the backend .env.",
+            "error": str(exc),
+        },
+    )
+
+
+# ---------------------------------------------------------------------
+# Health check (diagnose DB from running server)
+# ---------------------------------------------------------------------
+@app.get("/api/health")
+def health():
+    """Returns 200 if DB is reachable, 503 with error detail otherwise. Use to verify DB from the running process."""
+    try:
+        from app.core.db import db_conn
+        with db_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        return {"status": "ok", "database": "ok"}
+    except Exception as e:
+        logger.warning("Health check DB error: %s", e)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "database": "unreachable", "detail": str(e)},
+        )
+
 
 # ---------------------------------------------------------------------
 # Data roots (Uploads + Templates)
@@ -49,6 +89,7 @@ DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
 from app.auth.router import router as auth_router  # noqa: E402
 from app.tenants.router import router as tenants_router  # noqa: E402
 from app.invites.router import router as invites_router  # noqa: E402
+from app.admin.router import router as admin_router  # noqa: E402
 
 # ---------------------------------------------------------------------
 # Import routers (AFTER env load) - routers package is at project root (routers/)
@@ -57,7 +98,7 @@ from app.invites.router import router as invites_router  # noqa: E402
 from routers import books, royalty, uploads, banking, ingest  # noqa: E402
 from routers import templates as contracts_templates  # noqa: E402
 from routers import deal_memo_drafts  # noqa: E402
-from routers.contract_docs import router as contract_docs_router  # noqa: E402
+from routers.contract_docs import router as contract_docs_router, wopi_router  # noqa: E402
 from routers.financials import router as financials_router  # noqa: E402
 from routers import financialuploads  # noqa: E402
 from routers import uploads_read  # noqa: E402
@@ -69,6 +110,7 @@ from routers import uploads_read  # noqa: E402
 app.include_router(auth_router, prefix="/api")
 app.include_router(tenants_router, prefix="/api")
 app.include_router(invites_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
 
 # Uploads read router: mount ONCE.
 # If uploads_read has absolute paths like "/api/uploads/book-assets" inside it, mount WITHOUT prefix.
@@ -87,6 +129,9 @@ app.include_router(contracts_templates.router, prefix="/api", tags=["Contracts"]
 app.include_router(contracts_templates.onlyoffice_router, prefix="/api", tags=["ONLYOFFICE"])
 app.include_router(deal_memo_drafts.router, prefix="/api", tags=["Contracts Drafts"])
 app.include_router(contract_docs_router, prefix="/api", tags=["Contracts Docs"])
+# WOPI host for Collabora Online (draft contracts + templates)
+app.include_router(wopi_router, prefix="/api", tags=["WOPI"])
+app.include_router(contracts_templates.wopi_templates_router, prefix="/api", tags=["WOPI Templates"])
 
 # Ingest
 app.include_router(ingest.router, prefix="/api", tags=["Ingest"])

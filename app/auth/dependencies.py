@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer
 
-from app.auth.service import get_current_user_from_token
+from app.auth.service import get_current_user_from_token, get_user_db_record_from_claims, is_superadmin
 
 # Prefer Bearer token (frontend sends after login).
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
@@ -36,3 +36,13 @@ def require_platform_admin(user: dict) -> None:
     groups = user.get("cognito:groups") or []
     if "inksuite_master_admin" not in groups:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Platform admin required")
+
+
+async def require_superadmin(
+    user_claims: Annotated[dict, Depends(get_current_user)],
+) -> dict:
+    """Dependency: require platform_role=superadmin (DB); else 403."""
+    user = get_user_db_record_from_claims(user_claims)
+    if not user or not is_superadmin(user.get("platform_role")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Superadmin required")
+    return user

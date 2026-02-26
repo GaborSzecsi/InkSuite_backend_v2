@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import os
 import json
-import shutil
 import hashlib
 import mimetypes
+import tempfile
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import (
@@ -20,27 +19,22 @@ from fastapi import (
     Request,
     Response,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse, Response as FastAPIResponse
 from pydantic import BaseModel, Field
 
-# deps:
-#   pip install python-docx mammoth requests python-dotenv
 from docx import Document
 import mammoth
 import requests
 
-# -------------------- .env loading (robust for reloader/WD quirks) --------------------
-try:
-    from dotenv import load_dotenv  # type: ignore
-    # Load ../.env (project root), even if uvicorn runs from a different CWD
-    _ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
-    if _ENV_PATH.exists():
-        load_dotenv(dotenv_path=_ENV_PATH, override=False)
-except Exception:
-    # Don't hard-fail if dotenv isn't available
-    pass
+from .storage_s3 import (
+    tenant_data_prefix,
+    list_keys,
+    get_bytes,
+    put_bytes,
+    delete_key,
+)
 
-# Use env or sane local defaults so you don't get 503s while developing
+# -------------------- env --------------------
 DOCSERVICE_URL = os.environ.get("ONLYOFFICE_DOCSERVICE_URL", "").strip() or "http://localhost:8082"
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip() or "http://127.0.0.1:8000"
 
@@ -48,15 +42,12 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip() or "http://127.0
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 onlyoffice_router = APIRouter(prefix="/onlyoffice", tags=["onlyoffice"])
 
-# -------------------- Storage layout --------------------
-# C:\Users\<you>\Documents\marble_app\data\Templates
-BASE_DATA_DIR = Path.home() / "Documents" / "marble_app" / "data"
-TEMPLATES_DIR = BASE_DATA_DIR / "Templates"
-TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
-
-INDEX_PATH = TEMPLATES_DIR / "templates_index.json"
-VERSIONS_DIR = TEMPLATES_DIR / "Versions"
-VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
+# -------------------- S3 layout --------------------
+# templates live under: tenants/<slug>/data/Templates/
+TEMPLATES_PREFIX = tenant_data_prefix("data", "Templates").rstrip("/") + "/"
+INDEX_KEY = TEMPLATES_PREFIX + "templates_index.json"
+VERSIONS_PREFIX = TEMPLATES_PREFIX + "Versions/"  # optional backups
+MAPPINGS_PREFIX = TEMPLATES_PREFIX  # store {tid}.mapping.json alongside templates
 
 # -------------------- Models --------------------
 TypeStr = Literal["author", "illustrator", "generic"]
@@ -65,14 +56,13 @@ DealTypeStr = Literal["single", "series", "other"]
 class ContractTemplate(BaseModel):
     id: str
     name: str
-    filename: str                 # stored filename on disk (tid_<original>.docx)
+    filename: str
     type: TypeStr
     dealType: DealTypeStr
     uploadedAt: str
     placeholders: Optional[List[str]] = None
-    previewUrl: Optional[str] = None  # absolute URL to /api/contracts/templates/{id}/file
+    previewUrl: Optional[str] = None
 
-# ---- Mapping payloads (kept if you still want mapper JSON) ----
 class MappingPosition(BaseModel):
     x_pct: float = Field(ge=0, le=100)
     y_pct: float = Field(ge=0, le=100)
@@ -85,22 +75,29 @@ class MappingItem(BaseModel):
 class TemplateMapping(BaseModel):
     templateId: str
     mapping: List[MappingItem]
-    _format: Optional[str] = None  # e.g., "docx-overlay"
+    _format: Optional[str] = None
 
-# ---- Inline insert payload ----
 class InsertTokenPayload(BaseModel):
-    placeholder: str               # e.g. "{{workTitle}}"
+    placeholder: str
     paragraph_index: int
-    char_offset: int               # absolute character offset inside the paragraph text
+    char_offset: int
     left_ctx: Optional[str] = None
     right_ctx: Optional[str] = None
 
 # -------------------- Helpers --------------------
+def _abs_url(request: Request, rel: str) -> str:
+    base = (PUBLIC_BASE_URL or str(request.base_url)).rstrip("/")
+    if not rel.startswith("/"):
+        rel = "/" + rel
+    return f"{base}{rel}"
+
 def _read_index() -> List[ContractTemplate]:
-    if not INDEX_PATH.exists():
+    try:
+        raw = get_bytes(INDEX_KEY)
+    except Exception:
         return []
     try:
-        data = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+        data = json.loads(raw.decode("utf-8"))
         if isinstance(data, list):
             return [ContractTemplate(**item) for item in data]
         return []
@@ -108,72 +105,200 @@ def _read_index() -> List[ContractTemplate]:
         return []
 
 def _write_index(items: List[ContractTemplate]) -> None:
-    INDEX_PATH.write_text(
-        json.dumps([i.model_dump() for i in items], indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-def _file_path_for_id(tid: str) -> Path:
-    """Resolve the physical file path by template id."""
-    for pat in (f"{tid}_*", f"{tid}__*"):
-        for p in TEMPLATES_DIR.glob(pat):
-            if p.is_file():
-                return p
-    return TEMPLATES_DIR / f"{tid}_MISSING"
-
-def _abs_url(request: Request, rel: str) -> str:
-    # Prefer PUBLIC_BASE_URL if set; otherwise use request.base_url
-    base = (PUBLIC_BASE_URL or str(request.base_url)).rstrip("/")
-    if not rel.startswith("/"):
-        rel = "/" + rel
-    return f"{base}{rel}"
+    blob = json.dumps([i.model_dump() for i in items], indent=2, ensure_ascii=False).encode("utf-8")
+    put_bytes(INDEX_KEY, blob, content_type="application/json")
 
 def _get_template_obj(tid: str) -> Optional[ContractTemplate]:
     for it in _read_index():
         if it.id == tid:
             return it
+    for it in _synthesize_templates_from_s3():
+        if it.id == tid:
+            return it
     return None
 
-def _version_backup(path: Path, tid: str) -> None:
-    """Save a timestamped backup of the current file if it exists."""
-    if not path.exists():
-        return
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    vdir = VERSIONS_DIR / tid
-    vdir.mkdir(parents=True, exist_ok=True)
-    backup_path = vdir / f"{ts}.docx"
-    try:
-        shutil.copyfile(path, backup_path)
-    except Exception as e:
-        print(f"[templates] version backup failed: {e}")
 
-def _touch_index_after_save(tid: str, path: Path) -> None:
+def _synthesize_templates_from_s3() -> List[ContractTemplate]:
+    """When templates_index.json is missing or empty, list .docx keys in S3 and build template list."""
+    out: List[ContractTemplate] = []
+    try:
+        keys = list_keys(TEMPLATES_PREFIX)
+    except Exception:
+        return out
+    index_basename = "templates_index.json"
+    for key in keys:
+        if not key or not key.lower().endswith(".docx"):
+            continue
+        # Skip files under Versions/ or anything that is the index
+        parts = key.split("/")
+        basename = parts[-1] if parts else key
+        if basename == index_basename or "Versions/" in key:
+            continue
+        # id: prefix before first _ (e.g. abc123_My_Template.docx -> abc123); else full stem
+        stem = basename[:-5] if basename.lower().endswith(".docx") else basename
+        if "_" in stem:
+            tid, name_part = stem.split("_", 1)
+            name = name_part.replace("_", " ").strip() or tid
+        else:
+            tid = stem
+            name = stem
+        out.append(
+            ContractTemplate(
+                id=tid,
+                name=name,
+                filename=basename,
+                type="generic",
+                dealType="other",
+                uploadedAt=datetime.utcnow().isoformat() + "Z",
+                placeholders=None,
+                previewUrl=None,
+            )
+        )
+    return out
+
+def _template_key_from_obj(it: ContractTemplate) -> str:
+    return TEMPLATES_PREFIX + it.filename
+
+def _key_for_id(tid: str) -> str:
+    it = _get_template_obj(tid)
+    if it and it.filename:
+        return _template_key_from_obj(it)
+
+    # fallback scan (slower)
+    keys = list_keys(TEMPLATES_PREFIX)
+    for k in keys:
+        name = k.split("/")[-1]
+        if name.startswith(tid + "_") or name.startswith(tid + "__"):
+            return k
+    return TEMPLATES_PREFIX + f"{tid}_MISSING"
+
+def _mapping_key(tid: str) -> str:
+    return MAPPINGS_PREFIX + f"{tid}.mapping.json"
+
+def _version_key(tid: str, ts: str) -> str:
+    return VERSIONS_PREFIX + f"{tid}/{ts}.docx"
+
+def _touch_index_after_save(tid: str, filename: str, placeholders: Optional[List[str]] = None) -> None:
     items = _read_index()
-    changed = False
     for i, it in enumerate(items):
         if it.id == tid:
             it.uploadedAt = datetime.utcnow().isoformat() + "Z"
-            it.filename = path.name
+            it.filename = filename
+            if placeholders is not None:
+                it.placeholders = placeholders
             items[i] = it
-            changed = True
+            _write_index(items)
+            return
+
+def _download_docx_to_tmp(key: str) -> str:
+    data = get_bytes(key)
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+def _upload_docx_from_path(key: str, path: str) -> None:
+    with open(path, "rb") as f:
+        data = f.read()
+    put_bytes(
+        key,
+        data,
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+# ---- Insert token helpers ----
+def _clone_run_format(src_run, dst_run):
+    sf, df = src_run.font, dst_run.font
+    df.name = sf.name
+    df.size = sf.size
+    df.bold = sf.bold
+    df.italic = sf.italic
+    df.underline = sf.underline
+    df.color.rgb = getattr(sf.color, "rgb", None)
+    df.all_caps = sf.all_caps
+    df.small_caps = sf.small_caps
+
+def _normalize_text(s: str) -> str:
+    return (s or "").replace("\u00A0", " ").replace("\r", "").replace("\n", " ").replace("\t", " ").strip()
+
+def _find_offset_with_context(full_text: str, raw_offset: int, left_ctx: Optional[str], right_ctx: Optional[str]) -> int:
+    ntext = _normalize_text(full_text)
+    left_ctx = _normalize_text(left_ctx) if left_ctx else None
+    right_ctx = _normalize_text(right_ctx) if right_ctx else None
+
+    if left_ctx and right_ctx:
+        li = ntext.find(left_ctx)
+        if li >= 0:
+            start = li + len(left_ctx)
+            if right_ctx == "" or ntext.find(right_ctx, start) >= 0:
+                return min(max(start, 0), len(ntext))
+    if left_ctx and not right_ctx:
+        li = ntext.find(left_ctx)
+        if li >= 0:
+            return min(max(li + len(left_ctx), 0), len(ntext))
+    if right_ctx and not left_ctx:
+        ri = ntext.find(right_ctx)
+        if ri >= 0:
+            return min(max(ri, 0), len(ntext))
+    return min(max(raw_offset, 0), len(ntext))
+
+def _insert_text_at_paragraph_offset(p, offset: int, token: str) -> Tuple[bool, int]:
+    runs = list(p.runs)
+    positions = []
+    total = 0
+    for r in runs:
+        t = r.text or ""
+        start = total
+        end = start + len(t)
+        positions.append((r, t, start, end))
+        total = end
+
+    offset = max(0, min(offset, total))
+
+    if not runs:
+        p.add_run(token)
+        return True, 0
+
+    target_index = None
+    for i, (_, _, start, end) in enumerate(positions):
+        if start <= offset <= end:
+            target_index = i
             break
-    if changed:
-        _write_index(items)
 
-def _safe_remove(p: Path) -> None:
-    try:
-        if p.is_dir():
-            shutil.rmtree(p, ignore_errors=True)
-        elif p.exists():
-            p.unlink(missing_ok=True)
-    except Exception:
-        # swallow errors; we'll still update the index
-        pass
+    if target_index is None:
+        r_last, t_last, *_ = positions[-1]
+        r_last.text = (t_last or "") + token
+        return True, total
 
-# -------------------- /api/contracts/... --------------------
+    r, t, start, end = positions[target_index]
+    inner = max(0, min(offset - start, len(t)))
+    before = t[:inner]
+    after = t[inner:]
+
+    r.text = before
+    new_run = p.add_run("")
+    p._p.remove(new_run._r)
+    r._r.addnext(new_run._r)
+    new_run.text = token
+    _clone_run_format(r, new_run)
+
+    if after:
+        tail_run = p.add_run("")
+        p._p.remove(tail_run._r)
+        new_run._r.addnext(tail_run._r)
+        tail_run.text = after
+        _clone_run_format(r, tail_run)
+
+    return True, offset
+
+# -------------------- Routes --------------------
 @router.get("/templates", response_model=List[ContractTemplate])
 async def list_templates(request: Request):
     items = _read_index()
+    from_index = bool(items)
+    if not items:
+        items = _synthesize_templates_from_s3()
     base = str(request.base_url).rstrip("/")
     changed = False
     for it in items:
@@ -181,7 +306,7 @@ async def list_templates(request: Request):
         if it.previewUrl != want:
             it.previewUrl = want
             changed = True
-    if changed:
+    if changed and from_index:
         _write_index(items)
     return items
 
@@ -193,19 +318,20 @@ async def upload_template(
     type: TypeStr = Form(...),
     dealType: DealTypeStr = Form(...),
 ):
-    if not file.filename.lower().endswith(".docx"):
+    if not (file.filename or "").lower().endswith(".docx"):
         raise HTTPException(status_code=400, detail="Only .docx files are accepted.")
 
     tid = os.urandom(16).hex()
-    original_name = file.filename.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    original_name = (file.filename or "template.docx").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
     stored_filename = f"{tid}_{original_name}"
-    target_path = TEMPLATES_DIR / stored_filename
+    key = TEMPLATES_PREFIX + stored_filename
 
-    try:
-        with target_path.open("wb") as out:
-            shutil.copyfileobj(file.file, out)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    data = await file.read()
+    put_bytes(
+        key,
+        data,
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
     item = ContractTemplate(
         id=tid,
@@ -242,34 +368,43 @@ async def get_template(tid: str, request: Request):
 
 @router.get("/templates/{tid}/file")
 async def get_template_file(tid: str):
-    """Serve the stored .docx inline so the browser (and previewers) can fetch it."""
-    path = _file_path_for_id(tid)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="File not found on disk")
+    it = _get_template_obj(tid)
+    if not it:
+        raise HTTPException(status_code=404, detail="Template not found")
 
-    media_type = (
-        mimetypes.guess_type(path.name)[0]
-        or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+    key = _template_key_from_obj(it)
+    try:
+        data = get_bytes(key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found in S3")
+
+    media_type = mimetypes.guess_type(it.filename)[0] or "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     headers = {
-        "Content-Disposition": f'inline; filename="{path.name.split("_",1)[-1]}"',
+        "Content-Disposition": f'inline; filename="{it.filename.split("_",1)[-1]}"',
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
         "Expires": "0",
-        "ETag": str(int(path.stat().st_mtime)),
+        "ETag": hashlib.sha256(data).hexdigest()[:16],
     }
-    return FileResponse(path, media_type=media_type, filename=path.name.split("_", 1)[-1], headers=headers)
+    return FastAPIResponse(content=data, media_type=media_type, headers=headers)
 
-# ---- HTML preview (if you still use it anywhere)
 @router.get("/templates/{tid}/html")
 async def get_template_html(tid: str):
-    path = _file_path_for_id(tid)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Template file not on disk")
+    it = _get_template_obj(tid)
+    if not it:
+        raise HTTPException(status_code=404, detail="Template not found")
 
-    with open(path, "rb") as f:
-        result = mammoth.convert_to_html(f, style_map="")
-    raw_html = result.value or ""
+    key = _template_key_from_obj(it)
+    tmp_path = _download_docx_to_tmp(key)
+    try:
+        with open(tmp_path, "rb") as f:
+            result = mammoth.convert_to_html(f, style_map="")
+        raw_html = result.value or ""
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
     parts = raw_html.split("<p")
     rebuilt = []
@@ -284,129 +419,53 @@ async def get_template_html(tid: str):
 
     return {"ok": True, "html": indexed_html, "updated": datetime.utcnow().isoformat() + "Z"}
 
-# ---- Insert token helpers (kept for mapper flow)
-def _clone_run_format(src_run, dst_run):
-    sf, df = src_run.font, dst_run.font
-    df.name = sf.name
-    df.size = sf.size
-    df.bold = sf.bold
-    df.italic = sf.italic
-    df.underline = sf.underline
-    df.color.rgb = getattr(sf.color, "rgb", None)
-    df.all_caps = sf.all_caps
-    df.small_caps = sf.small_caps
-
-def _normalize_text(s: str) -> str:
-    return (s or "").replace("\u00A0", " ").replace("\r", "").replace("\n", " ").replace("\t", " ").strip()
-
-def _find_offset_with_context(full_text: str, raw_offset: int, left_ctx: Optional[str], right_ctx: Optional[str]) -> int:
-    ntext = _normalize_text(full_text)
-    if left_ctx:
-        left_ctx = _normalize_text(left_ctx)
-    if right_ctx:
-        right_ctx = _normalize_text(right_ctx)
-    if left_ctx and right_ctx:
-        li = ntext.find(left_ctx)
-        if li >= 0:
-            start = li + len(left_ctx)
-            if right_ctx == "" or ntext.find(right_ctx, start) >= 0:
-                return min(max(start, 0), len(ntext))
-    if left_ctx and not right_ctx:
-        li = ntext.find(left_ctx)
-        if li >= 0:
-            return min(max(li + len(left_ctx), 0), len(ntext))
-    if right_ctx and not left_ctx:
-        ri = ntext.find(right_ctx)
-        if ri >= 0:
-            return min(max(ri, 0), len(ntext))
-    return min(max(raw_offset, 0), len(ntext))
-
-def _insert_text_at_paragraph_offset(p, offset: int, token: str) -> Tuple[bool, int]:
-    runs = list(p.runs)
-    positions = []
-    total = 0
-    for r in runs:
-        t = r.text or ""
-        start = total
-        end = start + len(t)
-        positions.append((r, t, start, end))
-        total = end
-
-    if offset < 0:
-        offset = 0
-    if offset > total:
-        offset = total
-
-    if not runs:
-        new_r = p.add_run(token)
-        return True, 0
-
-    target_index = None
-    for i, (_, _, start, end) in enumerate(positions):
-        if start <= offset <= end:
-            target_index = i
-            break
-    if target_index is None:
-        r_last, t_last, *_ = positions[-1]
-        r_last.text = (t_last or "") + token
-        return True, total
-
-    r, t, start, end = positions[target_index]
-    inner = max(0, min(offset - start, len(t)))
-    before = t[:inner]
-    after = t[inner:]
-
-    r.text = before
-    new_run = p.add_run("")
-    p._p.remove(new_run._r)
-    r._r.addnext(new_run._r)
-    new_run.text = token
-    _clone_run_format(r, new_run)
-
-    if after:
-        tail_run = p.add_run("")
-        p._p.remove(tail_run._r)
-        new_run._r.addnext(tail_run._r)
-        tail_run.text = after
-        _clone_run_format(r, tail_run)
-
-    return True, offset
-
 @router.post("/templates/{tid}/insert-token")
 async def insert_token(tid: str, body: InsertTokenPayload):
-    path = _file_path_for_id(tid)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Template file not on disk")
+    it = _get_template_obj(tid)
+    if not it:
+        raise HTTPException(status_code=404, detail="Template not found")
+
     token_text = (body.placeholder or "").strip()
     if not token_text:
         raise HTTPException(status_code=400, detail="placeholder cannot be empty")
 
-    doc = Document(path)
-    paragraphs = list(doc.paragraphs)
-    if body.paragraph_index < 0 or body.paragraph_index >= len(paragraphs):
-        raise HTTPException(status_code=400, detail="paragraph_index out of range")
-    p = paragraphs[body.paragraph_index]
+    key = _template_key_from_obj(it)
+    tmp_path = _download_docx_to_tmp(key)
 
-    para_text = p.text or ""
-    effective_offset = _find_offset_with_context(para_text, body.char_offset, body.left_ctx, body.right_ctx)
-    ok, eff = _insert_text_at_paragraph_offset(p, effective_offset, token_text)
-    if not ok:
-        raise HTTPException(status_code=500, detail="failed to insert token")
+    try:
+        doc = Document(tmp_path)
+        paragraphs = list(doc.paragraphs)
+        if body.paragraph_index < 0 or body.paragraph_index >= len(paragraphs):
+            raise HTTPException(status_code=400, detail="paragraph_index out of range")
 
-    doc.save(path)
+        p = paragraphs[body.paragraph_index]
+        para_text = p.text or ""
+        effective_offset = _find_offset_with_context(para_text, body.char_offset, body.left_ctx, body.right_ctx)
+        ok, eff = _insert_text_at_paragraph_offset(p, effective_offset, token_text)
+        if not ok:
+            raise HTTPException(status_code=500, detail="failed to insert token")
 
+        doc.save(tmp_path)
+        _upload_docx_from_path(key, tmp_path)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    # update placeholders in index
     items = _read_index()
-    changed = False
-    for it in items:
-        if it.id == tid:
-            phs = set(it.placeholders or [])
-            if token_text not in phs:
-                phs.add(token_text)
-                it.placeholders = sorted(phs)
-                changed = True
+    phs = None
+    for x in items:
+        if x.id == tid:
+            cur = set(x.placeholders or [])
+            if token_text not in cur:
+                cur.add(token_text)
+            phs = sorted(cur)
+            x.placeholders = phs
+            x.uploadedAt = datetime.utcnow().isoformat() + "Z"
             break
-    if changed:
-        _write_index(items)
+    _write_index(items)
 
     return {
         "ok": True,
@@ -423,139 +482,94 @@ async def save_template_mapping(tid: str, payload: TemplateMapping):
     if payload.templateId != tid:
         raise HTTPException(status_code=400, detail="templateId mismatch")
 
-    path = _file_path_for_id(tid)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Template file not found on disk")
+    it = _get_template_obj(tid)
+    if not it:
+        raise HTTPException(status_code=404, detail="Template not found")
 
-    mapping_path = TEMPLATES_DIR / f"{tid}.mapping.json"
     mapping_obj: Dict[str, Any] = {
         "template_id": tid,
         "saved_at": datetime.utcnow().isoformat() + "Z",
         "mapping": [mi.model_dump() for mi in payload.mapping],
         "_format": payload._format or "docx-overlay",
     }
-    mapping_path.write_text(json.dumps(mapping_obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    put_bytes(_mapping_key(tid), json.dumps(mapping_obj, indent=2, ensure_ascii=False).encode("utf-8"), content_type="application/json")
 
-    items = _read_index()
     ph = sorted({m.placeholder for m in payload.mapping if m.placeholder})
-    changed = False
-    for it in items:
-        if it.id == tid:
-            it.placeholders = ph
-            changed = True
-            break
-    if changed:
-        _write_index(items)
+    _touch_index_after_save(tid, it.filename, placeholders=ph)
+    return {"ok": True, "templateId": tid, "placeholders": ph}
 
-    return {
-        "ok": True,
-        "templateId": tid,
-        "placeholders": ph,
-        "mapping_file": str(mapping_path),
-        "saved_at": datetime.utcnow().isoformat() + "Z",
-    }
-
-# -------------------- /api/contracts/templates/{tid}/save (backend persist) --------------------
 @router.post("/templates/{tid}/save")
 async def persist_updated_template(tid: str, request: Request):
-    """
-    Receive an updated DOCX (bytes) and overwrite it. No versioning.
-    """
-    path = _file_path_for_id(tid)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Template not found on disk")
+    it = _get_template_obj(tid)
+    if not it:
+        raise HTTPException(status_code=404, detail="Template not found")
 
-    try:
-        body = await request.body()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read body: {e}")
-
+    body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="Empty body")
 
+    key = _template_key_from_obj(it)
+
+    # optional backup
     try:
-        tmp = path.with_suffix(".tmp.docx")
-        with open(tmp, "wb") as f:
-            f.write(body)
-        tmp.replace(path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write docx: {e}")
+        old = get_bytes(key)
+        ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        put_bytes(_version_key(tid, ts), old, content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    except Exception:
+        pass
 
-    _touch_index_after_save(tid, path)
-    return {"ok": True, "id": tid, "path": str(path)}
+    put_bytes(key, body, content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    _touch_index_after_save(tid, it.filename)
+    return {"ok": True, "id": tid, "key": key}
 
-# -------------------- small no-op force-save (UI ping) --------------------
 @router.post("/templates/{tid}/force-save")
 async def force_save_noop(tid: str):
-    """
-    Frontend pings this to request a save. We rely on ONLYOFFICE autosave/callback,
-    so this is a harmless ACK to keep the UI happy.
-    """
     return {"ok": True, "id": tid}
 
-# -------------------- DELETE template --------------------
 @router.delete("/templates/{tid}", status_code=204)
 async def delete_template(tid: str):
-    """
-    Permanently delete a template: the .docx, mapping JSON, version backups,
-    and its index entry. Returns 204 on success.
-    """
     items = _read_index()
     idx = next((i for i, it in enumerate(items) if it.id == tid), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    # likely artifacts
-    docx_path = _file_path_for_id(tid)
-    mapping_path = TEMPLATES_DIR / f"{tid}.mapping.json"
-    versions_path = VERSIONS_DIR / tid
+    it = items[idx]
+    # delete docx + mapping (versions left as historical unless you want to delete prefix)
+    try:
+        delete_key(_template_key_from_obj(it))
+    except Exception:
+        pass
+    try:
+        delete_key(_mapping_key(tid))
+    except Exception:
+        pass
 
-    _safe_remove(docx_path)
-    _safe_remove(mapping_path)
-    _safe_remove(versions_path)
-
-    # remove from index
     del items[idx]
     _write_index(items)
-
     return Response(status_code=204)
 
-# -------------------- /api/onlyoffice/... (Document Server integration) --------------------
-def _doc_key_for(path: Path) -> str:
-    """
-    Build a deterministic key that changes when the file changes.
-    ONLYOFFICE requires a unique key per document version (<= 128 chars).
-    """
-    stat = path.stat()
-    raw = f"{path.name}:{int(stat.st_mtime_ns)}"
-    h = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    return h[:40]
+# -------------------- ONLYOFFICE --------------------
+def _doc_key_for_bytes(b: bytes, filename: str) -> str:
+    raw = hashlib.sha256(b + filename.encode("utf-8")).hexdigest()
+    return raw[:40]
 
 @onlyoffice_router.get("/config/{tid}")
 async def onlyoffice_config(tid: str, request: Request):
-    """
-    Return a minimal ONLYOFFICE editor config for the given template.
-    The Document Server will load the file from our /api/contracts/templates/{tid}/file URL.
-    """
-    tpl = _get_template_obj(tid)
-    if not tpl:
+    it = _get_template_obj(tid)
+    if not it:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    path = _file_path_for_id(tid)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Template file not found on disk")
-
-    docservice = DOCSERVICE_URL.rstrip("/")
-    # Absolute URL to .docx that DocumentServer can fetch
+    key = _template_key_from_obj(it)
+    data = get_bytes(key)
     doc_url = _abs_url(request, f"/api/contracts/templates/{tid}/file")
     callback_url = _abs_url(request, f"/api/onlyoffice/callback/{tid}")
-    title = path.name.split("_", 1)[-1]
-    key = _doc_key_for(path)
+    title = it.filename.split("_", 1)[-1]
+    doc_key = _doc_key_for_bytes(data, it.filename)
 
     config: Dict[str, Any] = {
         "document": {
             "fileType": "docx",
-            "key": key,
+            "key": doc_key,
             "title": title,
             "url": doc_url,
             "permissions": {
@@ -571,71 +585,184 @@ async def onlyoffice_config(tid: str, request: Request):
         "editorConfig": {
             "mode": "edit",
             "callbackUrl": callback_url,
-            "user": {
-                # In real apps, pull from your auth session
-                "id": "local-user",
-                "name": "Template Editor",
-            },
-            # ⬇️ autosave must be here (not in customization)
+            "user": {"id": "user", "name": "Template Editor"},
             "autosave": True,
             "customization": {
                 "toolbar": True,
-                "forcesave": True,     # shows Save button -> status 6
-                "hideRightMenu": True, # hide right panel
+                "forcesave": True,
+                "hideRightMenu": True,
                 "toolbarNoTabs": False,
                 "chat": False,
             },
         },
     }
-
-    return {"docServiceUrl": docservice, "config": config}
+    return {"docServiceUrl": DOCSERVICE_URL.rstrip("/"), "config": config}
 
 @onlyoffice_router.post("/callback/{tid}")
 async def onlyoffice_callback(tid: str, payload: Dict[str, Any] = Body(default={})):
-    """
-    Handle save callbacks from ONLYOFFICE Document Server.
-    On status 2 (autosave/close) or 6 (Force Save), download payload.url and overwrite the .docx.
-    MUST return {"error":0}.
-    """
-    path = _file_path_for_id(tid)
-    if not path.exists():
-        # Acknowledge anyway so DS doesn't retry forever
+    it = _get_template_obj(tid)
+    if not it:
         return {"error": 0}
 
+    status = int(payload.get("status") or 0)
+    if status not in (2, 6):
+        return {"error": 0}
+
+    download_url = payload.get("url")
+    if not download_url:
+        return {"error": 1}
+
+    headers: Dict[str, str] = {}
+    token = payload.get("token")
+    if isinstance(token, str) and token:
+        headers["Authorization"] = f"Bearer {token}"
+
     try:
-        status = int(payload.get("status") or 0)
+        r = requests.get(download_url, headers=headers, timeout=60)
+        r.raise_for_status()
+        put_bytes(
+            _template_key_from_obj(it),
+            r.content,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        _touch_index_after_save(tid, it.filename)
     except Exception:
-        status = 0
-
-    if status in (2, 6):
-        download_url = payload.get("url")
-        if not download_url:
-            return {"error": 1}
-
-        headers: Dict[str, str] = {}
-        token = payload.get("token")
-        if isinstance(token, str) and token:
-            headers["Authorization"] = f"Bearer {token}"
-
-        try:
-            r = requests.get(download_url, headers=headers, timeout=60)
-            r.raise_for_status()
-
-            # 🔁 Overwrite in place (no versions)
-            tmp = path.with_suffix(".tmp.docx")
-            with tmp.open("wb") as f:
-                f.write(r.content)
-            tmp.replace(path)
-
-            # update index timestamp (last modified)
-            _touch_index_after_save(tid, path)
-        except Exception as e:
-            print(f"[onlyoffice_callback] save error: {e}")
-            return {"error": 1}
+        return {"error": 1}
 
     return {"error": 0}
 
-# -------------------- Aliases under /contracts/templates/{tid}/onlyoffice-* --------------------
+# -------------------- WOPI (Collabora) for templates --------------------
+try:
+    from app.core.config import get_settings
+    from app.wopi.tokens import make_wopi_token, verify_wopi_token
+except Exception:
+    get_settings = None
+    make_wopi_token = None
+    verify_wopi_token = None
+
+
+def _wopi_settings():
+    if get_settings is None:
+        raise HTTPException(status_code=500, detail="WOPI not configured")
+    return get_settings()
+
+
+def _extract_wopi_token(request: Request) -> str:
+    token = request.query_params.get("access_token")
+    if token:
+        return token
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        return auth[7:].strip()
+    return request.headers.get("X-WOPI-AccessToken") or ""
+
+
+wopi_templates_router = APIRouter(prefix="/wopi/templates", tags=["WOPI Templates"])
+
+
+@wopi_templates_router.get("/files/{tid}")
+def wopi_template_check_file_info(tid: str, request: Request):
+    token = _extract_wopi_token(request)
+    settings = _wopi_settings()
+    payload = verify_wopi_token(token, settings.wopi_access_token_secret)
+    if str(payload.get("file_id")) != str(tid):
+        raise HTTPException(status_code=401, detail="Invalid WOPI token")
+    it = _get_template_obj(tid)
+    if not it:
+        raise HTTPException(status_code=404, detail="File not found")
+    key = _template_key_from_obj(it)
+    try:
+        data = get_bytes(key)
+        size = len(data)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+    base_name = it.filename or "template.docx"
+    user_id = (payload.get("user_id") or "inksuite-user").strip()
+    user_id = "".join(c if c.isalnum() else "_" for c in user_id)[:64] or "inksuite_user"
+    return JSONResponse({
+        "BaseFileName": base_name,
+        "Size": size,
+        "OwnerId": "inksuite",
+        "UserId": user_id,
+        "UserFriendlyName": payload.get("user_id") or "InkSuite User",
+        "Version": it.uploadedAt or str(id(it)),
+        "SupportsUpdate": True,
+        "SupportsLocks": True,
+        "SupportsGetLock": True,
+        "SupportsPutFile": True,
+        "SupportsRename": False,
+        "ReadOnly": False,
+        "UserCanWrite": True,
+    })
+
+
+@wopi_templates_router.get("/files/{tid}/contents")
+def wopi_template_get_file(tid: str, request: Request):
+    token = _extract_wopi_token(request)
+    settings = _wopi_settings()
+    payload = verify_wopi_token(token, settings.wopi_access_token_secret)
+    if str(payload.get("file_id")) != str(tid):
+        raise HTTPException(status_code=401, detail="Invalid WOPI token")
+    it = _get_template_obj(tid)
+    if not it:
+        raise HTTPException(status_code=404, detail="Template not found")
+    key = _template_key_from_obj(it)
+    try:
+        data = get_bytes(key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FastAPIResponse(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'inline; filename="{it.filename}"'},
+    )
+
+
+@wopi_templates_router.post("/files/{tid}/contents")
+async def wopi_template_put_file(tid: str, request: Request):
+    token = _extract_wopi_token(request)
+    settings = _wopi_settings()
+    payload = verify_wopi_token(token, settings.wopi_access_token_secret)
+    if str(payload.get("file_id")) != str(tid):
+        raise HTTPException(status_code=401, detail="Invalid WOPI token")
+    it = _get_template_obj(tid)
+    if not it:
+        raise HTTPException(status_code=404, detail="Template not found")
+    body = await request.body()
+    key = _template_key_from_obj(it)
+    put_bytes(key, body, content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    _touch_index_after_save(tid, it.filename)
+    return JSONResponse({"LastModifiedTime": datetime.utcnow().isoformat() + "Z"})
+
+
+@router.get("/templates/{tid}/collabora-config")
+def collabora_config_for_template(tid: str):
+    it = _get_template_obj(tid)
+    if not it:
+        raise HTTPException(status_code=404, detail="Template not found")
+    settings = _wopi_settings()
+    token = make_wopi_token(
+        file_id=tid,
+        user_id="inksuite-user",
+        ttl=settings.wopi_token_ttl_sec,
+        secret=settings.wopi_access_token_secret,
+    )
+    from urllib.parse import quote
+    wopi_src = f"{settings.public_base_url}/api/wopi/templates/files/{quote(tid, safe='')}"
+    base = settings.collabora_code_url
+    if "/loleaflet" in base or "/browser" in base or base.endswith(".html"):
+        editor_url = base
+    else:
+        editor_url = f"{base}/loleaflet/dist/loleaflet.html"
+    return JSONResponse({
+        "editorUrl": editor_url,
+        "wopiSrc": wopi_src,
+        "accessToken": token,
+        "readOnly": False,
+    })
+
+
+# aliases
 @router.get("/templates/{tid}/onlyoffice-config")
 async def alias_onlyoffice_config(tid: str, request: Request):
     return await onlyoffice_config(tid, request)

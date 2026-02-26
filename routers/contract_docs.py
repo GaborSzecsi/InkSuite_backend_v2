@@ -1,12 +1,16 @@
 # marble_app/routers/contract_docs.py
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response as FastAPIResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from datetime import datetime
 import os, json, re, uuid, hashlib
+from urllib.parse import quote
+
+import boto3
+from botocore.config import Config
 
 try:
     from docx import Document  # pip install python-docx
@@ -14,13 +18,51 @@ try:
 except Exception as e:
     raise RuntimeError("python-docx not installed. pip install python-docx") from e
 
+try:
+    from .storage_s3 import tenant_data_prefix, list_keys, get_bytes, put_bytes
+    _S3_AVAILABLE = True
+except Exception:
+    _S3_AVAILABLE = False
+
+# ----------------------- S3: same pattern as uploads_read (book info) -----------------------
+# Critical: regional endpoint + s3v4 + virtual addressing (what fixed uploads)
+_DRAFTS_AWS_REGION = (os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-2").strip()
+_DRAFTS_BUCKET = (os.getenv("S3_BUCKET") or os.getenv("TENANT_BUCKET") or "inksuite-data").strip()
+_tenant_base = (os.getenv("TENANT_PREFIX") or "tenants/marble-press").strip().rstrip("/")
+_DRAFTS_PREFIX = (os.getenv("DRAFTS_S3_PREFIX") or f"{_tenant_base}/data/TempDraftContracts").strip().rstrip("/") + "/"
+
+
+def _drafts_s3_endpoint() -> str:
+    return f"https://s3.{_DRAFTS_AWS_REGION}.amazonaws.com"
+
+
+def _drafts_s3_client():
+    """Same client setup as uploads_read.s3() so listing and get_object work in the same env."""
+    return boto3.client(
+        "s3",
+        region_name=_DRAFTS_AWS_REGION,
+        endpoint_url=_drafts_s3_endpoint(),
+        config=Config(
+            signature_version="s3v4",
+            retries={"max_attempts": 5, "mode": "standard"},
+            s3={"addressing_style": "virtual"},
+        ),
+    )
+
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 
-# ================== PATHS (aligned with main.py; flat files only) ==================
+# ================== PATHS ==================
 BASE_DATA_DIR = Path.home() / "Documents" / "marble_app" / "data"
-TEMPLATES_DIR = BASE_DATA_DIR / "Templates"           # template .docx files live directly here
-DRAFTS_DIR    = BASE_DATA_DIR / "TempDraftContracts"  # generated DOCX drafts here
+TEMPLATES_DIR = BASE_DATA_DIR / "Templates"
+DRAFTS_DIR    = BASE_DATA_DIR / "TempDraftContracts"
 INDEX_PATH    = DRAFTS_DIR / "index.json"
+
+if _S3_AVAILABLE:
+    DRAFTS_S3_PREFIX = tenant_data_prefix("data", "TempDraftContracts").rstrip("/") + "/"
+    DRAFT_INDEX_KEY = DRAFTS_S3_PREFIX + "index.json"
+else:
+    DRAFTS_S3_PREFIX = ""
+    DRAFT_INDEX_KEY = ""
 
 TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -53,13 +95,100 @@ SUBRIGHT_TOKENS = [
 ]
 
 def _load_index() -> List[dict]:
+    if _S3_AVAILABLE and DRAFT_INDEX_KEY:
+        try:
+            raw = get_bytes(DRAFT_INDEX_KEY)
+            data = json.loads(raw.decode("utf-8"))
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict) and isinstance(data.get("items"), list):
+                return data["items"]
+        except Exception:
+            pass
     try:
         return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
     except Exception:
         return []
 
+
 def _save_index(items: List[dict]) -> None:
+    if _S3_AVAILABLE and DRAFT_INDEX_KEY:
+        try:
+            put_bytes(DRAFT_INDEX_KEY, json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8"), content_type="application/json")
+            return
+        except Exception:
+            pass
     INDEX_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+_last_draft_list_error: Optional[str] = None
+
+
+def _list_draft_keys_direct() -> List[str]:
+    """List .docx keys using same S3 client as uploads_read (regional endpoint + s3v4 + virtual)."""
+    global _last_draft_list_error
+    _last_draft_list_error = None
+    keys: List[str] = []
+    if not _DRAFTS_BUCKET or not _DRAFTS_PREFIX:
+        _last_draft_list_error = "DRAFTS_BUCKET or DRAFTS_PREFIX empty"
+        return keys
+    try:
+        client = _drafts_s3_client()
+        token: Optional[str] = None
+        while True:
+            kwargs: Dict[str, Any] = {"Bucket": _DRAFTS_BUCKET, "Prefix": _DRAFTS_PREFIX, "MaxKeys": 1000}
+            if token:
+                kwargs["ContinuationToken"] = token
+            resp = client.list_objects_v2(**kwargs)
+            for obj in resp.get("Contents") or []:
+                k = (obj.get("Key") or "").strip()
+                if k and not k.endswith("/") and k.lower().endswith(".docx"):
+                    keys.append(k)
+            if not resp.get("IsTruncated"):
+                break
+            token = resp.get("NextContinuationToken") or None
+            if not token:
+                break
+    except Exception as e:
+        _last_draft_list_error = f"{type(e).__name__}: {e}"
+    return keys
+
+
+def _synthesize_drafts_from_s3() -> List[dict]:
+    """List .docx under TempDraftContracts. Use uploads_read-style client first (same as book info)."""
+    out: List[dict] = []
+    keys: List[str] = []
+
+    # 1) Same S3 client as uploads_read (what fixed book info) – try first
+    keys = _list_draft_keys_direct()
+
+    # 2) Fallback: storage_s3 if direct list was empty
+    if not keys and _S3_AVAILABLE and DRAFTS_S3_PREFIX:
+        try:
+            keys = list_keys(DRAFTS_S3_PREFIX)
+            keys = [k for k in keys if k and k.lower().endswith(".docx")]
+        except Exception:
+            pass
+
+    for key in keys:
+        if not key or not key.lower().endswith(".docx"):
+            continue
+        basename = key.split("/")[-1] if "/" in key else key
+        if basename == "index.json":
+            continue
+        stem = basename[:-5] if basename.lower().endswith(".docx") else basename
+        title = stem.replace("_", " ").strip() or stem
+        out.append({
+            "id": stem,
+            "uid": stem,
+            "title": title,
+            "filename": basename,
+            "s3_key": key,
+            "path": "",
+            "templateId": "",
+            "createdAt": datetime.utcnow().isoformat() + "Z",
+        })
+    return sorted(out, key=lambda x: x.get("createdAt", ""), reverse=True)
 
 def _find_template_path(template_id: str) -> Path:
     """
@@ -304,6 +433,9 @@ def _find_draft(item_id: str) -> dict | None:
     for it in _load_index():
         if str(it.get("id")) == str(item_id):
             return it
+    for it in _synthesize_drafts_from_s3():
+        if str(it.get("id")) == str(item_id):
+            return it
     return None
 
 def _public_base_url() -> str:
@@ -313,31 +445,222 @@ def _public_base_url() -> str:
     """
     return (os.getenv("PUBLIC_BASE_URL") or "http://host.docker.internal:8000").rstrip("/")
 
-# ------------------------ OnlyOffice config for drafts ------------------------
+
+# ------------------------ WOPI (Collabora Online) ------------------------
+# InkSuite = WOPI host. Collabora calls CheckFileInfo, GetFile, PutFile. Auth only via access_token.
+try:
+    from app.core.config import get_settings
+    from app.wopi.tokens import make_wopi_token, verify_wopi_token
+except Exception:
+    get_settings = None
+    make_wopi_token = None
+    verify_wopi_token = None
+
+
+def _wopi_settings():
+    if get_settings is None:
+        raise HTTPException(status_code=500, detail="WOPI not configured")
+    return get_settings()
+
+
+def _extract_wopi_token(request: Request) -> str:
+    """Extract WOPI access token from query (Collabora) or header."""
+    token = request.query_params.get("access_token")
+    if token:
+        return token
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        return auth[7:].strip()
+    return request.headers.get("X-WOPI-AccessToken") or ""
+
+def _put_draft_contract_file(item_id: str, content: bytes) -> None:
+    """Save draft file content to S3 or local path. Raises on error."""
+    it = _find_draft(item_id)
+    if not it:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    s3_key = it.get("s3_key")
+    if s3_key and _DRAFTS_BUCKET:
+        client = _drafts_s3_client()
+        client.put_object(
+            Bucket=_DRAFTS_BUCKET,
+            Key=s3_key,
+            Body=content,
+            ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        return
+    p = Path(it.get("path", ""))
+    if not p.suffix and not str(p).endswith(".docx"):
+        p = p.with_suffix(".docx")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(content)
+
+
+# WOPI router: mounted at /api/wopi so WOPISrc = PUBLIC_BASE_URL/api/wopi/files/<file_id>
+wopi_router = APIRouter(prefix="/wopi", tags=["WOPI"])
+
+def _wopi_file_info(file_id: str) -> tuple[str, int, str]:
+    """Return (BaseFileName, Size, Version) for a draft. Raises 404 if not found."""
+    it = _find_draft(file_id)
+    if not it:
+        raise HTTPException(status_code=404, detail="File not found")
+    base_name = it.get("filename") or (it.get("s3_key") or "").split("/")[-1] or Path(it.get("path", "")).name or "draft.docx"
+    size = 0
+    s3_key = it.get("s3_key")
+    if s3_key and _DRAFTS_BUCKET:
+        try:
+            client = _drafts_s3_client()
+            head = client.head_object(Bucket=_DRAFTS_BUCKET, Key=s3_key)
+            size = int(head.get("ContentLength", 0))
+        except Exception:
+            pass
+    if size == 0:
+        p = Path(it.get("path", ""))
+        if p.exists():
+            size = p.stat().st_size
+        else:
+            try:
+                size = len(__wopi_get_file_bytes(file_id))
+            except Exception:
+                pass
+    version = str(it.get("updated_at") or it.get("createdAt") or id(it))
+    return base_name, size, version
+
+
+@wopi_router.get("/files/{file_id}")
+def wopi_check_file_info(file_id: str, request: Request):
+    """WOPI CheckFileInfo. Must return exact fields or Collabora will not load."""
+    token = _extract_wopi_token(request)
+    settings = _wopi_settings()
+    payload = verify_wopi_token(token, settings.wopi_access_token_secret)
+    if str(payload.get("file_id")) != str(file_id):
+        raise HTTPException(status_code=401, detail="Invalid WOPI token")
+    base_name, size, version = _wopi_file_info(file_id)
+    user_id = (payload.get("user_id") or "inksuite-user").strip()
+    user_id = "".join(c if c.isalnum() else "_" for c in user_id)[:64] or "inksuite_user"
+    return JSONResponse({
+        "BaseFileName": base_name,
+        "Size": size,
+        "OwnerId": "inksuite",
+        "UserId": user_id,
+        "UserFriendlyName": payload.get("user_id") or "InkSuite User",
+        "Version": version,
+        "SupportsUpdate": True,
+        "SupportsLocks": True,
+        "SupportsGetLock": True,
+        "SupportsPutFile": True,
+        "SupportsRename": False,
+        "ReadOnly": False,
+        "UserCanWrite": True,
+    })
+
+def __wopi_get_file_bytes(file_id: str) -> bytes:
+    """Internal: get draft file bytes for WOPI GetFile."""
+    it = _find_draft(file_id)
+    if not it:
+        raise HTTPException(status_code=404, detail="File not found")
+    s3_key = it.get("s3_key")
+    if s3_key and _DRAFTS_BUCKET:
+        client = _drafts_s3_client()
+        resp = client.get_object(Bucket=_DRAFTS_BUCKET, Key=s3_key)
+        return resp["Body"].read()
+    p = Path(it.get("path", ""))
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return p.read_bytes()
+
+@wopi_router.get("/files/{file_id}/contents")
+def wopi_get_file(file_id: str, request: Request):
+    """WOPI GetFile: return file bytes. Collabora calls this to load the document."""
+    token = _extract_wopi_token(request)
+    settings = _wopi_settings()
+    payload = verify_wopi_token(token, settings.wopi_access_token_secret)
+    if str(payload.get("file_id")) != str(file_id):
+        raise HTTPException(status_code=401, detail="Invalid WOPI token")
+    data = __wopi_get_file_bytes(file_id)
+    it = _find_draft(file_id)
+    base_name = it.get("filename") or "draft.docx"
+    return FastAPIResponse(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'inline; filename="{base_name}"'},
+    )
+
+
+@wopi_router.post("/files/{file_id}/contents")
+async def wopi_put_file(file_id: str, request: Request):
+    """WOPI PutFile: Collabora POSTs raw bytes. Return 200 + JSON or saving breaks."""
+    token = _extract_wopi_token(request)
+    settings = _wopi_settings()
+    payload = verify_wopi_token(token, settings.wopi_access_token_secret)
+    if str(payload.get("file_id")) != str(file_id):
+        raise HTTPException(status_code=401, detail="Invalid WOPI token")
+    body = await request.body()
+    _put_draft_contract_file(file_id, body)
+    return JSONResponse({"LastModifiedTime": datetime.utcnow().isoformat() + "Z"})
+
+
+# ------------------------ Collabora config for drafts ------------------------
+@router.get("/draft-contracts/{item_id}/collabora-config")
+def collabora_config_for_draft(item_id: str):
+    """Return WOPI editor config. wopiSrc must be URL-encoded in the iframe."""
+    it = _find_draft(item_id)
+    if not it:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    settings = _wopi_settings()
+    token = make_wopi_token(
+        file_id=item_id,
+        user_id="inksuite-user",
+        ttl=settings.wopi_token_ttl_sec,
+        secret=settings.wopi_access_token_secret,
+    )
+    wopi_src = f"{settings.public_base_url}/api/wopi/files/{quote(item_id, safe='')}"
+    base = settings.collabora_code_url
+    if "/loleaflet" in base or "/browser" in base or base.endswith(".html"):
+        editor_url = base
+    else:
+        editor_url = f"{base}/loleaflet/dist/loleaflet.html"
+    return JSONResponse({
+        "editorUrl": editor_url,
+        "wopiSrc": wopi_src,
+        "accessToken": token,
+        "readOnly": False,
+    })
+
+
+@router.get("/drafts/{item_id}/collabora-config")
+def collabora_config_for_draft_alias(item_id: str):
+    return collabora_config_for_draft(item_id)
+
+
+# ------------------------ OnlyOffice config for drafts (legacy) ------------------------
 @router.get("/draft-contracts/{item_id}/onlyoffice-config")
 def onlyoffice_config_for_draft(item_id: str, request: Request):
     it = _find_draft(item_id)
     if not it:
         raise HTTPException(status_code=404, detail="Draft not found")
 
-    draft_path = Path(it.get("path", ""))
-    if not draft_path.exists():
-        raise HTTPException(status_code=404, detail="Draft file not found on disk")
+    s3_key = it.get("s3_key")
+    if s3_key and _DRAFTS_BUCKET:
+        key_src = f"{s3_key}-{item_id}"
+        doc_key = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:32]
+    else:
+        draft_path = Path(it.get("path", ""))
+        if not draft_path.exists():
+            raise HTTPException(status_code=404, detail="Draft file not found on disk")
+        stat = draft_path.stat()
+        key_src = f"{draft_path.name}-{stat.st_mtime_ns}-{stat.st_size}"
+        doc_key = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:32]
 
-    public_base = _public_base_url()  # e.g., http://host.docker.internal:8000
+    public_base = _public_base_url()
     file_url    = f"{public_base}/api/contracts/draft-contracts/{item_id}/file"
     callback_url = f"{public_base}/api/contracts/draft-contracts/{item_id}/callback"
 
-    # "key" must change when file changes; use mtime+size
-    stat = draft_path.stat()
-    key_src = f"{draft_path.name}-{stat.st_mtime_ns}-{stat.st_size}"
-    doc_key = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:32]
-
+    doc_title = it.get("filename") or (Path(it.get("path", "")).name if it.get("path") else "draft.docx")
     cfg = {
         "documentType": "word",
         "type": "desktop",
         "document": {
-            "title": it.get("filename") or draft_path.name,
+            "title": doc_title,
             "fileType": "docx",
             "key": doc_key,
             "url": file_url,
@@ -529,15 +852,65 @@ def generate_contract(req: GenerateRequest):
     return {"file": item}
 
 # -------------------------- Drafts listing & file ----------------------------
+def _merged_draft_items() -> List[dict]:
+    """Merge index (S3 or local) with S3 scan so all .docx in S3 appear; index wins for same id."""
+    index_items = _load_index()
+    s3_items = _synthesize_drafts_from_s3()
+    by_id: Dict[str, dict] = {str(it.get("id", "")): it for it in index_items if it.get("id")}
+    for it in s3_items:
+        kid = str(it.get("id", ""))
+        if kid and kid not in by_id:
+            by_id[kid] = it
+    out = list(by_id.values())
+    out.sort(key=lambda x: (x.get("createdAt") or ""), reverse=True)
+    return out
+
+
+@router.get("/draft-contracts/debug")
+def draft_contracts_debug():
+    """Return S3 config, raw list result and any error (for diagnosing empty draft list)."""
+    keys = _list_draft_keys_direct()
+    merged = _merged_draft_items()
+    return {
+        "config": {
+            "bucket": _DRAFTS_BUCKET,
+            "prefix": _DRAFTS_PREFIX,
+            "region": _DRAFTS_AWS_REGION,
+            "endpoint": _drafts_s3_endpoint(),
+        },
+        "directListKeysCount": len(keys),
+        "directListKeysSample": keys[:10],
+        "lastError": _last_draft_list_error,
+        "mergedItemsCount": len(merged),
+        "mergedItemsSample": [{"id": it.get("id"), "title": it.get("title"), "s3_key": it.get("s3_key")} for it in merged[:5]],
+    }
+
+
 @router.get("/draft-contracts")
 def list_draft_contracts():
-    return {"items": _load_index()}
+    return {"items": _merged_draft_items()}
 
 @router.get("/draft-contracts/{item_id}/file")
 def get_draft_contract_file(item_id: str):
     it = _find_draft(item_id)
     if not it:
         raise HTTPException(status_code=404, detail="Draft not found")
+
+    s3_key = it.get("s3_key")
+    if s3_key and _DRAFTS_BUCKET:
+        try:
+            # Same S3 client as uploads_read (regional endpoint + s3v4) so it works like book info
+            client = _drafts_s3_client()
+            resp = client.get_object(Bucket=_DRAFTS_BUCKET, Key=s3_key)
+            data = resp["Body"].read()
+            filename = it.get("filename") or s3_key.split("/")[-1]
+            return FastAPIResponse(
+                content=data,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={"Content-Disposition": f'inline; filename="{filename}"'},
+            )
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"Draft file not found in S3: {e}")
 
     p = Path(it.get("path", ""))
     if not p.exists():
@@ -548,3 +921,20 @@ def get_draft_contract_file(item_id: str):
         filename=p.name,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+@router.get("/drafts")
+def list_drafts_alias():
+    # Old frontend path alias -> new canonical endpoint
+    return list_draft_contracts()
+
+@router.get("/drafts/{item_id}/file")
+def get_draft_file_alias(item_id: str):
+    return get_draft_contract_file(item_id)
+
+@router.get("/drafts/{item_id}/onlyoffice-config")
+def onlyoffice_config_for_draft_alias(item_id: str, request: Request):
+    return onlyoffice_config_for_draft(item_id, request)
+
+@router.post("/drafts/{item_id}/callback")
+async def onlyoffice_callback_sink_alias(item_id: str, request: Request):
+    # Reuse the existing callback handler
+    return await onlyoffice_callback_sink(item_id, request)
