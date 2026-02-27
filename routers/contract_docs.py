@@ -614,11 +614,20 @@ def collabora_config_for_draft(item_id: str):
         secret=settings.wopi_access_token_secret,
     )
     wopi_src = f"{settings.public_base_url}/api/wopi/files/{quote(item_id, safe='')}"
-    base = settings.collabora_code_url
-    if "/loleaflet" in base or "/browser" in base or base.endswith(".html"):
+    base = (settings.collabora_code_url or "").rstrip("/")
+
+    # Allow passing a full URL (either /browser/... or /loleaflet/...) if you want.
+    if base.endswith(".html"):
         editor_url = base
+    elif "/browser" in base or "/loleaflet" in base:
+        # If someone configured collabora_code_url as https://.../browser or /loleaflet, normalize to the actual HTML entrypoint.
+        if "/browser" in base:
+            editor_url = base.split("/browser", 1)[0] + "/browser/dist/cool.html"
+        else:
+            editor_url = base.split("/loleaflet", 1)[0] + "/browser/dist/cool.html"
     else:
-        editor_url = f"{base}/loleaflet/dist/loleaflet.html"
+        # Normal case: base is just https://collabora.inksuite.io
+        editor_url = f"{base}/browser/dist/cool.html"
     return JSONResponse({
         "editorUrl": editor_url,
         "wopiSrc": wopi_src,
