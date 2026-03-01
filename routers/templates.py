@@ -748,7 +748,10 @@ def collabora_config_for_template(tid: str):
         secret=settings.wopi_access_token_secret,
     )
     from urllib.parse import quote
-    wopi_src = f"{settings.public_base_url}/api/wopi/templates/files/{quote(tid, safe='')}"
+    wopi_base = (os.getenv("WOPI_PUBLIC_BASE") or os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not wopi_base:
+        wopi_base = "http://host.docker.internal:8000"
+    wopi_src = f"{wopi_base}/api/wopi/templates/files/{quote(tid, safe='')}"
     base = settings.collabora_code_url
     if "/loleaflet" in base or "/browser" in base or base.endswith(".html"):
         editor_url = base

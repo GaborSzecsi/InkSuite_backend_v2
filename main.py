@@ -25,6 +25,9 @@ ENV_PATH = PROJECT_ROOT / ".env"
 if not ENV_PATH.exists():
     ENV_PATH = PROJECT_ROOT.parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=False)
+# Log so you can confirm which .env is loaded (and that WOPI_PUBLIC_BASE / PUBLIC_BASE_URL are in that file)
+logging.basicConfig(level=logging.INFO)
+logging.getLogger(__name__).info("Loaded env from %s (WOPI_PUBLIC_BASE=%s, PUBLIC_BASE_URL=%s)", ENV_PATH, os.getenv("WOPI_PUBLIC_BASE") or "(not set)", os.getenv("PUBLIC_BASE_URL") or "(not set)")
 
 # ---------------------------------------------------------------------
 # App

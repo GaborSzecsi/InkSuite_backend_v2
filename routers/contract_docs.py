@@ -7,7 +7,9 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 from datetime import datetime
 import os, json, re, uuid, hashlib
+import time
 from urllib.parse import quote
+
 
 import boto3
 from botocore.config import Config
@@ -598,6 +600,108 @@ async def wopi_put_file(file_id: str, request: Request):
     _put_draft_contract_file(file_id, body)
     return JSONResponse({"LastModifiedTime": datetime.utcnow().isoformat() + "Z"})
 
+# ------------------------ WOPI override dispatcher (Collabora POST /files/{id}) ------------------------
+
+# In-memory lock store (fine for single EC2 instance).
+# If you later scale horizontally, move this to Redis.
+_WOPI_LOCKS: dict[str, dict[str, Any]] = {}
+_WOPI_LOCK_TTL_SEC = 30 * 60  # 30 minutes
+
+def _now_epoch() -> float:
+    return time.time()
+
+def _lock_get(file_id: str) -> str:
+    ent = _WOPI_LOCKS.get(file_id)
+    if not ent:
+        return ""
+    if ent.get("exp", 0) < _now_epoch():
+        _WOPI_LOCKS.pop(file_id, None)
+        return ""
+    return str(ent.get("lock") or "")
+
+def _lock_set(file_id: str, lock_value: str) -> None:
+    _WOPI_LOCKS[file_id] = {"lock": lock_value, "exp": _now_epoch() + _WOPI_LOCK_TTL_SEC}
+
+def _lock_clear(file_id: str) -> None:
+    _WOPI_LOCKS.pop(file_id, None)
+
+@wopi_router.post("/files/{file_id}")
+async def wopi_files_override(file_id: str, request: Request):
+    """
+    Collabora uses POST /wopi/files/{id} with X-WOPI-Override for:
+      - LOCK / UNLOCK / REFRESH_LOCK / GET_LOCK
+      - PUT (save) in some deployments (yours!)
+    Your logs show Collabora calling POST /api/wopi/files/{id} and getting 405.
+    This endpoint fixes that.
+    """
+    token = _extract_wopi_token(request)
+    settings = _wopi_settings()
+    payload = verify_wopi_token(token, settings.wopi_access_token_secret)
+    if str(payload.get("file_id")) != str(file_id):
+        raise HTTPException(status_code=401, detail="Invalid WOPI token")
+
+    override = (request.headers.get("X-WOPI-Override") or "").upper().strip()
+    lock_value = request.headers.get("X-WOPI-Lock") or ""
+
+    if not override:
+        raise HTTPException(status_code=400, detail="Missing X-WOPI-Override")
+
+    # ---- Lock ops ----
+    if override == "GET_LOCK":
+        cur = _lock_get(file_id)
+        resp = FastAPIResponse(content=b"", media_type="text/plain")
+        resp.headers["X-WOPI-Lock"] = cur
+        return resp
+
+    if override == "LOCK":
+        if not lock_value:
+            raise HTTPException(status_code=400, detail="Missing X-WOPI-Lock")
+        cur = _lock_get(file_id)
+        if cur and cur != lock_value:
+            # WOPI lock conflict
+            resp = FastAPIResponse(status_code=409, content=b"")
+            resp.headers["X-WOPI-Lock"] = cur
+            return resp
+        _lock_set(file_id, lock_value)
+        return FastAPIResponse(content=b"")
+
+    if override == "REFRESH_LOCK":
+        if not lock_value:
+            raise HTTPException(status_code=400, detail="Missing X-WOPI-Lock")
+        cur = _lock_get(file_id)
+        if cur and cur != lock_value:
+            resp = FastAPIResponse(status_code=409, content=b"")
+            resp.headers["X-WOPI-Lock"] = cur
+            return resp
+        _lock_set(file_id, lock_value)
+        return FastAPIResponse(content=b"")
+
+    if override == "UNLOCK":
+        cur = _lock_get(file_id)
+        if cur and lock_value and cur != lock_value:
+            resp = FastAPIResponse(status_code=409, content=b"")
+            resp.headers["X-WOPI-Lock"] = cur
+            return resp
+        _lock_clear(file_id)
+        return FastAPIResponse(content=b"")
+
+    # ---- Save (PUT) ----
+    if override == "PUT":
+        # Collabora may send the file bytes directly on this endpoint.
+        body = await request.body()
+        if not body:
+            raise HTTPException(status_code=400, detail="Empty body on PUT override")
+
+        _put_draft_contract_file(file_id, body)
+
+        # Return 200 + optional version header
+        resp = JSONResponse({"LastModifiedTime": datetime.utcnow().isoformat() + "Z"})
+        resp.headers["X-WOPI-ItemVersion"] = str(int(_now_epoch()))
+        return resp
+
+    # Not required immediately, but you can add later:
+    # PUT_RELATIVE, RENAME_FILE, DELETE, etc.
+    return JSONResponse({"detail": f"Unsupported X-WOPI-Override: {override}"}, status_code=501)
 
 # ------------------------ Collabora config for drafts ------------------------
 @router.get("/draft-contracts/{item_id}/collabora-config")
@@ -613,26 +717,24 @@ def collabora_config_for_draft(item_id: str):
         ttl=settings.wopi_token_ttl_sec,
         secret=settings.wopi_access_token_secret,
     )
-    wopi_src = f"{settings.public_base_url}/api/wopi/files/{quote(item_id, safe='')}"
-    base = (settings.collabora_code_url or "").rstrip("/")
-
-    # Allow passing a full URL (either /browser/... or /loleaflet/...) if you want.
-    if base.endswith(".html"):
+    # Read WOPI base at request time so env changes (e.g. .env edit + restart) are picked up
+    wopi_base = (os.getenv("WOPI_PUBLIC_BASE") or os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not wopi_base:
+        wopi_base = "http://host.docker.internal:8000"
+    wopi_src = f"{wopi_base}/api/wopi/files/{quote(item_id, safe='')}"
+    base = settings.collabora_code_url
+    if "/loleaflet" in base or "/browser" in base or base.endswith(".html"):
         editor_url = base
-    elif "/browser" in base or "/loleaflet" in base:
-        # If someone configured collabora_code_url as https://.../browser or /loleaflet, normalize to the actual HTML entrypoint.
-        if "/browser" in base:
-            editor_url = base.split("/browser", 1)[0] + "/browser/dist/cool.html"
-        else:
-            editor_url = base.split("/loleaflet", 1)[0] + "/browser/dist/cool.html"
     else:
-        # Normal case: base is just https://collabora.inksuite.io
-        editor_url = f"{base}/browser/dist/cool.html"
+        editor_url = f"{base}/loleaflet/dist/loleaflet.html"
     return JSONResponse({
         "editorUrl": editor_url,
         "wopiSrc": wopi_src,
         "accessToken": token,
         "readOnly": False,
+        "debug_wopi_public_base": os.getenv("WOPI_PUBLIC_BASE"),
+        "debug_public_base_url": os.getenv("PUBLIC_BASE_URL"),
+        "debug_effective_public_base": wopi_base,
     })
 
 

@@ -29,8 +29,11 @@ class Settings:
         # WOPI (Collabora Online)
         self.wopi_access_token_secret = _env("WOPI_ACCESS_TOKEN_SECRET") or _env("WOPI_SECRET") or "inksuite-wopi-dev-secret-change-in-production"
         self.wopi_token_ttl_sec = int(_env("WOPI_TOKEN_TTL_SEC", "3600"))
-        # In production set PUBLIC_BASE_URL=https://api.inksuite.io so WOPI URLs are reachable by Collabora
+        # Base URL for general use (callbacks, links). Default works for Docker on Windows/Mac.
         self.public_base_url = (_env("PUBLIC_BASE_URL") or "http://host.docker.internal:8000").rstrip("/")
+        # Base URL used for wopiSrc in collabora-config. Prefer WOPI_PUBLIC_BASE so Collabora (on another host) can reach the API.
+        # Set WOPI_PUBLIC_BASE=https://devwopi.inksuite.io or https://api.inksuite.io so wopiSrc is correct.
+        self.wopi_public_base_url = (_env("WOPI_PUBLIC_BASE") or _env("PUBLIC_BASE_URL") or "http://host.docker.internal:8000").rstrip("/")
         self.collabora_code_url = (_env("COLLABORA_CODE_URL") or _env("COLLABORA_EDITOR_URL") or "http://localhost:9980").rstrip("/")
 
 
