@@ -4,8 +4,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr, Field
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.tenants.dependencies import require_role
 from app.auth.service import TENANT_ADMIN
@@ -17,6 +17,9 @@ Provider = Literal["bluehost", "gmail", "microsoft", "custom"]
 TlsMode = Literal["starttls", "ssl"]
 
 
+# ----------------------------
+# Models
+# ----------------------------
 class OrgProfileOut(BaseModel):
     company_name: str = ""
     company_address: str = ""
@@ -47,7 +50,8 @@ class EmailSettingsOut(BaseModel):
 class EmailSettingsIn(BaseModel):
     provider: Provider = "custom"
     from_name: str = ""
-    from_email: EmailStr | str = ""  # allow empty string, validate when provided
+    # Accept empty string, but if not empty it must be a valid email
+    from_email: str = ""
     smtp_host: str = ""
     smtp_port: int = 587
     tls_mode: TlsMode = "starttls"
@@ -55,9 +59,19 @@ class EmailSettingsIn(BaseModel):
     smtp_password: Optional[str] = Field(default=None, description="write-only; DO NOT store in DB")
     is_enabled: bool = False
 
+    @field_validator("from_email")
+    @classmethod
+    def validate_from_email(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v == "":
+            return ""
+        # validate as EmailStr when provided
+        EmailStr._validate(v)  # raises if invalid (works in pydantic v2)
+        return v
+
 
 # ----------------------------
-# row helpers
+# Row helpers
 # ----------------------------
 def _row_to_org(row) -> OrgProfileOut:
     if not row:
@@ -106,7 +120,7 @@ def _row_to_email(row) -> EmailSettingsOut:
 
 
 # ----------------------------
-# org routes
+# Org routes
 # ----------------------------
 @router.get("/organization", response_model=OrgProfileOut)
 def get_org_profile(
@@ -155,7 +169,7 @@ def upsert_org_profile(
 
 
 # ----------------------------
-# email routes
+# Email routes
 # ----------------------------
 @router.get("/email", response_model=EmailSettingsOut)
 def get_email_settings(
@@ -185,15 +199,14 @@ def upsert_email_settings(
     _=Depends(require_role(TENANT_ADMIN)),
 ):
     """
-    NOTE:
-    - smtp_password is intentionally NOT stored in Postgres.
-    - Until you wire Secrets Manager, we PRESERVE any existing smtp_secret_id.
-      (So UI edits don't accidentally wipe it.)
+    NOTES:
+    - smtp_password is write-only and not stored in Postgres.
+    - Until Secrets Manager is wired, preserve existing smtp_secret_id so UI edits
+      don't wipe it.
     """
     with db_conn() as conn:
         cur = conn.cursor()
 
-        # preserve existing secret id for now
         cur.execute(
             "SELECT smtp_secret_id FROM tenant_email_settings WHERE tenant_slug = %s",
             (tenant_slug,),
@@ -206,7 +219,7 @@ def upsert_email_settings(
             else:
                 existing_secret_id = existing[0] or ""
 
-        # If later you wire secrets manager, you'd do:
+        # If later you wire secrets:
         # if body.smtp_password: existing_secret_id = upsert_secret(...)
 
         cur.execute(
@@ -237,7 +250,7 @@ def upsert_email_settings(
                 tenant_slug,
                 body.provider,
                 body.from_name or "",
-                str(body.from_email or ""),
+                body.from_email or "",
                 body.smtp_host or "",
                 int(body.smtp_port or 587),
                 body.tls_mode,
