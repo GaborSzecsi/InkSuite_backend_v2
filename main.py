@@ -93,6 +93,7 @@ from app.auth.router import router as auth_router  # noqa: E402
 from app.tenants.router import router as tenants_router  # noqa: E402
 from app.invites.router import router as invites_router  # noqa: E402
 from app.admin.router import router as admin_router  # noqa: E402
+from app.settings.router import router as settings_router
 
 # ---------------------------------------------------------------------
 # Import routers (AFTER env load) - routers package is at project root (routers/)
@@ -114,6 +115,7 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(tenants_router, prefix="/api")
 app.include_router(invites_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
+app.include_router(settings_router, prefix="/api")
 
 # Uploads read router: mount ONCE.
 # If uploads_read has absolute paths like "/api/uploads/book-assets" inside it, mount WITHOUT prefix.
