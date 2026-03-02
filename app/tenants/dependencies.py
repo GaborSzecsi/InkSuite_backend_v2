@@ -1,14 +1,13 @@
 # app/tenants/dependencies.py
 from __future__ import annotations
 
-from typing import Annotated, List
+from typing import Annotated, List, Sequence, Union
 
 from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.dependencies import get_current_user
 from app.tenants.resolver import resolve_tenant
 
-# Reuse your auth/service helpers (these are sync; ok to call inside async deps)
 from app.auth.service import get_user_db_record_from_claims, is_superadmin
 
 
@@ -24,11 +23,11 @@ async def require_tenant_access(
     """
     Resolve tenant and ensure user has membership (or is superadmin).
 
-    Returns a context dict:
+    Returns ctx:
       {
         "tenant": {...},
         "user": {...},
-        "membership_role": "tenant_admin" | "tenant_editor" | "superadmin"
+        "membership_role": "tenant_admin" | "tenant_editor" | "superadmin" | ...
       }
     """
     tenant = resolve_tenant(tenant_slug)
@@ -42,7 +41,6 @@ async def require_tenant_access(
     if is_superadmin(user.get("platform_role")):
         return {"tenant": tenant, "user": user, "membership_role": "superadmin"}
 
-    # membership check
     from app.core.db import db_conn  # local import avoids circulars during startup
 
     with db_conn() as conn, conn.cursor() as cur:
@@ -59,15 +57,24 @@ async def require_tenant_access(
     if not row:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
+    # row[0] should be like "tenant_admin"
     return {"tenant": tenant, "user": user, "membership_role": row[0]}
 
 
-def require_role(roles: List[str]):
+def require_role(roles: Union[str, Sequence[str]]):
     """
     Dependency factory: membership_role must be in roles (or superadmin).
+    Accepts a single role string or a list/tuple of roles.
     """
 
-    allowed = {r.strip().lower() for r in (roles or [])}
+    if roles is None:
+        roles_list: List[str] = []
+    elif isinstance(roles, str):
+        roles_list = [roles]
+    else:
+        roles_list = list(roles)
+
+    allowed = {r.strip().lower() for r in roles_list if (r or "").strip()}
 
     async def _require_role(
         ctx: Annotated[dict, Depends(require_tenant_access)],
