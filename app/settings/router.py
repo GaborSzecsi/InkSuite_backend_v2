@@ -1,9 +1,11 @@
 # app/settings/router.py
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr, Field
+from datetime import datetime
 from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 
 from app.tenants.dependencies import require_role
 from app.auth.service import TENANT_ADMIN
@@ -15,6 +17,9 @@ Provider = Literal["bluehost", "gmail", "microsoft", "custom"]
 TlsMode = Literal["starttls", "ssl"]
 
 
+# ----------------------------
+# Schemas
+# ----------------------------
 class OrgProfileOut(BaseModel):
     company_name: str = ""
     company_address: str = ""
@@ -35,10 +40,10 @@ class EmailSettingsOut(BaseModel):
     smtp_port: int = 587
     tls_mode: TlsMode = "starttls"
     smtp_username: str = ""
-    smtp_secret_id: str = ""
+    smtp_secret_id: str = ""  # stored in DB (Secrets Manager secret name/ARN)
     is_enabled: bool = False
     last_test_status: Literal["never", "ok", "failed"] = "never"
-    last_test_at: Optional[str] = None
+    last_test_at: Optional[datetime] = None
     last_test_error: str = ""
 
 
@@ -52,61 +57,48 @@ class EmailSettingsIn(BaseModel):
     smtp_username: str = ""
     smtp_password: Optional[str] = None  # write-only; DO NOT store in DB
     is_enabled: bool = False
+
+
 # ----------------------------
 # DB helpers
 # ----------------------------
 def _row_to_org(row) -> OrgProfileOut:
     if not row:
         return OrgProfileOut()
-    # row is dict-like (psycopg row_factory may vary). Support tuple too.
-    if isinstance(row, dict):
-        return OrgProfileOut(
-            company_name=row.get("company_name", "") or "",
-            company_address=row.get("company_address", "") or "",
-            ein=row.get("ein", "") or "",
-        )
-    # fallback tuple ordering
-    return OrgProfileOut(company_name=row[0] or "", company_address=row[1] or "", ein=row[2] or "")
+
+    # tuple ordering from SELECT company_name, company_address, ein
+    return OrgProfileOut(
+        company_name=(row[0] or ""),
+        company_address=(row[1] or ""),
+        ein=(row[2] or ""),
+    )
 
 
 def _row_to_email(row) -> EmailSettingsOut:
     if not row:
         return EmailSettingsOut()
-    if isinstance(row, dict):
-        return EmailSettingsOut(
-            provider=row.get("provider", "custom") or "custom",
-            from_name=row.get("from_name", "") or "",
-            from_email=row.get("from_email", "") or "",
-            smtp_host=row.get("smtp_host", "") or "",
-            smtp_port=int(row.get("smtp_port", 587) or 587),
-            tls_mode=row.get("tls_mode", "starttls") or "starttls",
-            smtp_username=row.get("smtp_username", "") or "",
-            smtp_secret_id=row.get("smtp_secret_id", "") or "",
-            is_enabled=bool(row.get("is_enabled", False)),
-            last_test_status=row.get("last_test_status", "never") or "never",
-            last_test_at=(row.get("last_test_at") or None),
-            last_test_error=row.get("last_test_error", "") or "",
-        )
+
+    # tuple ordering from SELECT provider, from_name, from_email, smtp_host, smtp_port, tls_mode,
+    #                      smtp_username, smtp_secret_id, is_enabled, last_test_status, last_test_at, last_test_error
     return EmailSettingsOut(
-        provider=row[0] or "custom",
-        from_name=row[1] or "",
-        from_email=row[2] or "",
-        smtp_host=row[3] or "",
+        provider=(row[0] or "custom"),
+        from_name=(row[1] or ""),
+        from_email=(row[2] or ""),
+        smtp_host=(row[3] or ""),
         smtp_port=int(row[4] or 587),
-        tls_mode=row[5] or "starttls",
-        smtp_username=row[6] or "",
-        smtp_secret_id=row[7] or "",
+        tls_mode=(row[5] or "starttls"),
+        smtp_username=(row[6] or ""),
+        smtp_secret_id=(row[7] or ""),
         is_enabled=bool(row[8]),
-        last_test_status=row[9] or "never",
-        last_test_at=row[10] if row[10] else None,
-        last_test_error=row[11] or "",
+        last_test_status=(row[9] or "never"),
+        last_test_at=(row[10] or None),
+        last_test_error=(row[11] or ""),
     )
 
 
 # ----------------------------
 # Routes
 # ----------------------------
-
 @router.get("/organization", response_model=OrgProfileOut)
 def get_org_profile(
     tenant_slug: str,
@@ -147,7 +139,12 @@ def upsert_org_profile(
               updated_at = now()
             RETURNING company_name, company_address, ein
             """,
-            (tenant_slug, body.company_name or "", body.company_address or "", body.ein or ""),
+            (
+                tenant_slug,
+                body.company_name or "",
+                body.company_address or "",
+                body.ein or "",
+            ),
         )
         row = cur.fetchone()
         conn.commit()
@@ -183,11 +180,26 @@ def upsert_email_settings(
     body: EmailSettingsIn,
     _=Depends(require_role(TENANT_ADMIN)),
 ):
-    # IMPORTANT: smtp_password is intentionally ignored here (write-only)
-    # Later you will store it in Secrets Manager and set smtp_secret_id.
+    """
+    NOTE:
+    - smtp_password is intentionally NOT stored in Postgres.
+    - For now, we preserve smtp_secret_id if it already exists.
+      Later, when you wire Secrets Manager, you will:
+        - create/update secret when smtp_password is provided
+        - store secret id/arn in smtp_secret_id
+    """
 
     with db_conn() as conn:
         cur = conn.cursor()
+
+        # Preserve existing smtp_secret_id so saving settings doesn't wipe it out.
+        cur.execute(
+            "SELECT smtp_secret_id FROM tenant_email_settings WHERE tenant_slug=%s",
+            (tenant_slug,),
+        )
+        existing = cur.fetchone()
+        existing_secret_id = (existing[0] if existing else "") or ""
+
         cur.execute(
             """
             INSERT INTO tenant_email_settings (
@@ -221,7 +233,7 @@ def upsert_email_settings(
                 int(body.smtp_port or 587),
                 body.tls_mode,
                 body.smtp_username or "",
-                "",  # keep empty until you wire Secrets Manager
+                existing_secret_id,  # preserve until Secrets Manager wiring
                 bool(body.is_enabled),
             ),
         )
