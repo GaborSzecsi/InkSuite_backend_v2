@@ -6,8 +6,9 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
+import boto3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
 from app.tenants.dependencies import require_role
@@ -97,12 +98,13 @@ def list_members(ctx: dict = Depends(require_role([TENANT_ADMIN]))):
             cur.execute(
                 """
                 SELECT
-                    u.id::text,
-                    u.email,
-                    u.platform_role,
-                    m.role,
-                    u.created_at,
-                    m.module_permissions
+                    u.id::text,         -- 0
+                    u.email,            -- 1
+                    u.full_name,        -- 2
+                    u.platform_role,    -- 3
+                    m.role,             -- 4
+                    u.created_at,       -- 5
+                    m.module_permissions -- 6
                 FROM memberships m
                 JOIN users u ON u.id = m.user_id
                 WHERE m.tenant_id = %s
@@ -112,15 +114,16 @@ def list_members(ctx: dict = Depends(require_role([TENANT_ADMIN]))):
             )
             rows = cur.fetchall()
         except Exception:
-            # Back-compat if module_permissions not present
+            # Back-compat: if module_permissions column missing
             cur.execute(
                 """
                 SELECT
-                    u.id::text,
-                    u.email,
-                    u.platform_role,
-                    m.role,
-                    u.created_at
+                    u.id::text,       -- 0
+                    u.email,          -- 1
+                    u.full_name,      -- 2
+                    u.platform_role,  -- 3
+                    m.role,           -- 4
+                    u.created_at      -- 5
                 FROM memberships m
                 JOIN users u ON u.id = m.user_id
                 WHERE m.tenant_id = %s
@@ -128,23 +131,23 @@ def list_members(ctx: dict = Depends(require_role([TENANT_ADMIN]))):
                 """,
                 (tenant["id"],),
             )
-            rows = [r + (None,) for r in cur.fetchall()]
+            rows = [r + (None,) for r in cur.fetchall()]  # add module_permissions slot
 
-    return {
-        "ok": True,
-        "tenant": tenant["slug"],
-        "members": [
+    members = []
+    for r in rows:
+        members.append(
             {
                 "user_id": r[0],
                 "email": r[1],
-                "platform_role": r[2],
-                "tenant_role": r[3],
-                "created_at": r[4].isoformat() if r[4] else None,
-                "module_permissions": (r[5] or {}) if len(r) > 5 else {},
+                "full_name": r[2] or "",
+                "platform_role": r[3],
+                "tenant_role": r[4],
+                "created_at": r[5].isoformat() if r[5] else None,
+                "module_permissions": r[6] or {},
             }
-            for r in rows
-        ],
-    }
+        )
+
+    return {"ok": True, "tenant": tenant["slug"], "members": members}
 
 
 # -------------------------------------------------
@@ -230,6 +233,7 @@ def list_pending_invites(ctx: dict = Depends(require_role([TENANT_ADMIN]))):
                 SELECT
                     i.id::text,
                     i.email,
+                    u.full_name,
                     i.role,
                     i.expires_at,
                     i.created_at,
@@ -249,6 +253,7 @@ def list_pending_invites(ctx: dict = Depends(require_role([TENANT_ADMIN]))):
                 SELECT
                     i.id::text,
                     i.email,
+                    u.full_name,
                     i.role,
                     i.expires_at,
                     i.created_at
@@ -495,3 +500,57 @@ def resend_invite(invite_id: str, ctx: dict = Depends(require_role([TENANT_ADMIN
     if email_error:
         resp["email_error"] = email_error
     return resp
+
+# -------------------------------------------------
+# Reset Password
+# -------------------------------------------------
+def _cognito_client():
+    return boto3.client("cognito-idp", region_name=os.environ.get("AWS_REGION") or "us-east-2")
+
+def _cognito_user_pool_id() -> str:
+    v = (os.environ.get("COGNITO_USER_POOL_ID") or "").strip()
+    if not v:
+        raise HTTPException(status_code=500, detail="COGNITO_USER_POOL_ID is not set")
+    return v
+
+@router.post("/{tenant_slug}/users/{user_id}/reset-password")
+def reset_user_password(
+    user_id: str,
+    ctx: dict = Depends(require_role([TENANT_ADMIN])),
+):
+    tenant = ctx["tenant"]
+
+    from app.core.db import db_conn
+
+    # 1) ensure this user is in THIS tenant
+    with db_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT u.email
+            FROM memberships m
+            JOIN users u ON u.id = m.user_id
+            WHERE m.tenant_id = %s AND m.user_id = %s
+            """,
+            (tenant["id"], user_id),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found in this tenant")
+
+    email = row[0]
+    client = _cognito_client()
+    user_pool_id = _cognito_user_pool_id()
+
+    # 2) trigger Cognito reset flow (email/SMS depends on pool config)
+    try:
+        client.admin_reset_user_password(
+            UserPoolId=user_pool_id,
+            Username=email,  # assuming Cognito username is email
+        )
+    except client.exceptions.UserNotFoundException:
+        raise HTTPException(status_code=404, detail="Cognito user not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reset password failed: {e}")
+
+    return {"ok": True, "user_id": user_id, "email": email}

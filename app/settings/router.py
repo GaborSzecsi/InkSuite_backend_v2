@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from email.message import EmailMessage
+import json
+import smtplib
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.tenants.dependencies import require_role
@@ -162,6 +167,53 @@ def _row_to_email(row) -> EmailSettingsOut:
     )
 
 
+def _load_smtp_secret(secret_id: str) -> tuple[str, str]:
+    """
+    Load SMTP username/password from AWS Secrets Manager.
+    Expects SecretString to be JSON with keys like username/user/smtp_username and password/pass/smtp_password.
+    """
+    if not secret_id:
+        raise ValueError("SMTP secret id is not configured.")
+
+    client = boto3.client("secretsmanager")
+    try:
+        resp = client.get_secret_value(SecretId=secret_id)
+    except (ClientError, BotoCoreError) as e:
+        raise ValueError(f"Failed to read SMTP secret from Secrets Manager: {e}")
+
+    raw = resp.get("SecretString")
+    if not raw and "SecretBinary" in resp:
+        raw = resp["SecretBinary"]
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="ignore")
+
+    if not raw:
+        raise ValueError("SMTP secret is empty.")
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        raise ValueError("SMTP secret is not valid JSON.")
+
+    username = (
+        data.get("username")
+        or data.get("user")
+        or data.get("smtp_username")
+        or ""
+    )
+    password = (
+        data.get("password")
+        or data.get("pass")
+        or data.get("smtp_password")
+        or ""
+    )
+
+    if not username or not password:
+        raise ValueError("SMTP secret must contain username and password.")
+
+    return str(username), str(password)
+
+
 # ----------------------------
 # Org routes
 # ----------------------------
@@ -310,3 +362,110 @@ def upsert_email_settings(
         conn.commit()
 
     return _row_to_email(row)
+
+
+@router.post("/email/test", response_model=EmailSettingsOut)
+def send_test_email(
+    tenant_slug: str,
+    _=Depends(require_role(TENANT_ADMIN)),
+):
+    """
+    Send a test email using the tenant's SMTP settings and AWS Secrets Manager secret.
+
+    - Uses from_email as the recipient.
+    - Updates last_test_status/last_test_at/last_test_error in Postgres.
+    """
+    _ensure_settings_tables()
+
+    # Load current settings (including secret id)
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT provider, from_name, from_email, smtp_host, smtp_port, tls_mode,
+                   smtp_username, smtp_secret_id, is_enabled,
+                   last_test_status, last_test_at, last_test_error
+            FROM tenant_email_settings
+            WHERE tenant_slug = %s
+            """,
+            (tenant_slug,),
+        )
+        row = cur.fetchone()
+
+    settings = _row_to_email(row)
+
+    # Basic validation: if missing required fields, mark as failed but do NOT throw 500.
+    problems: list[str] = []
+    if not settings.from_email:
+        problems.append("From email is not configured.")
+    if not settings.smtp_host:
+        problems.append("SMTP host is not configured.")
+    if not settings.smtp_port:
+        problems.append("SMTP port is not configured.")
+    if not settings.smtp_secret_id:
+        problems.append("SMTP secret id is not configured.")
+    if not settings.is_enabled:
+        problems.append("Email sending is disabled for this tenant.")
+
+    error_msg: str | None = None
+    new_status = "never"
+
+    if problems:
+        new_status = "failed"
+        error_msg = " ".join(problems)
+    else:
+        # Try to send; convert ALL errors into failed status instead of 500s.
+        try:
+            username, password = _load_smtp_secret(settings.smtp_secret_id)
+
+            msg = EmailMessage()
+            if settings.from_name:
+                msg["From"] = f"{settings.from_name} <{settings.from_email}>"
+            else:
+                msg["From"] = settings.from_email
+            msg["To"] = settings.from_email
+            msg["Subject"] = f"[InkSuite] SMTP test for {tenant_slug}"
+            msg.set_content(
+                "This is a test email from InkSuite using your custom SMTP settings.\n\n"
+                "If you received this message, your SMTP configuration is working."
+            )
+
+            if settings.tls_mode == "ssl":
+                with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port) as smtp:
+                    smtp.login(username, password)
+                    smtp.send_message(msg)
+            else:
+                with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as smtp:
+                    smtp.ehlo()
+                    smtp.starttls()
+                    smtp.ehlo()
+                    smtp.login(username, password)
+                    smtp.send_message(msg)
+
+            new_status = "ok"
+            error_msg = ""
+        except Exception as e:
+            new_status = "failed"
+            error_msg = str(e)[:2000]
+
+    # Persist test result and return latest settings snapshot
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE tenant_email_settings
+            SET last_test_status = %s,
+                last_test_at = now(),
+                last_test_error = %s,
+                updated_at = now()
+            WHERE tenant_slug = %s
+            RETURNING provider, from_name, from_email, smtp_host, smtp_port, tls_mode,
+                      smtp_username, smtp_secret_id, is_enabled,
+                      last_test_status, last_test_at, last_test_error
+            """,
+            (new_status, error_msg or "", tenant_slug),
+        )
+        updated = cur.fetchone()
+        conn.commit()
+
+    return _row_to_email(updated)
