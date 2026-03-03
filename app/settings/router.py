@@ -1,4 +1,5 @@
 # app/settings/router.py
+# Extra tenant info (org profile, email settings) in the same DB as auth/users. Tables created on first use.
 from __future__ import annotations
 
 from datetime import datetime
@@ -12,6 +13,48 @@ from app.auth.service import TENANT_ADMIN
 from app.core.db import db_conn
 
 router = APIRouter(prefix="/tenants/{tenant_slug}/settings", tags=["Settings"])
+
+
+_settings_tables_ensured = False
+
+
+def _ensure_settings_tables():
+    """Create tenant_org_profile and tenant_email_settings if missing. One DB, same as auth."""
+    global _settings_tables_ensured
+    if _settings_tables_ensured:
+        return
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS tenant_org_profile (
+                tenant_slug TEXT PRIMARY KEY,
+                company_name TEXT NOT NULL DEFAULT '',
+                company_address TEXT NOT NULL DEFAULT '',
+                ein TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS tenant_email_settings (
+                tenant_slug TEXT PRIMARY KEY,
+                provider TEXT NOT NULL DEFAULT 'custom',
+                from_name TEXT NOT NULL DEFAULT '',
+                from_email TEXT NOT NULL DEFAULT '',
+                smtp_host TEXT NOT NULL DEFAULT '',
+                smtp_port INT NOT NULL DEFAULT 587,
+                tls_mode TEXT NOT NULL DEFAULT 'starttls',
+                smtp_username TEXT NOT NULL DEFAULT '',
+                smtp_secret_id TEXT NOT NULL DEFAULT '',
+                is_enabled BOOLEAN NOT NULL DEFAULT false,
+                last_test_status TEXT NOT NULL DEFAULT 'never',
+                last_test_at TIMESTAMP WITH TIME ZONE,
+                last_test_error TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+            )
+        """)
+        conn.commit()
+    _settings_tables_ensured = True
+
 
 Provider = Literal["bluehost", "gmail", "microsoft", "custom"]
 TlsMode = Literal["starttls", "ssl"]
@@ -127,6 +170,7 @@ def get_org_profile(
     tenant_slug: str,
     _=Depends(require_role(TENANT_ADMIN)),
 ):
+    _ensure_settings_tables()
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -147,6 +191,7 @@ def upsert_org_profile(
     body: OrgProfileIn,
     _=Depends(require_role(TENANT_ADMIN)),
 ):
+    _ensure_settings_tables()
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -176,6 +221,7 @@ def get_email_settings(
     tenant_slug: str,
     _=Depends(require_role(TENANT_ADMIN)),
 ):
+    _ensure_settings_tables()
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -204,6 +250,7 @@ def upsert_email_settings(
     - Until Secrets Manager is wired, preserve existing smtp_secret_id so UI edits
       don't wipe it.
     """
+    _ensure_settings_tables()
     with db_conn() as conn:
         cur = conn.cursor()
 
