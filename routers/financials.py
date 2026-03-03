@@ -13,7 +13,9 @@ from botocore.config import Config
 from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 from fastapi import APIRouter, HTTPException, Query
 
-router = APIRouter(prefix="/api/financials", tags=["Financials"])
+# Mounted in main.py with prefix="/api", so using prefix="/financials" here
+# yields URLs like /api/financials/..., which matches the frontend.
+router = APIRouter(prefix="/financials", tags=["Financials"])
 
 # =========
 # ENV
