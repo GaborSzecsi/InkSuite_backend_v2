@@ -9,6 +9,14 @@ from datetime import datetime
 import os, json, re, uuid, hashlib
 import time
 from urllib.parse import quote
+import secrets
+from pydantic import EmailStr
+from fastapi import Depends
+
+# if you want tenant-role enforcement like your other modules:
+from app.tenants.dependencies import require_role
+from app.auth.service import TENANT_ADMIN
+from app.core.db import db_conn
 
 
 import boto3
@@ -25,6 +33,10 @@ try:
     _S3_AVAILABLE = True
 except Exception:
     _S3_AVAILABLE = False
+
+class AgentInviteIn(BaseModel):
+    name: str = ""
+    email: EmailStr
 
 # ----------------------- S3: same pattern as uploads_read (book info) -----------------------
 # Critical: regional endpoint + s3v4 + virtual addressing (what fixed uploads)
@@ -742,68 +754,6 @@ def collabora_config_for_draft(item_id: str):
 def collabora_config_for_draft_alias(item_id: str):
     return collabora_config_for_draft(item_id)
 
-
-# ------------------------ OnlyOffice config for drafts (legacy) ------------------------
-@router.get("/draft-contracts/{item_id}/onlyoffice-config")
-def onlyoffice_config_for_draft(item_id: str, request: Request):
-    it = _find_draft(item_id)
-    if not it:
-        raise HTTPException(status_code=404, detail="Draft not found")
-
-    s3_key = it.get("s3_key")
-    if s3_key and _DRAFTS_BUCKET:
-        key_src = f"{s3_key}-{item_id}"
-        doc_key = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:32]
-    else:
-        draft_path = Path(it.get("path", ""))
-        if not draft_path.exists():
-            raise HTTPException(status_code=404, detail="Draft file not found on disk")
-        stat = draft_path.stat()
-        key_src = f"{draft_path.name}-{stat.st_mtime_ns}-{stat.st_size}"
-        doc_key = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:32]
-
-    public_base = _public_base_url()
-    file_url    = f"{public_base}/api/contracts/draft-contracts/{item_id}/file"
-    callback_url = f"{public_base}/api/contracts/draft-contracts/{item_id}/callback"
-
-    doc_title = it.get("filename") or (Path(it.get("path", "")).name if it.get("path") else "draft.docx")
-    cfg = {
-        "documentType": "word",
-        "type": "desktop",
-        "document": {
-            "title": doc_title,
-            "fileType": "docx",
-            "key": doc_key,
-            "url": file_url,
-            "permissions": {
-                "edit": True,
-                "download": False,
-                "print": True,
-                "copy": True,
-            },
-        },
-        "editorConfig": {
-            "lang": "en",
-            "mode": "edit",                 # set to "view" for read-only
-            "callbackUrl": callback_url,    # sink for save/forcesave events
-            "customization": {
-                # modern API (no deprecated 'goback')
-                "close": { "visible": True, "label": "Close" },
-                "autosave": True,
-            },
-        },
-    }
-    return JSONResponse(cfg)
-
-@router.post("/draft-contracts/{item_id}/callback")
-async def onlyoffice_callback_sink(item_id: str, request: Request):
-    """
-    Minimal callback sink. If you later want to implement ForceSave,
-    parse OnlyOffice JSON body and persist the posted file.
-    """
-    # body = await request.json()
-    # print("ONLYOFFICE CALLBACK:", body)
-    return {"status": "ok"}
 
 # ----------------------------- Generate a draft ------------------------------
 @router.post("/generate")
