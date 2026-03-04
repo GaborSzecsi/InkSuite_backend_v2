@@ -12,6 +12,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from app.auth.dependencies import get_current_user
 
 from app.tenants.dependencies import require_role
 from app.auth.service import TENANT_ADMIN
@@ -367,12 +368,12 @@ def upsert_email_settings(
 @router.post("/email/test", response_model=EmailSettingsOut)
 def send_test_email(
     tenant_slug: str,
-    _=Depends(require_role(TENANT_ADMIN)),
+    ctx=Depends(require_role(TENANT_ADMIN)),  # <-- get ctx so we can read current user
 ):
     """
     Send a test email using the tenant's SMTP settings and AWS Secrets Manager secret.
 
-    - Uses from_email as the recipient.
+    - Sends TO the current user's email (fallback: from_email).
     - Updates last_test_status/last_test_at/last_test_error in Postgres.
     """
     _ensure_settings_tables()
@@ -394,8 +395,15 @@ def send_test_email(
 
     settings = _row_to_email(row)
 
-    # Basic validation: if missing required fields, mark as failed but do NOT throw 500.
+    # Determine recipient
+    user = (ctx or {}).get("user") or {}
+    recipient = (user.get("email") or user.get("username") or "").strip()
+    if not recipient:
+        recipient = (settings.from_email or "").strip()
+
     problems: list[str] = []
+    if not recipient:
+        problems.append("Cannot determine recipient email for the current user (no email/username in auth payload).")
     if not settings.from_email:
         problems.append("From email is not configured.")
     if not settings.smtp_host:
@@ -414,7 +422,6 @@ def send_test_email(
         new_status = "failed"
         error_msg = " ".join(problems)
     else:
-        # Try to send; convert ALL errors into failed status instead of 500s.
         try:
             username, password = _load_smtp_secret(settings.smtp_secret_id)
 
@@ -423,7 +430,8 @@ def send_test_email(
                 msg["From"] = f"{settings.from_name} <{settings.from_email}>"
             else:
                 msg["From"] = settings.from_email
-            msg["To"] = settings.from_email
+
+            msg["To"] = recipient  # <-- key change
             msg["Subject"] = f"[InkSuite] SMTP test for {tenant_slug}"
             msg.set_content(
                 "This is a test email from InkSuite using your custom SMTP settings.\n\n"
@@ -448,7 +456,6 @@ def send_test_email(
             new_status = "failed"
             error_msg = str(e)[:2000]
 
-    # Persist test result and return latest settings snapshot
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
