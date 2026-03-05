@@ -28,18 +28,36 @@ The settings endpoints require **Tenant Admin** for that tenant. 403 means the b
 1. **Who is logged in?** Only users with role **tenant_admin** for the tenant `marble-press` can access Settings (organization and email).
 2. **Grant tenant_admin (if needed):** If you have one main user who should manage settings, ensure that user has `tenant_admin` in the `memberships` table for the marble-press tenant.
 
-**Example (run on the DB that production uses, e.g. RDS):**
+**Fix (run on the same DB your AWS backend uses, e.g. RDS via psql or a SQL client):**
 
 ```sql
--- List current members and their roles for marble-press
+-- 1) See who is in the tenant and their roles
 SELECT u.email, m.role
 FROM memberships m
 JOIN users u ON u.id = m.user_id
 JOIN tenants t ON t.id = m.tenant_id
 WHERE t.slug = 'marble-press';
 
--- If you need to make a user tenant_admin (replace USER_ID and TENANT_ID with real UUIDs from the tables above):
--- UPDATE memberships SET role = 'tenant_admin' WHERE tenant_id = 'TENANT_ID' AND user_id = 'USER_ID';
+-- 2) Make one user the tenant admin (replace with the email you sign in with and your tenant slug)
+UPDATE memberships m
+SET role = 'tenant_admin'
+FROM users u, tenants t
+WHERE m.user_id = u.id AND m.tenant_id = t.id
+  AND lower(u.email) = lower('your-email@example.com')
+  AND lower(t.slug) = 'marble-press';
 ```
 
-After the user has `tenant_admin`, they can open Settings without getting 403.
+If that user has **no row** in `memberships` yet (they’re not in the tenant at all), add them first:
+
+```sql
+-- Find your user id and tenant id
+SELECT id FROM users WHERE lower(email) = lower('your-email@example.com');
+SELECT id FROM tenants WHERE lower(slug) = 'marble-press';
+
+-- Insert membership as tenant_admin (use the UUIDs from above)
+INSERT INTO memberships (tenant_id, user_id, role)
+VALUES ('tenant-uuid-here', 'user-uuid-here', 'tenant_admin')
+ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = 'tenant_admin';
+```
+
+After the signed-in user has `role = 'tenant_admin'` for that tenant, Settings will stop returning 403.
