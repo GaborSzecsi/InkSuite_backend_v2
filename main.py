@@ -95,6 +95,7 @@ from app.invites.router import router as invites_router  # noqa: E402
 from app.admin.router import router as admin_router  # noqa: E402
 from app.settings.router import router as settings_router
 
+
 # ---------------------------------------------------------------------
 # Import routers (AFTER env load) - routers package is at project root (routers/)
 # ---------------------------------------------------------------------
@@ -106,6 +107,7 @@ from routers.contract_docs import router as contract_docs_router, wopi_router  #
 from routers.financials import router as financials_router  # noqa: E402
 from routers import financialuploads  # noqa: E402
 from routers import uploads_read  # noqa: E402
+from routers.contract_invites import router as contract_invites
 
 # ---------------------------------------------------------------------
 # Routers (mount ONCE, consistently)
@@ -116,6 +118,7 @@ app.include_router(tenants_router, prefix="/api")
 app.include_router(invites_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
+app.include_router(contract_invites, prefix="/api")
 
 # Uploads read router: mount ONCE.
 # If uploads_read has absolute paths like "/api/uploads/book-assets" inside it, mount WITHOUT prefix.
@@ -167,46 +170,64 @@ def _bearer_token_from_header(auth_header: str | None) -> str | None:
     token = s[7:].strip()
     return token or None
 
+
+def _token_from_cookie(cookie_header: str | None) -> str | None:
+    """Parse access_token from Cookie header (e.g. when BFF forwards cookie or catch-all proxies)."""
+    if not cookie_header:
+        return None
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.lower().startswith("access_token="):
+            return part[13:].strip() or None
+    return None
+
+
 @app.middleware("http")
 async def require_auth_middleware(request, call_next):
-    if not REQUIRE_AUTH:
-        return await call_next(request)
-
     path = request.url.path or ""
 
-    # only protect /api/*
+    # only care about /api/* for auth
     if not path.startswith("/api/"):
         return await call_next(request)
 
-    # allow auth and public invite endpoints
-    if path.startswith("/api/auth") or path.startswith("/api/invites"):
+    # allow preflight (no credentials sent)
+    if request.method.upper() == "OPTIONS":
         return await call_next(request)
 
+    # allow auth and public invite endpoints (no token required)
+    if path.startswith("/api/auth") or path.startswith("/api/invites"):
+        return await call_next(request)
+    # public: resolve contract invite by token (agent review link, no login)
+    if path.startswith("/api/contracts/invites/") and request.method.upper() == "GET":
+        return await call_next(request)
+
+    # Always try to resolve token and set user_claims when valid (so routes like contract invites work even when REQUIRE_AUTH=0)
     token = _bearer_token_from_header(request.headers.get("Authorization"))
     if not token:
+        token = _token_from_cookie(request.headers.get("Cookie"))
+    if token:
+        try:
+            from app.auth.service import get_current_user_from_token
+            claims = get_current_user_from_token(token)
+            if claims:
+                request.state.user_claims = claims
+        except Exception:
+            pass
+
+    # When strict auth is on, require a valid token
+    if REQUIRE_AUTH and not getattr(request.state, "user_claims", None):
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
-
-    # validate token (not just presence)
-    try:
-        from app.auth.service import get_current_user_from_token
-        claims = get_current_user_from_token(token)
-    except Exception:
-        claims = None
-
-    if not claims:
-        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
-
-    request.state.user_claims = claims
 
     # Restrict /api/royalty to tenant_admin (or superadmin) for the given X-Tenant
     if path.startswith("/api/royalty"):
+        claims = getattr(request.state, "user_claims", None)
         tenant_slug = (request.headers.get("X-Tenant") or "").strip()
         if not tenant_slug:
             return JSONResponse(status_code=403, content={"detail": "X-Tenant header required for royalty"})
         try:
             from app.auth.service import get_user_db_record_from_claims, get_memberships_for_user, is_superadmin
             from app.tenants.resolver import resolve_tenant
-            user = get_user_db_record_from_claims(claims)
+            user = get_user_db_record_from_claims(claims) if claims else None
             if not user:
                 return JSONResponse(status_code=403, content={"detail": "Forbidden"})
             if is_superadmin(user.get("platform_role")):
