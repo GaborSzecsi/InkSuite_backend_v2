@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import secrets
+from urllib.parse import quote
 import smtplib
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -477,4 +478,49 @@ def resolve_invite_token(token: str):
         "invitee_email": inv["invitee_email"],
         "status": status,
         "expires_at": inv["expires_at"],
+    }
+
+
+@router.get("/invites/{token}/collabora-config")
+def collabora_config_for_invite(token: str):
+    """Return WOPI editor config for the invite's draft. Public (no auth). Agent gets read-only view."""
+    th = _token_hash(token)
+    inv = _get_invite_by_token_hash(th)
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found")
+
+    status = _mark_expired_if_needed(invite_id=inv["id"], expires_at=inv["expires_at"], status=inv["status"])
+    if status in {"revoked", "expired"}:
+        raise HTTPException(status_code=410, detail=f"Invite {status}")
+
+    draft_id = inv["draft_id"]
+    _ = _find_draft_or_404(draft_id)
+
+    from app.core.config import get_settings
+    from app.wopi.tokens import make_wopi_token
+
+    settings = get_settings()
+    user_id = (inv.get("invitee_email") or inv.get("invitee_name") or "invite").strip()
+    user_id = "".join(c if c.isalnum() or c in "._-" else "_" for c in user_id)[:64] or "invite"
+    wopi_token = make_wopi_token(
+        file_id=draft_id,
+        user_id=user_id,
+        ttl=settings.wopi_token_ttl_sec,
+        secret=settings.wopi_access_token_secret,
+    )
+    wopi_base = (os.getenv("WOPI_PUBLIC_BASE") or os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not wopi_base:
+        wopi_base = "http://host.docker.internal:8000"
+    wopi_src = f"{wopi_base}/api/wopi/files/{quote(draft_id, safe='')}"
+    base = settings.collabora_code_url
+    if "/loleaflet" in base or "/browser" in base or base.endswith(".html"):
+        editor_url = base
+    else:
+        editor_url = f"{base}/loleaflet/dist/loleaflet.html"
+    return {
+        "editorUrl": editor_url,
+        "wopiSrc": wopi_src,
+        "accessToken": wopi_token,
+        "readOnly": True,
+        "accessTokenTtl": settings.wopi_token_ttl_sec,
     }
