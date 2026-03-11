@@ -897,18 +897,60 @@ def generate_contract(req: GenerateRequest):
     out_path = DRAFTS_DIR / out_name
     doc.save(str(out_path))
 
+    # Upload the generated .docx to S3 so Contract Editor can open it from
+    # tenants/marble-press/data/TempDraftContracts/{out_name}
+    s3_key: str | None = None
+    if _S3_AVAILABLE and _DRAFTS_BUCKET and _DRAFTS_PREFIX:
+        try:
+            client = _drafts_s3_client()
+            data = out_path.read_bytes()
+            s3_key = f"{_DRAFTS_PREFIX}{out_name}"
+            client.put_object(
+                Bucket=_DRAFTS_BUCKET,
+                Key=s3_key,
+                Body=data,
+                ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        except Exception:
+            # If S3 upload fails, we still keep the local file and index entry
+            s3_key = None
+
     items = _load_index()
+    item_id = uuid.uuid4().hex[:12]
     item = {
-        "id": uuid.uuid4().hex[:12],
+        "id": item_id,
         "uid": uid,
         "title": safe_title.replace("_", " "),
         "filename": out_name,
         "path": str(out_path),
+        "s3_key": s3_key or "",
         "templateId": req.templateId,
         "createdAt": datetime.now().isoformat(),
     }
     items.insert(0, item)
     _save_index(items)
+
+    # Update deal_memos so this memo is marked as generated and contract editor can reach the draft
+    try:
+        with db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1", ("marble-press",))
+                row = cur.fetchone()
+                if not row:
+                    cur.execute("SELECT id FROM tenants ORDER BY id LIMIT 1")
+                    row = cur.fetchone()
+                if row and uid:
+                    tenant_id = str(row[0]) if hasattr(row, "__getitem__") else str(row["id"])
+                    cur.execute(
+                        """
+                        UPDATE deal_memos
+                        SET generated_contract_filename = %s, generated_at = now(), status = 'generated'
+                        WHERE tenant_id = %s AND uid = %s
+                        """,
+                        (out_name, tenant_id, uid),
+                    )
+    except Exception:
+        pass  # do not fail generate if deal_memos update fails (e.g. table missing)
 
     return {"file": item}
 

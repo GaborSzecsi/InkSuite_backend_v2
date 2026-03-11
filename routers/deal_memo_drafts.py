@@ -1,84 +1,126 @@
-# marble_app/routers/deal_memo_drafts.py
+# routers/deal_memo_drafts.py — Deal memos CRUD (PostgreSQL deal_memos table).
+# Replaces TempDealMemo.json / S3. List, upsert, delete by tenant_id + uid.
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Body
-from typing import List, Any, Dict, Tuple
-import json, time, secrets, string
+import json
+import secrets
+import string
+import time
+from typing import Any, Dict, List
 
-from .storage_s3 import tenant_data_prefix, get_bytes, put_bytes
+from fastapi import APIRouter, Body, HTTPException
+
+from app.core.db import db_conn
+from psycopg.rows import dict_row
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 
-DRAFTS_KEY = tenant_data_prefix("book_data", "TempDealMemo.json")
+# Tenant: same as catalog fallback (slug from env or first tenant)
+DEFAULT_TENANT_SLUG = "marble-press"
 
-# ---------- helpers ----------
+
 def _rand_uid(n: int = 7) -> str:
     alphabet = string.ascii_lowercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
+
 def _now() -> float:
     return time.time()
 
-def _read_raw() -> List[dict]:
-    try:
-        raw = get_bytes(DRAFTS_KEY)
-    except Exception:
-        return []
-    try:
-        data = json.loads(raw.decode("utf-8"))
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
 
-def _write(items: List[dict]) -> None:
-    put_bytes(
-        DRAFTS_KEY,
-        json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8"),
-        content_type="application/json",
-    )
+def _tenant_id(cur) -> str:
+    import os
+    slug = (os.environ.get("DEFAULT_TENANT_SLUG") or os.environ.get("TENANT_SLUG") or DEFAULT_TENANT_SLUG).strip()
+    cur.execute("SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1", (slug,))
+    row = cur.fetchone()
+    if not row:
+        cur.execute("SELECT id FROM tenants ORDER BY id LIMIT 1")
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=503, detail="No tenant configured (deal_memos)")
+    return str(row["id"])
 
-def _normalize_items(items: List[dict]) -> Tuple[List[dict], bool]:
-    changed = False
-    for it in items:
-        uid = (it.get("uid") or "").strip()
-        if not uid:
-            uid = (it.get("id") or "").strip() or _rand_uid()
-            it["uid"] = uid
-            changed = True
-        if not (isinstance(it.get("name"), str) and it["name"].strip()):
-            title = (it.get("title") or "").strip()
-            it["name"] = title or "Untitled"
-            changed = True
-        if not isinstance(it.get("createdAt"), (int, float)):
-            it["createdAt"] = _now()
-            changed = True
-        if not isinstance(it.get("updatedAt"), (int, float)):
-            it["updatedAt"] = it["createdAt"]
-            changed = True
-    return items, changed
 
-def _read_drafts() -> List[dict]:
-    items = _read_raw()
-    items, changed = _normalize_items(items)
-    if changed:
-        _write(items)
-    return items
+def _row_to_draft(row: dict) -> dict:
+    """Build frontend draft from DB row: payload_json + uid, name, title, createdAt, updatedAt."""
+    payload = row.get("payload_json") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload) if payload else {}
+        except Exception:
+            payload = {}
+    uid = (row.get("uid") or "").strip()
+    name = (row.get("name") or "").strip() or (payload.get("title") or "Untitled")
+    title = (row.get("title") or "").strip() or name
+    created_at = row.get("created_at")
+    updated_at = row.get("updated_at")
+    created_ms = int(created_at.timestamp() * 1000) if hasattr(created_at, "timestamp") else int(time.time() * 1000)
+    updated_ms = int(updated_at.timestamp() * 1000) if hasattr(updated_at, "timestamp") else created_ms
+    return {
+        **payload,
+        "uid": uid,
+        "name": name,
+        "title": title,
+        "createdAt": created_ms,
+        "updatedAt": updated_ms,
+    }
 
-def _find_index_by_uid(items: List[dict], uid: str) -> int:
-    return next((i for i, d in enumerate(items) if (d.get("uid") or "").strip() == uid), -1)
 
-# ---------- routes ----------
+@router.get("/dealmemos/_where")
+def where_file() -> dict:
+    return {"storage": "postgres", "table": "deal_memos"}
+
+
+@router.post("/dealmemos/_touch")
+def touch_file() -> dict:
+    return {"ok": True, "storage": "postgres", "table": "deal_memos"}
+
+
 @router.get("/dealmemos")
 def list_deal_memos() -> List[dict]:
-    return _read_drafts()
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _tenant_id(cur)
+            cur.execute(
+                """
+                SELECT id, uid, name, title, payload_json, created_at, updated_at
+                FROM deal_memos
+                WHERE tenant_id = %s
+                ORDER BY updated_at DESC
+                """,
+                (tenant_id,),
+            )
+            rows = cur.fetchall() or []
+            return [_row_to_draft(dict(r)) for r in rows]
+
+
+@router.get("/dealmemos/{uid}")
+def get_deal_memo(uid: str) -> dict:
+    uid = (uid or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="uid required")
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _tenant_id(cur)
+            cur.execute(
+                """
+                SELECT id, uid, name, title, payload_json, created_at, updated_at
+                FROM deal_memos
+                WHERE tenant_id = %s AND uid = %s
+                LIMIT 1
+                """,
+                (tenant_id, uid),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Draft not found")
+            return _row_to_draft(dict(row))
+
 
 @router.post("/dealmemos")
 def upsert_deal_memo(body: Dict[str, Any] = Body(...)) -> dict:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
-
-    items = _read_drafts()
-    now = _now()
 
     uid = (body.get("uid") or "").strip()
     if not uid:
@@ -89,55 +131,66 @@ def upsert_deal_memo(body: Dict[str, Any] = Body(...)) -> dict:
     if not name:
         body["name"] = (body.get("title") or "").strip() or "Untitled"
 
-    idx = _find_index_by_uid(items, uid)
-    if idx >= 0:
-        created = items[idx].get("createdAt", now)
-        saved = {**items[idx], **body, "createdAt": created, "updatedAt": now}
-        items[idx] = saved
-    else:
-        saved = {**body, "createdAt": now, "updatedAt": now}
-        items.insert(0, saved)
+    now_ts = _now()
+    body["updatedAt"] = now_ts
+    if not isinstance(body.get("createdAt"), (int, float)):
+        body["createdAt"] = now_ts
 
-    _write(items)
-    return {"ok": True, "draft": saved}
+    payload_json = json.dumps(body, ensure_ascii=False)
+    title = (body.get("title") or "").strip() or name
+    contributor_role = (body.get("contributor_role") or body.get("contributorRole") or "author").strip()
+    if contributor_role not in ("author", "illustrator", "other"):
+        contributor_role = "author"
+
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _tenant_id(cur)
+            cur.execute(
+                """
+                INSERT INTO deal_memos (tenant_id, uid, name, title, contributor_role, payload_json, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, now())
+                ON CONFLICT (tenant_id, uid) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    title = EXCLUDED.title,
+                    contributor_role = EXCLUDED.contributor_role,
+                    payload_json = EXCLUDED.payload_json,
+                    updated_at = now()
+                """,
+                (tenant_id, uid, name, title, contributor_role, payload_json),
+            )
+            cur.execute(
+                "SELECT id, uid, name, title, payload_json, created_at, updated_at FROM deal_memos WHERE tenant_id = %s AND uid = %s LIMIT 1",
+                (tenant_id, uid),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=500, detail="Upsert failed")
+            saved = _row_to_draft(dict(row))
+            return {"ok": True, "draft": saved}
+
 
 @router.put("/dealmemos/{uid}")
 def update_deal_memo(uid: str, body: Dict[str, Any] = Body(...)) -> dict:
-    items = _read_drafts()
-    i = _find_index_by_uid(items, uid.strip())
-    if i < 0:
-        raise HTTPException(status_code=404, detail="Draft not found")
-
-    now = _now()
+    uid = (uid or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="uid required")
     body = dict(body or {})
-    body["uid"] = uid.strip()
-
-    if not (body.get("name") or "").strip():
+    body["uid"] = uid
+    name = (body.get("name") or "").strip()
+    if not name:
         body["name"] = (body.get("title") or "").strip() or "Untitled"
+    return upsert_deal_memo(body)
 
-    created = items[i].get("createdAt", now)
-    saved = {**items[i], **body, "createdAt": created, "updatedAt": now}
-    items[i] = saved
-    _write(items)
-    return {"ok": True, "draft": saved}
 
 @router.delete("/dealmemos/{uid}")
 def delete_draft(uid: str) -> dict:
-    items = _read_drafts()
-    new_items = [d for d in items if (d.get("uid") or "").strip() != uid.strip()]
-    if len(new_items) == len(items):
-        raise HTTPException(status_code=404, detail="Draft not found")
-    _write(new_items)
+    uid = (uid or "").strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="uid required")
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _tenant_id(cur)
+            cur.execute("DELETE FROM deal_memos WHERE tenant_id = %s AND uid = %s", (tenant_id, uid))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Draft not found")
     return {"ok": True, "deleted": uid}
-
-@router.get("/dealmemos/_where")
-def where_file():
-    return {"s3_key": DRAFTS_KEY, "storage": "s3"}
-
-@router.post("/dealmemos/_touch")
-def touch_file():
-    # ensure it exists
-    items = _read_raw()
-    if not items:
-        _write([])
-    return {"ok": True, "s3_key": DRAFTS_KEY, "storage": "s3"}

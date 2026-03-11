@@ -31,6 +31,16 @@ async def get_current_user(
     return user
 
 
+async def require_session(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(http_bearer)],
+    token: Annotated[str | None, Depends(oauth2_scheme)],
+) -> dict | None:
+    """Optional session: return claims if authenticated, else None. Used by catalog so list/get work without requiring login."""
+    t = _token_from_header(credentials, token)
+    user = get_current_user_from_token(t) if t else None
+    return user
+
+
 def require_platform_admin(user: dict) -> None:
     """Raise 403 if user is not in inksuite_master_admin group."""
     groups = user.get("cognito:groups") or []

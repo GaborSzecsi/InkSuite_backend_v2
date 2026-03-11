@@ -108,6 +108,8 @@ from routers.financials import router as financials_router  # noqa: E402
 from routers import financialuploads  # noqa: E402
 from routers import uploads_read  # noqa: E402
 from routers.contract_invites import router as contract_invites
+from routers.catalog import router as catalog_router
+from app.onix.router import router as onix_router
 
 # ---------------------------------------------------------------------
 # Routers (mount ONCE, consistently)
@@ -119,6 +121,8 @@ app.include_router(invites_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(contract_invites, prefix="/api")
+app.include_router(catalog_router, prefix="/api")
+app.include_router(onix_router, prefix="/api")
 
 # Uploads read router: mount ONCE.
 # If uploads_read has absolute paths like "/api/uploads/book-assets" inside it, mount WITHOUT prefix.
