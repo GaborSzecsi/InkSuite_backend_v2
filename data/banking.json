@@ -1,1 +1,14 @@
-{}
+{
+  "banking": {
+    "author": {
+      "isForeign": false,
+      "us": null,
+      "foreign": null
+    },
+    "illustrator": {
+      "isForeign": false,
+      "us": null,
+      "foreign": null
+    }
+  }
+}

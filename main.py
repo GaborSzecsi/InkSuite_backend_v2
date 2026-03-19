@@ -106,7 +106,7 @@ from routers import deal_memo_drafts  # noqa: E402
 from routers.contract_docs import router as contract_docs_router, wopi_router  # noqa: E402
 from routers.financials import router as financials_router  # noqa: E402
 from routers import financialuploads  # noqa: E402
-from routers import uploads_read  # noqa: E402
+#from routers import uploads_read  # noqa: E402
 from routers.contract_invites import router as contract_invites
 from routers.catalog import router as catalog_router
 from app.onix.router import router as onix_router
@@ -128,7 +128,7 @@ app.include_router(onix_router, prefix="/api")
 # If uploads_read has absolute paths like "/api/uploads/book-assets" inside it, mount WITHOUT prefix.
 # If it has relative paths like "/uploads/book-assets", mount WITH prefix="/api".
 # Your earlier uploads_read patterns used absolute /api/... paths, so keep it unprefixed:
-app.include_router(uploads_read.router)
+#app.include_router(uploads_read.router)
 
 # Core
 app.include_router(royalty.router, prefix="/api", tags=["Royalty"])
@@ -164,6 +164,10 @@ app.mount("/static/templates", StaticFiles(directory=str(TEMPLATES_DIR)), name="
 # Deny-by-default auth: STRICT validation for /api/* (when REQUIRE_AUTH=1)
 # ---------------------------------------------------------------------
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").strip().lower() in ("1", "true", "yes")
+
+for r in app.routes:
+    methods = ",".join(sorted(getattr(r, "methods", []) or []))
+    print(f"{methods:20s} {r.path}")
 
 def _bearer_token_from_header(auth_header: str | None) -> str | None:
     if not auth_header:

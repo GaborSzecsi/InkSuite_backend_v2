@@ -1,10 +1,14 @@
 # marble_app/routers/uploads.py
 import os, io, time, pathlib, mimetypes
 from typing import Literal, Optional, Any, Dict, List
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
 from pydantic import BaseModel
 from PIL import Image
+from psycopg.rows import dict_row
+
+from app.core.db import db_conn
 
 import boto3
 from botocore.config import Config
@@ -15,9 +19,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError, NoCredenti
 #   GET  /api/uploads/book-assets
 #   GET  /api/uploads/health
 #   POST /api/uploads/
-#
-# If you also include uploads_read.py, you may be hitting the wrong implementation.
-router = APIRouter(prefix="/api/uploads", tags=["Uploads"])
+router = APIRouter(prefix="/uploads", tags=["Uploads"])
 
 # ----------------------------
 # Local storage (existing uploads behavior)
@@ -25,14 +27,24 @@ router = APIRouter(prefix="/api/uploads", tags=["Uploads"])
 DATA_UPLOAD_DIR = os.environ.get("DATA_UPLOAD_DIR", "./data/uploads")
 pathlib.Path(DATA_UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 
-UploadKind = Literal["author_contract", "illustrator_contract", "w9", "book_cover", "other"]
+UploadKind = Literal[
+    "author_contract",
+    "illustrator_contract",
+    "w9",
+    "book_cover",
+    "author_photo",
+    "illustrator_photo",
+    "other",
+]
 
 ALLOWED = {
     "author_contract": {"application/pdf"},
     "illustrator_contract": {"application/pdf"},
     "w9": {"application/pdf"},
-    "book_cover": {"image/jpeg", "image/png"},
-    "other": {"application/pdf", "image/jpeg", "image/png"},
+    "book_cover": {"image/jpeg", "image/png", "image/webp", "image/jpg"},
+    "author_photo": {"image/jpeg", "image/png", "image/webp", "image/jpg"},
+    "illustrator_photo": {"image/jpeg", "image/png", "image/webp", "image/jpg"},
+    "other": {"application/pdf", "image/jpeg", "image/png", "image/webp"},
 }
 
 class UploadResponse(BaseModel):
@@ -44,6 +56,9 @@ class UploadResponse(BaseModel):
     width: int | None = None
     height: int | None = None
     dpi: tuple[int, int] | None = None
+    key: str | None = None
+    bookUid: str | None = None
+    workId: str | None = None
 
 def _clean_name(name: str) -> str:
     return "".join(c for c in (name or "") if c.isalnum() or c in ("-", "_", ".")).strip("._")
@@ -68,14 +83,6 @@ UPLOADS_USE_PRESIGNED = os.environ.get("UPLOADS_USE_PRESIGNED", "1").strip().low
 UPLOADS_PRESIGN_EXPIRES = int(os.environ.get("UPLOADS_PRESIGN_EXPIRES", "3600"))
 
 def _s3_client():
-    """
-    CRITICAL:
-    - Force regional endpoint for non-us-east-1 buckets.
-    - Force SigV4.
-    - Force virtual hosted addressing so URLs match:
-        https://<bucket>.s3.<region>.amazonaws.com/<key>?X-Amz-...
-      (This is ideal for Next/Image allowlisting.)
-    """
     return boto3.client(
         "s3",
         region_name=AWS_REGION,
@@ -101,7 +108,6 @@ def _guess_kind(filename: str) -> str:
 
 def _is_cover(name: str) -> bool:
     n = (name or "").lower()
-    # accept __cover.<ext> and also common "cover" variants
     if "__cover." in n:
         return n.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
     if "cover" in n:
@@ -110,7 +116,6 @@ def _is_cover(name: str) -> bool:
 
 def _s3_url_for_key(key: str) -> str:
     if not UPLOADS_USE_PRESIGNED:
-        # Only works if object is public (or you front it with CloudFront)
         return f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{key}"
 
     s3 = _s3_client()
@@ -120,6 +125,55 @@ def _s3_url_for_key(key: str) -> str:
         ExpiresIn=UPLOADS_PRESIGN_EXPIRES,
         HttpMethod="GET",
     )
+
+def _ext_for_upload(filename: str, mime: str) -> tuple[str, str]:
+    fn = (filename or "").lower()
+
+    if mime in ("image/jpeg", "image/jpg") or fn.endswith((".jpg", ".jpeg")):
+        return ".jpg", "image/jpeg"
+    if mime == "image/png" or fn.endswith(".png"):
+        return ".png", "image/png"
+    if mime == "image/webp" or fn.endswith(".webp"):
+        return ".webp", "image/webp"
+    if mime == "application/pdf" or fn.endswith(".pdf"):
+        return ".pdf", "application/pdf"
+
+    ext = pathlib.Path(filename or "").suffix.lower()
+    return (ext or ".bin"), (mime or "application/octet-stream")
+
+def _resolve_work(candidate: str) -> Dict[str, Any]:
+    val = (candidate or "").strip()
+    if not val:
+        raise HTTPException(status_code=400, detail="bookUid, workId, or book_key is required")
+
+    sql = """
+        SELECT id::text AS id, uid::text AS uid, title, cover_image_link, cover_image_format
+        FROM works
+        WHERE uid::text = %s OR id::text = %s
+        LIMIT 1
+    """
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(sql, (val, val))
+            row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Work not found for '{val}'")
+
+    return row
+
+def _update_work_cover(work_id: str, s3_key: str, content_type: str) -> None:
+    sql = """
+        UPDATE works
+        SET cover_image_link = %s,
+            cover_image_format = %s,
+            updated_at = now()
+        WHERE id = %s::uuid
+    """
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (s3_key, content_type, work_id))
+        conn.commit()
 
 # ----------------------------
 # Health + listing endpoints
@@ -145,7 +199,6 @@ def list_book_assets(bookUid: str = Query(...)):
     if not uid:
         raise HTTPException(status_code=400, detail="bookUid is required")
 
-    # S3 listing first (prod architecture)
     if USE_UPLOADS_S3:
         if not S3_BUCKET or not UPLOADS_S3_PREFIX:
             raise HTTPException(
@@ -191,7 +244,6 @@ def list_book_assets(bookUid: str = Query(...)):
                 else:
                     break
 
-            # match frontend expectation
             return {"bookUid": uid, "cover": cover, "files": files}
 
         except (EndpointConnectionError, NoCredentialsError) as e:
@@ -203,7 +255,6 @@ def list_book_assets(bookUid: str = Query(...)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # Local fallback listing (dev)
     local_dir = pathlib.Path(DATA_UPLOAD_DIR) / uid
     if local_dir.exists() and local_dir.is_dir():
         files: List[Dict[str, Any]] = []
@@ -229,17 +280,93 @@ def list_book_assets(bookUid: str = Query(...)):
         detail=f"Uploads not available. S3 disabled and local folder missing: {str(local_dir)}",
     )
 
+
+@router.delete("")
+@router.delete("/")
+def delete_upload(
+    bookKey: str = Query(""),
+    url: str | None = Query(None),
+    filename: str | None = Query(None),
+):
+    """
+    Delete an uploaded asset for a book.
+    - When S3 is enabled, delete the object from S3.
+    - When using local disk, delete from DATA_UPLOAD_DIR.
+    The frontend sends either a full S3 URL (url) or a filename.
+    """
+    candidate = (bookKey or "").strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="bookKey is required")
+
+    if USE_UPLOADS_S3:
+        # Derive S3 key from full URL when provided.
+        if url:
+            parsed = urlparse(url)
+            key = parsed.path.lstrip("/")
+        else:
+            # Fallback: assume standard key layout under uploads prefix.
+            fn = (filename or "").strip()
+            if not fn:
+                raise HTTPException(status_code=400, detail="filename or url is required")
+            key = f"{UPLOADS_S3_PREFIX}/{candidate}/{fn}"
+
+        try:
+            s3 = _s3_client()
+            s3.delete_object(Bucket=S3_BUCKET, Key=key)
+        except (EndpointConnectionError, NoCredentialsError) as e:
+            raise HTTPException(status_code=500, detail=f"S3 auth/connection error: {e}")
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            msg = e.response.get("Error", {}).get("Message", "")
+            # If already gone, treat as success.
+            if code not in ("NoSuchKey", "404"):
+                raise HTTPException(status_code=500, detail=f"S3 client error {code}: {msg or str(e)}")
+
+        return {"ok": True}
+
+    # Local disk fallback
+    safe_dir = pathlib.Path(DATA_UPLOAD_DIR) / _clean_name(candidate or "_")
+    if not safe_dir.exists():
+        return {"ok": True}
+
+    target: pathlib.Path | None = None
+    if filename:
+        cand = safe_dir / filename
+        if cand.exists() and cand.is_file():
+            target = cand
+    elif url:
+        # URL like /static/uploads/<key>/<filename>
+        parsed = urlparse(url)
+        name = pathlib.Path(parsed.path).name
+        cand = safe_dir / name
+        if cand.exists() and cand.is_file():
+            target = cand
+
+    if target and target.exists():
+        try:
+            target.unlink()
+        except Exception:
+            pass
+
+    return {"ok": True}
+
 # ----------------------------
-# Existing upload endpoint (still local disk)
+# Upload endpoint
 # ----------------------------
+# ----------------------------
+# Upload endpoint
+# ----------------------------
+@router.post("", response_model=UploadResponse)
 @router.post("/", response_model=UploadResponse)
 async def upload_file(
     file: UploadFile = File(...),
     kind: UploadKind = Form(...),
     book_key: str = Form(""),
+    bookUid: str = Form(""),
+    workId: str = Form(""),
 ):
     allowed = ALLOWED.get(kind, set())
-    mime = file.content_type or ""
+    mime = (file.content_type or "").strip().lower()
     if allowed and mime not in allowed:
         raise HTTPException(status_code=400, detail=f"Unsupported type for {kind}: {mime}")
 
@@ -264,7 +391,155 @@ async def upload_file(
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid image file")
 
-    safe_dir = os.path.join(DATA_UPLOAD_DIR, _clean_name(book_key) or "_")
+    candidate = (bookUid or workId or book_key or "").strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="bookUid, workId, or book_key is required")
+
+    if kind == "book_cover" and USE_UPLOADS_S3:
+        work = _resolve_work(candidate)
+        uid = (work["uid"] or "").strip()
+        resolved_work_id = (work["id"] or "").strip()
+
+        if not uid:
+            raise HTTPException(status_code=500, detail="Resolved work has empty uid")
+
+        ext, normalized_mime = _ext_for_upload(file.filename or "", mime)
+        s3_key = f"{UPLOADS_S3_PREFIX}/{uid}/{uid}__cover{ext}"
+
+        try:
+            s3 = _s3_client()
+            s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=s3_key,
+                Body=data,
+                ContentType=normalized_mime,
+            )
+            _update_work_cover(resolved_work_id, s3_key, normalized_mime)
+            url = _s3_url_for_key(s3_key)
+        except (EndpointConnectionError, NoCredentialsError) as e:
+            raise HTTPException(status_code=500, detail=f"S3 auth/connection error: {e}")
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            msg = e.response.get("Error", {}).get("Message", "")
+            raise HTTPException(status_code=500, detail=f"S3 client error {code}: {msg or str(e)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        return UploadResponse(
+            ok=True,
+            url=url,
+            filename=file.filename or f"{uid}__cover{ext}",
+            mime=normalized_mime,
+            size=size,
+            width=width,
+            height=height,
+            dpi=dpi_tuple,
+            key=s3_key,
+            bookUid=uid,
+            workId=resolved_work_id,
+        )
+
+    # Upload contracts and W-9 to S3 alongside cover when S3 is enabled.
+    if kind in ("author_contract", "illustrator_contract", "w9") and USE_UPLOADS_S3:
+        work = _resolve_work(candidate)
+        uid = (work["uid"] or "").strip()
+        resolved_work_id = (work["id"] or "").strip()
+
+        if not uid:
+            raise HTTPException(status_code=500, detail="Resolved work has empty uid")
+
+        ext, normalized_mime = _ext_for_upload(file.filename or "", mime)
+        if kind == "author_contract":
+            fname = f"{uid}__author_contract{ext}"
+        elif kind == "illustrator_contract":
+            fname = f"{uid}__illustrator_contract{ext}"
+        else:  # w9
+            fname = f"{uid}__w9{ext}"
+
+        s3_key = f"{UPLOADS_S3_PREFIX}/{uid}/{fname}"
+
+        try:
+            s3 = _s3_client()
+            s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=s3_key,
+                Body=data,
+                ContentType=normalized_mime,
+            )
+            url = _s3_url_for_key(s3_key)
+        except (EndpointConnectionError, NoCredentialsError) as e:
+            raise HTTPException(status_code=500, detail=f"S3 auth/connection error: {e}")
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            msg = e.response.get("Error", {}).get("Message", "")
+            raise HTTPException(status_code=500, detail=f"S3 client error {code}: {msg or str(e)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        return UploadResponse(
+            ok=True,
+            url=url,
+            filename=file.filename or fname,
+            mime=normalized_mime,
+            size=size,
+            width=width,
+            height=height,
+            dpi=dpi_tuple,
+            key=s3_key,
+            bookUid=uid,
+            workId=resolved_work_id,
+        )
+
+    # Upload author/illustrator photos to S3 alongside cover when S3 is enabled.
+    if kind in ("author_photo", "illustrator_photo") and USE_UPLOADS_S3:
+        work = _resolve_work(candidate)
+        uid = (work["uid"] or "").strip()
+        resolved_work_id = (work["id"] or "").strip()
+
+        if not uid:
+            raise HTTPException(status_code=500, detail="Resolved work has empty uid")
+
+        ext, normalized_mime = _ext_for_upload(file.filename or "", mime)
+        if kind == "author_photo":
+            fname = f"{uid}__author_photo{ext}"
+        else:
+            fname = f"{uid}__illustrator_photo{ext}"
+
+        s3_key = f"{UPLOADS_S3_PREFIX}/{uid}/{fname}"
+
+        try:
+            s3 = _s3_client()
+            s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=s3_key,
+                Body=data,
+                ContentType=normalized_mime,
+            )
+            url = _s3_url_for_key(s3_key)
+        except (EndpointConnectionError, NoCredentialsError) as e:
+            raise HTTPException(status_code=500, detail=f"S3 auth/connection error: {e}")
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            msg = e.response.get("Error", {}).get("Message", "")
+            raise HTTPException(status_code=500, detail=f"S3 client error {code}: {msg or str(e)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        return UploadResponse(
+            ok=True,
+            url=url,
+            filename=file.filename or fname,
+            mime=normalized_mime,
+            size=size,
+            width=width,
+            height=height,
+            dpi=dpi_tuple,
+            key=s3_key,
+            bookUid=uid,
+            workId=resolved_work_id,
+        )
+
+    safe_dir = os.path.join(DATA_UPLOAD_DIR, _clean_name(candidate) or "_")
     pathlib.Path(safe_dir).mkdir(parents=True, exist_ok=True)
 
     ext = pathlib.Path(file.filename or "upload.bin").suffix or ""
@@ -273,7 +548,7 @@ async def upload_file(
     with open(out_path, "wb") as f:
         f.write(data)
 
-    url = f"/static/uploads/{_clean_name(book_key) or '_'}/{safe_name}"
+    url = f"/static/uploads/{_clean_name(candidate) or '_'}/{safe_name}"
 
     return UploadResponse(
         ok=True,
@@ -284,4 +559,7 @@ async def upload_file(
         width=width,
         height=height,
         dpi=dpi_tuple,
+        key=None,
+        bookUid=bookUid or None,
+        workId=workId or None,
     )

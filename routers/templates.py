@@ -6,6 +6,7 @@ import json
 import hashlib
 import mimetypes
 import tempfile
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -659,6 +660,36 @@ def _extract_wopi_token(request: Request) -> str:
 
 wopi_templates_router = APIRouter(prefix="/wopi/templates", tags=["WOPI Templates"])
 
+# ------------------------ WOPI override dispatcher for templates ------------------------
+
+_WOPI_TEMPLATE_LOCKS: dict[str, dict[str, Any]] = {}
+_WOPI_TEMPLATE_LOCK_TTL_SEC = 30 * 60  # 30 minutes
+
+
+def _template_now_epoch() -> float:
+    return time.time()
+
+
+def _template_lock_get(tid: str) -> str:
+    ent = _WOPI_TEMPLATE_LOCKS.get(tid)
+    if not ent:
+        return ""
+    if ent.get("exp", 0) < _template_now_epoch():
+        _WOPI_TEMPLATE_LOCKS.pop(tid, None)
+        return ""
+    return str(ent.get("lock") or "")
+
+
+def _template_lock_set(tid: str, lock_value: str) -> None:
+    _WOPI_TEMPLATE_LOCKS[tid] = {
+        "lock": lock_value,
+        "exp": _template_now_epoch() + _WOPI_TEMPLATE_LOCK_TTL_SEC,
+    }
+
+
+def _template_lock_clear(tid: str) -> None:
+    _WOPI_TEMPLATE_LOCKS.pop(tid, None)
+
 
 @wopi_templates_router.get("/files/{tid}")
 def wopi_template_check_file_info(tid: str, request: Request):
@@ -734,6 +765,89 @@ async def wopi_template_put_file(tid: str, request: Request):
     _touch_index_after_save(tid, it.filename)
     return JSONResponse({"LastModifiedTime": datetime.utcnow().isoformat() + "Z"})
 
+@wopi_templates_router.post("/files/{tid}")
+async def wopi_template_files_override(tid: str, request: Request):
+    """
+    Collabora uses POST /wopi/templates/files/{tid} with X-WOPI-Override for:
+      - LOCK / UNLOCK / REFRESH_LOCK / GET_LOCK
+      - PUT in some deployments
+    Without this, Collabora often opens effectively read-only.
+    """
+    token = _extract_wopi_token(request)
+    settings = _wopi_settings()
+    payload = verify_wopi_token(token, settings.wopi_access_token_secret)
+
+    if str(payload.get("file_id")) != str(tid):
+        raise HTTPException(status_code=401, detail="Invalid WOPI token")
+
+    override = (request.headers.get("X-WOPI-Override") or "").upper().strip()
+    lock_value = request.headers.get("X-WOPI-Lock") or ""
+
+    if not override:
+        raise HTTPException(status_code=400, detail="Missing X-WOPI-Override")
+
+    if override == "GET_LOCK":
+        cur = _template_lock_get(tid)
+        resp = FastAPIResponse(content=b"", media_type="text/plain")
+        resp.headers["X-WOPI-Lock"] = cur
+        return resp
+
+    if override == "LOCK":
+        if not lock_value:
+            raise HTTPException(status_code=400, detail="Missing X-WOPI-Lock")
+        cur = _template_lock_get(tid)
+        if cur and cur != lock_value:
+            resp = FastAPIResponse(status_code=409, content=b"")
+            resp.headers["X-WOPI-Lock"] = cur
+            return resp
+        _template_lock_set(tid, lock_value)
+        return FastAPIResponse(content=b"")
+
+    if override == "REFRESH_LOCK":
+        if not lock_value:
+            raise HTTPException(status_code=400, detail="Missing X-WOPI-Lock")
+        cur = _template_lock_get(tid)
+        if cur and cur != lock_value:
+            resp = FastAPIResponse(status_code=409, content=b"")
+            resp.headers["X-WOPI-Lock"] = cur
+            return resp
+        _template_lock_set(tid, lock_value)
+        return FastAPIResponse(content=b"")
+
+    if override == "UNLOCK":
+        cur = _template_lock_get(tid)
+        if cur and lock_value and cur != lock_value:
+            resp = FastAPIResponse(status_code=409, content=b"")
+            resp.headers["X-WOPI-Lock"] = cur
+            return resp
+        _template_lock_clear(tid)
+        return FastAPIResponse(content=b"")
+
+    if override == "PUT":
+        body = await request.body()
+        if not body:
+            raise HTTPException(status_code=400, detail="Empty body on PUT override")
+
+        it = _get_template_obj(tid)
+        if not it:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        key = _template_key_from_obj(it)
+        put_bytes(
+            key,
+            body,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        _touch_index_after_save(tid, it.filename)
+
+        resp = JSONResponse({"LastModifiedTime": datetime.utcnow().isoformat() + "Z"})
+        resp.headers["X-WOPI-ItemVersion"] = str(int(_template_now_epoch()))
+        return resp
+
+    return JSONResponse(
+        {"detail": f"Unsupported X-WOPI-Override: {override}"},
+        status_code=501,
+    )
 
 @router.get("/templates/{tid}/collabora-config")
 def collabora_config_for_template(tid: str):
