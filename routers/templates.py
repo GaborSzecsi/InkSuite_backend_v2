@@ -36,12 +36,10 @@ from .storage_s3 import (
 )
 
 # -------------------- env --------------------
-DOCSERVICE_URL = os.environ.get("ONLYOFFICE_DOCSERVICE_URL", "").strip() or "http://localhost:8082"
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip() or "http://127.0.0.1:8000"
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip()
 
 # -------------------- Routers --------------------
 router = APIRouter(prefix="/contracts", tags=["contracts"])
-onlyoffice_router = APIRouter(prefix="/onlyoffice", tags=["onlyoffice"])
 
 # -------------------- S3 layout --------------------
 # templates live under: tenants/<slug>/data/Templates/
@@ -334,6 +332,8 @@ async def upload_template(
         content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
+    public_base = (PUBLIC_BASE_URL or str(request.base_url)).rstrip("/")
+
     item = ContractTemplate(
         id=tid,
         name=name,
@@ -342,7 +342,7 @@ async def upload_template(
         dealType=dealType,
         uploadedAt=datetime.utcnow().isoformat() + "Z",
         placeholders=None,
-        previewUrl=f"{str(request.base_url).rstrip('/')}/api/contracts/templates/{tid}/file",
+        previewUrl=f"{public_base}/api/contracts/templates/{tid}/file",
     )
 
     items = _read_index()
