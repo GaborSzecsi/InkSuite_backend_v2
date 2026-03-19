@@ -138,7 +138,6 @@ app.include_router(banking.router, prefix="/api", tags=["Banking"])
 
 # Contracts
 app.include_router(contracts_templates.router, prefix="/api", tags=["Contracts"])
-app.include_router(contracts_templates.onlyoffice_router, prefix="/api", tags=["ONLYOFFICE"])
 app.include_router(deal_memo_drafts.router, prefix="/api", tags=["Contracts Drafts"])
 app.include_router(contract_docs_router, prefix="/api", tags=["Contracts Docs"])
 # WOPI host for Collabora Online (draft contracts + templates)
