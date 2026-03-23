@@ -18,8 +18,6 @@ router = APIRouter(prefix="/contracts", tags=["contracts"])
 DEFAULT_TENANT_SLUG = "marble-press"
 DEAL_MEMO_TABLE = "deal_memo_drafts"
 
-print("LOADED ROUTER FILE:", __file__)
-print("DEAL_MEMO_TABLE =", DEAL_MEMO_TABLE)
 
 
 def _rand_uid(n: int = 7) -> str:
@@ -248,9 +246,6 @@ def _get_agency_detail(cur, tenant_id: str, agency_party_id: str) -> dict:
 def _upsert_agency(cur, tenant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     _require_tables(cur)
 
-    # --- raw debug ---
-    print("AGENCY UPSERT BODY:", body)
-
     agency_party_id = _s(body.get("agency_party_id"))
 
     # --- sanitize agency name ---
@@ -285,10 +280,6 @@ def _upsert_agency(cur, tenant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     agent_email = _s(body.get("agent_email"))
     agent_phone_country_code = _s(body.get("agent_phone_country_code"))
     agent_phone_number = _s(body.get("agent_phone_number"))
-
-    # --- debug AFTER parsing ---
-    print("PARSED AGENCY NAME:", agency_name)
-    print("PARSED AGENT NAME:", agent_name)
 
     contributor_party_id = _s(body.get("contributor_party_id"))
     work_id = _s(body.get("work_id"))
@@ -354,8 +345,6 @@ def _upsert_agency(cur, tenant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 (tenant_id, agency_name or "Unnamed Agency", agency_email, agency_website),
             )
             agency_party_id = str(cur.fetchone()["id"])
-
-        print("RESOLVED AGENCY PARTY ID:", agency_party_id)
 
     cur.execute(
         """
@@ -516,8 +505,7 @@ def _upsert_agency(cur, tenant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     (tenant_id, agent_name, agent_email, agent_phone_country_code, agent_phone_number),
                 )
                 resolved_agent_party_id = str(cur.fetchone()["id"])
-            
-            print("RESOLVED AGENT PARTY ID:", resolved_agent_party_id)
+               
 
         cur.execute(
             """
@@ -530,8 +518,6 @@ def _upsert_agency(cur, tenant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
             """,
             (tenant_id, agency_party_id, resolved_agent_party_id, True),
         )
-
-        print("LINKED AGENT TO AGENCY:", agency_party_id, resolved_agent_party_id)
 
         if contributor_party_id:
             if work_id:

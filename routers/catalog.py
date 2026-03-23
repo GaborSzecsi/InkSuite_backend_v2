@@ -17,7 +17,6 @@ from app.core.db import db_conn
 
 router = APIRouter(prefix="/catalog", tags=["Catalog"])
 
-
 def _jsonable(v: Any) -> Any:
     if isinstance(v, (datetime, date)):
         return v.isoformat()
@@ -397,6 +396,67 @@ def _category_rows(contact_categories: Dict[str, List[Dict[str, Any]]], *aliases
             return rows
     return []
 
+def _fetch_advances(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
+    cur.execute(
+        """
+        SELECT id
+        FROM royalty_sets
+        WHERE tenant_id = %s
+          AND work_id = %s
+        ORDER BY is_active DESC, version DESC
+        LIMIT 1
+        """,
+        (tenant_id, work_id),
+    )
+    rs = cur.fetchone()
+    if not rs:
+        return {
+            "author_advance": 0.0,
+            "illustrator_advance": 0.0,
+            "advances": {"author": [], "illustrator": []},
+        }
+
+    royalty_set_id = rs["id"]
+
+    cur.execute(
+        """
+        SELECT id, party, amount, currency, recoupable, notes
+        FROM advances
+        WHERE tenant_id = %s
+          AND royalty_set_id = %s
+        ORDER BY party ASC, id ASC
+        """,
+        (tenant_id, royalty_set_id),
+    )
+    rows = cur.fetchall() or []
+
+    out = {
+        "author_advance": 0.0,
+        "illustrator_advance": 0.0,
+        "advances": {"author": [], "illustrator": []},
+    }
+
+    for r in rows:
+        party = _safe_str(r.get("party")).lower()
+        amount = float(r["amount"]) if r.get("amount") is not None else 0.0
+
+        item = {
+            "id": str(r["id"]),
+            "party": party,
+            "amount": amount,
+            "currency": _safe_str(r.get("currency")) or "USD",
+            "recoupable": bool(r.get("recoupable") or False),
+            "notes": _safe_str(r.get("notes")),
+        }
+
+        if party == "author":
+            out["author_advance"] += amount
+            out["advances"]["author"].append(item)
+        elif party == "illustrator":
+            out["illustrator_advance"] += amount
+            out["advances"]["illustrator"].append(item)
+
+    return out
 
 def _fetch_party_core(cur, tenant_id: str, party_id: str) -> Dict[str, Any]:
     cur.execute(
@@ -432,30 +492,35 @@ def _fetch_party_core(cur, tenant_id: str, party_id: str) -> Dict[str, Any]:
 
 
 def _fetch_party_summary(cur, tenant_id: str, party_id: str) -> Dict[str, Any]:
-    cur.execute(
-        """
-        SELECT
-            display_name,
-            email,
-            website,
-            phone_country_code,
-            phone_number,
-            short_bio,
-            long_bio,
-            birth_date,
-            birth_city,
-            birth_country,
-            citizenship
-        FROM parties
-        WHERE tenant_id = %s
-          AND id = %s
-        LIMIT 1
-        """,
-        (tenant_id, party_id),
-    )
-    r = cur.fetchone()
+    try:
+        cur.execute(
+            """
+            SELECT
+                display_name,
+                email,
+                website,
+                phone_country_code,
+                phone_number,
+                short_bio,
+                long_bio,
+                birth_date,
+                birth_city,
+                birth_country,
+                citizenship
+            FROM parties
+            WHERE tenant_id = %s
+              AND id = %s
+            LIMIT 1
+            """,
+            (tenant_id, party_id),
+        )
+        r = cur.fetchone()
+    except Exception:
+        return {}
+
     if not r:
         return {}
+
     return {
         "display_name": _clean_display_name(r.get("display_name")),
         "email": _safe_str(r.get("email")),
@@ -1321,7 +1386,7 @@ def _fetch_contributors(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any
 def _fetch_royalties_graph(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
     cur.execute(
         """
-        SELECT id, version, is_active, source_json
+        SELECT id, version, is_active
         FROM royalty_sets
         WHERE tenant_id = %s
           AND work_id = %s
@@ -1330,6 +1395,7 @@ def _fetch_royalties_graph(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
         """,
         (tenant_id, work_id),
     )
+
     set_row = cur.fetchone()
     if not set_row:
         return {"author": {"first_rights": [], "subrights": []}, "illustrator": {"first_rights": [], "subrights": []}}
@@ -1340,8 +1406,17 @@ def _fetch_royalties_graph(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
         cur.execute(
             """
             SELECT
-                id, party, rights_type, format_label, subrights_name,
-                mode, base, escalating, flat_rate_percent, percent, notes
+                id,
+                party,
+                rights_type,
+                format_label,
+                subrights_type_id,
+                mode,
+                base,
+                escalating,
+                flat_rate_percent,
+                percent,
+                notes
             FROM royalty_rules
             WHERE tenant_id = %s
               AND royalty_set_id = %s
@@ -1434,9 +1509,14 @@ def _fetch_royalties_graph(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
     }
 
     for r in rules:
+        rights_type = _safe_str(r.get("rights_type"))
+        subrights_name = ""
+        if rights_type == "subrights":
+            subrights_name = _subrights_type_name_by_id(cur, r.get("subrights_type_id"))
+
         rule_obj = {
             "format": r.get("format_label") or "",
-            "name": r.get("subrights_name") or "",
+            "name": subrights_name,
             "mode": r.get("mode") or "",
             "base": r.get("base") or "",
             "escalating": bool(r.get("escalating") or False),
@@ -1446,7 +1526,6 @@ def _fetch_royalties_graph(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
             "tiers": tiers_by_rule.get(str(r["id"]), []),
         }
         party = (r.get("party") or "").lower()
-        rights_type = r.get("rights_type") or ""
         if party not in out:
             continue
         if rights_type == "first_rights":
@@ -1850,18 +1929,21 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
     }
 
     editions = _fetch_editions(cur, tenant_id, work_id)
-    doc["formats"] = [{
-        "format": e.get("format") or "",
-        "isbn": e.get("isbn") or "",
-        "pub_date": e.get("pub_date") or "",
-        "price_us": e.get("price_us") or 0,
-        "price_can": e.get("price_can") or 0,
-        "pages": e.get("pages") or 0,
-        "tall": e.get("tall") or 0,
-        "wide": e.get("wide") or 0,
-        "spine": e.get("spine") or 0,
-        "weight": e.get("weight") or 0,
-    } for e in editions]
+    doc["formats"] = [
+        {
+            "format": e.get("format") or "",
+            "isbn": e.get("isbn") or "",
+            "pub_date": e.get("pub_date") or "",
+            "price_us": e.get("price_us") or 0,
+            "price_can": e.get("price_can") or 0,
+            "pages": e.get("pages") or 0,
+            "tall": e.get("tall") or 0,
+            "wide": e.get("wide") or 0,
+            "spine": e.get("spine") or 0,
+            "weight": e.get("weight") or 0,
+        }
+        for e in editions
+    ]
     doc["_editions"] = editions
     doc["foreign_rights_sold"] = _fetch_foreign_rights_sold(cur, tenant_id, work_id)
 
@@ -1889,13 +1971,37 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
         if not party_id:
             return
 
-        party_summary = _fetch_party_summary(cur, tenant_id, party_id)
-        profile = _fetch_contributor_marketing_profile(cur, tenant_id, party_id, scope)
-        block = _fetch_party_extras_block(cur, tenant_id, party_id, work_id, scope)
+        try:
+            party_summary = _fetch_party_summary(cur, tenant_id, party_id) or {}
+        except Exception:
+            party_summary = {}
+
+        try:
+            profile = _fetch_contributor_marketing_profile(cur, tenant_id, party_id, scope) or {}
+        except Exception:
+            profile = {}
+
+        try:
+            block = _fetch_party_extras_block(cur, tenant_id, party_id, work_id, scope) or {}
+        except Exception:
+            block = {}
+
         pref = block.get("preferences") or {}
-        agents, agency_card = _fetch_agent_for_party(cur, tenant_id, party_id, work_id)
-        address = _fetch_party_address(cur, tenant_id, party_id)
-        contact_categories = _fetch_contributor_contact_categories(cur, tenant_id, party_id, scope)
+
+        try:
+            agents, agency_card = _fetch_agent_for_party(cur, tenant_id, party_id, work_id)
+        except Exception:
+            agents, agency_card = [], {}
+
+        try:
+            address = _fetch_party_address(cur, tenant_id, party_id) or {}
+        except Exception:
+            address = {}
+
+        try:
+            contact_categories = _fetch_contributor_contact_categories(cur, tenant_id, party_id, scope) or {}
+        except Exception:
+            contact_categories = {}
 
         raw_prefixed = {
             "marketing_endorsers": contact_categories.get(f"{scope}_marketing_endorsers", []),
@@ -1925,12 +2031,14 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
                 social_obj[platform] = url
 
         line1 = _safe_str(address.get("street"))
-        line2 = " ".join([
-            _safe_str(address.get("city")),
-            _safe_str(address.get("state")),
-            _safe_str(address.get("zip")),
-            _safe_str(address.get("country")),
-        ]).strip()
+        line2 = " ".join(
+            [
+                _safe_str(address.get("city")),
+                _safe_str(address.get("state")),
+                _safe_str(address.get("zip")),
+                _safe_str(address.get("country")),
+            ]
+        ).strip()
         address_lines = [x for x in (line1, line2) if x]
 
         full_phone = _format_phone(
@@ -2049,7 +2157,10 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
         for category_name, items in contact_categories.items():
             doc[f"{scope}_{category_name}"] = items
 
-        _apply_contact_category_aliases(doc, scope, contact_categories)
+        try:
+            _apply_contact_category_aliases(doc, scope, contact_categories)
+        except Exception:
+            pass
 
         for suffix, rows in raw_prefixed.items():
             if rows:
@@ -2062,94 +2173,36 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
     _set_contributor_flat("author", author_party_id, author_name)
     _set_contributor_flat("illustrator", illustrator_party_id, illustrator_name)
 
-    for scope in ("author", "illustrator"):
-        if scope not in doc:
-            doc[scope] = {
-                "name": "",
-                "email": "",
-                "website": "",
-                "phone": "",
-                "phone_country_code": "",
-                "phone_number": "",
-                "address": {},
-                "addressLines": [],
-                "birthDate": "",
-                "birthCity": "",
-                "birthCountry": "",
-                "citizenship": "",
-                "bio": "",
-                "long_bio": "",
-                "book_bio": "",
-                "website_bio": "",
-                "social": {},
-                "socials": [],
-                "agent": [],
-                "agency": {},
-                "books_published": [],
-                "published_books": [],
-                "media_appearances": [],
-                "other_publications": [],
-                "media_contacts": [],
-                "previous_publicity": [],
-                "niche_publicity_targets": [],
-                "contact_categories": {},
-                "sales_local_bookstores": [],
-                "sales_nontrade_outlets": [],
-                "sales_museums_parks": [],
-            }
-
-        for key in (
-            "name", "email", "website", "phone", "phone_country_code", "phone_number", "address",
-            "birth_city", "birth_country", "birth_date", "citizenship",
-            "bio", "long_bio", "book_bio", "website_bio",
-            "photo_credit", "present_position", "former_positions",
-            "degrees_honors", "professional_honors", "additional_notes",
-            "socials", "books_published", "published_books", "media_appearances",
-            "other_publications", "media_contacts", "previous_publicity",
-            "niche_publicity_targets", "contact_pref_rank1", "contact_pref_rank2",
-            "media_best_times", "media_press_share", "us_travel_plans",
-            "travel_dates", "agent", "agency", "agent_list", "agency_name",
-            "agent_name", "agent_email", "agent_phone", "agency_website", "has_agency",
-            "marketing_previous_book_publicity", "publicity_previous_book_publicity",
-            "marketing_endorsers", "publicity_endorsers_blurbers",
-            "marketing_big_mouth_list", "publicity_big_mouth_list",
-            "marketing_review_copy_wishlist", "publicity_review_copy_wishlist",
-            "marketing_local_media", "publicity_local_media",
-            "marketing_alumni_org_publications", "publicity_alumni_org_publications",
-            "marketing_targeted_sites", "publicity_target_sites",
-            "marketing_bloggers", "publicity_bloggers_genre",
-            "sales_local_bookstores", "sales_nontrade_outlets", "sales_museums_parks",
-            "contact_categories",
-        ):
-            full_key = f"{scope}_{key}"
-            if full_key not in doc:
-                if key in (
-                    "socials", "books_published", "published_books", "media_appearances",
-                    "other_publications", "media_contacts", "previous_publicity",
-                    "niche_publicity_targets", "agent", "agent_list",
-                    "marketing_previous_book_publicity", "publicity_previous_book_publicity",
-                    "marketing_endorsers", "publicity_endorsers_blurbers",
-                    "marketing_big_mouth_list", "publicity_big_mouth_list",
-                    "marketing_review_copy_wishlist", "publicity_review_copy_wishlist",
-                    "marketing_local_media", "publicity_local_media",
-                    "marketing_alumni_org_publications", "publicity_alumni_org_publications",
-                    "marketing_targeted_sites", "publicity_target_sites",
-                    "marketing_bloggers", "publicity_bloggers_genre",
-                    "sales_local_bookstores", "sales_nontrade_outlets", "sales_museums_parks",
-                ):
-                    doc[full_key] = []
-                elif key in ("address", "agency", "contact_categories"):
-                    doc[full_key] = {}
-                elif key in ("media_press_share", "has_agency"):
-                    doc[full_key] = False
-                else:
-                    doc[full_key] = ""
-
     doc["royalties"] = _fetch_royalties_graph(cur, tenant_id, work_id)
+    
+    advances_block = _fetch_advances(cur, tenant_id, work_id)
+    doc["author_advance"] = advances_block["author_advance"]
+    doc["illustrator_advance"] = advances_block["illustrator_advance"]
+    doc["advances"] = advances_block["advances"]
+
     isbns = [e["isbn13"] for e in editions if e.get("isbn13")]
     doc["_onix_raw_products_by_isbn13"] = _fetch_onix_raw_by_isbns(cur, tenant_id, isbns, limit_each=1)
 
     return doc
+
+@router.get("/works/{work_id}")
+def get_work_full(
+    work_id: str,
+    tenant_slug: str = Query(...),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+            resolved_id = _resolve_work_id_param(cur, tenant_id, work_id)
+            if not resolved_id:
+                raise HTTPException(status_code=404, detail="Work not found")
+            payload = _build_full_work_payload(cur, tenant_id, resolved_id)
+            return {
+                "ok": True,
+                "tenant_slug": tenant_slug,
+                "work_id": resolved_id,
+                "work": payload,
+            }
 
 
 @router.get("/works")
@@ -2214,6 +2267,7 @@ def list_works(
                     """
                     SELECT
                         wc.work_id,
+                        wc.contributor_role,
                         p.display_name AS author,
                         wc.sequence_number,
                         wc.id
@@ -2551,21 +2605,6 @@ def create_work_from_dealmemo(
                 "uid": _safe_str(full_payload.get("uid")),
                 "work": full_payload,
             }
-
-@router.get("/works/{work_id}")
-def get_work_full(
-    work_id: str,
-    tenant_slug: str = Query(...),
-):
-    with db_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
-            resolved_id = _resolve_work_id_param(cur, tenant_id, work_id)
-            if not resolved_id:
-                raise HTTPException(status_code=404, detail="Work not found")
-            payload = _build_full_work_payload(cur, tenant_id, resolved_id)
-            return {"ok": True, "tenant_slug": tenant_slug, "work_id": resolved_id, "work": payload}
-
 
 @router.get("/resolve")
 def resolve_by_isbn(
@@ -3159,7 +3198,130 @@ def _replace_editions(cur, tenant_id: str, work_id: str, payload: Dict[str, Any]
             except Exception:
                 # If the supply/price schema is missing or incompatible, skip prices but keep editions
                 pass
+def _normalize_subrights_name(v: Any) -> str:
+    s = _safe_str(v).strip()
+    if not s:
+        return ""
 
+    direct = {
+        "Animation digital rights": "Animation digital rights",
+        "Book club publication": "Book club publication",
+        "Digital audiobook rights": "Digital audiobook rights",
+        "E-books third party": "E-books third party",
+        "Export rights": "Export rights",
+        "Film and TV": "Film and TV",
+        "First serial publication": "First serial publication",
+        "Foreign translation": "Foreign translation",
+        "Hardcover, Paperback, Large-type reprint editions": "Hardcover, Paperback, Large-type reprint editions",
+        "Mass merchandise": "Mass merchandise",
+        "Physical audiobook rights": "Physical audiobook rights",
+        "Publication as selections, condensations, or abridgments in anthologies, textbook editions, and book digests":
+            "Publication as selections, condensations, or abridgments in anthologies, textbook editions, and book digests",
+        "publish the Work in Canada": "publish the Work in Canada",
+        "Right to publish the Work in Canada": "Right to publish the Work in Canada",
+        "Right to publish the Work in English in Canada": "Right to publish the Work in English in Canada",
+        "Right to publish the Work in English in the UK": "Right to publish the Work in English in the UK",
+        "Second serial publication": "Second serial publication",
+        "Sold by the publisher for export or outside the US": "Sold by the publisher for export or outside the US",
+        "Theme parks": "Theme parks",
+        "UK rights": "UK rights",
+    }
+    if s in direct:
+        return direct[s]
+
+    lowered = s.lower()
+    aliases = {
+        "tv and movie rights": "Film and TV",
+        "film/tv": "Film and TV",
+        "film and tv": "Film and TV",
+        "movie rights": "Film and TV",
+
+        "animation digital rights": "Animation digital rights",
+
+        "foreign translation": "Foreign translation",
+        "translation": "Foreign translation",
+
+        "book club": "Book club publication",
+        "book club rights": "Book club publication",
+
+        "first serial": "First serial publication",
+        "first serial rights": "First serial publication",
+
+        "second serial": "Second serial publication",
+        "second serial rights": "Second serial publication",
+
+        "hardcover paperback and large-type reprint editions": "Hardcover, Paperback, Large-type reprint editions",
+        "hardcover, paperback, and large-type reprint editions": "Hardcover, Paperback, Large-type reprint editions",
+
+        "right to publish the work in english in the uk": "Right to publish the Work in English in the UK",
+        "uk": "UK rights",
+        "uk rights": "UK rights",
+
+        "right to publish the work in english in canada": "Right to publish the Work in English in Canada",
+        "right to publish the work in canada": "Right to publish the Work in Canada",
+        "publish the work in canada": "publish the Work in Canada",
+        "canada": "Right to publish the Work in English in Canada",
+        "canadian rights": "Right to publish the Work in English in Canada",
+
+        "export": "Export rights",
+        "export rights": "Export rights",
+        "sold by the publisher for export or outside the us": "Sold by the publisher for export or outside the US",
+
+        "merchandise": "Mass merchandise",
+        "mass merchandise": "Mass merchandise",
+        "merch": "Mass merchandise",
+
+        "audio rights": "Digital audiobook rights",
+        "digital audio rights": "Digital audiobook rights",
+        "digital audiobook rights": "Digital audiobook rights",
+        "physical audiobook rights": "Physical audiobook rights",
+
+        "anthologies": "Publication as selections, condensations, or abridgments in anthologies, textbook editions, and book digests",
+        "abridgments": "Publication as selections, condensations, or abridgments in anthologies, textbook editions, and book digests",
+        "textbook editions": "Publication as selections, condensations, or abridgments in anthologies, textbook editions, and book digests",
+
+        "theme parks": "Theme parks",
+    }
+    return aliases.get(lowered, s)
+
+
+def _lookup_subrights_type_id(cur, name: str) -> str:
+    wanted = _normalize_subrights_name(name)
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Missing subright name")
+
+    cur.execute(
+        """
+        SELECT id
+        FROM subrights_types
+        WHERE lower(name) = lower(%s)
+          AND is_active = true
+        LIMIT 1
+        """,
+        (wanted,),
+    )
+    row = cur.fetchone()
+    if row:
+        return str(row["id"])
+
+    raise HTTPException(status_code=400, detail=f"Unknown subright type: {wanted}")
+
+
+def _subrights_type_name_by_id(cur, subrights_type_id: Any) -> str:
+    if not subrights_type_id:
+        return ""
+
+    cur.execute(
+        """
+        SELECT name
+        FROM subrights_types
+        WHERE id = %s
+        LIMIT 1
+        """,
+        (subrights_type_id,),
+    )
+    row = cur.fetchone()
+    return _safe_str(row.get("name")) if row else ""
 
 def _upsert_work_from_payload(conn, cur, tenant_id: str, body: Dict[str, Any]) -> str:
     work_id = _resolve_work_id(cur, tenant_id, body)
@@ -3362,10 +3524,10 @@ def _upsert_work_from_payload(conn, cur, tenant_id: str, body: Dict[str, Any]) -
     set_id = uuid.uuid4()
     cur.execute(
         """
-        INSERT INTO royalty_sets (id, tenant_id, work_id, version, is_active, source_json)
-        VALUES (%s, %s, %s, 1, true, %s::jsonb)
+        INSERT INTO royalty_sets (id, tenant_id, work_id, version, is_active)
+        VALUES (%s, %s, %s, 1, true)
         """,
-        (set_id, tenant_id, work_id, json.dumps(royalties)),
+        (set_id, tenant_id, work_id),
     )
 
     def _insert_royalty_rule(party: str, rights_type: str, rule_obj: Dict[str, Any]) -> None:
@@ -3395,18 +3557,104 @@ def _upsert_work_from_payload(conn, cur, tenant_id: str, body: Dict[str, Any]) -
 
         notes = _safe_str(rule_obj.get("note") or rule_obj.get("notes"))
 
-        cur.execute(
-            """
-            INSERT INTO royalty_rules (
-                tenant_id, royalty_set_id, party, rights_type, format_label,
-                subrights_name, mode, base, escalating,
-                flat_rate_percent, percent, notes
+        subrights_type_id = None
+        if rights_type == "subrights":
+            subrights_type_id = _lookup_subrights_type_id(cur, subrights_name)
+            format_label = ""
+
+        if rights_type == "subrights":
+            cur.execute(
+                """
+                INSERT INTO royalty_rules (
+                    tenant_id,
+                    royalty_set_id,
+                    party,
+                    rights_type,
+                    format_label,
+                    mode,
+                    base,
+                    escalating,
+                    flat_rate_percent,
+                    percent,
+                    notes,
+                    subrights_type_id
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s::roy_party,
+                    %s::roy_rights_type,
+                    %s,
+                    %s::roy_mode,
+                    %s::roy_base,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                RETURNING id
+                """,
+                (
+                    tenant_id,
+                    set_id,
+                    party,
+                    rights_type,
+                    format_label,
+                    mode,
+                    base,
+                    escalating,
+                    flat_rate,
+                    percent,
+                    notes,
+                    subrights_type_id,
+                ),
             )
-            VALUES (%s, %s, %s::roy_party, %s::roy_rights_type, %s, %s, %s::roy_mode, %s::roy_base, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (tenant_id, set_id, party, rights_type, format_label, subrights_name, mode, base, escalating, flat_rate, percent, notes),
-        )
+        else:
+            cur.execute(
+                """
+                INSERT INTO royalty_rules (
+                    tenant_id,
+                    royalty_set_id,
+                    party,
+                    rights_type,
+                    format_label,
+                    mode,
+                    base,
+                    escalating,
+                    flat_rate_percent,
+                    percent,
+                    notes
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s::roy_party,
+                    %s::roy_rights_type,
+                    %s,
+                    %s::roy_mode,
+                    %s::roy_base,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                RETURNING id
+                """,
+                (
+                    tenant_id,
+                    set_id,
+                    party,
+                    rights_type,
+                    format_label,
+                    mode,
+                    base,
+                    escalating,
+                    flat_rate,
+                    percent,
+                    notes,
+                ),
+            )
         rule_row = cur.fetchone()
         if not rule_row:
             return
@@ -3504,7 +3752,30 @@ def delete_work(work_id: str, tenant_slug: str = Query(...)):
             cur.execute("SELECT id FROM works WHERE tenant_id = %s AND id = %s LIMIT 1", (tenant_id, work_id))
             if not cur.fetchone():
                 raise HTTPException(status_code=404, detail="Work not found")
-            cur.execute("DELETE FROM works WHERE tenant_id = %s AND id = %s", (tenant_id, work_id))
+            cur.execute(
+                "SELECT id FROM royalty_sets WHERE tenant_id = %s AND work_id = %s",
+                (tenant_id, work_id),
+            )
+            old_set_rows = cur.fetchall() or []
+            old_set_ids = [str(r["id"]) for r in old_set_rows if r.get("id")]
+
+            if old_set_ids:
+                cur.execute(
+                    "DELETE FROM royalty_tier_conditions WHERE tenant_id = %s AND tier_id IN (SELECT id FROM royalty_tiers WHERE tenant_id = %s AND rule_id IN (SELECT id FROM royalty_rules WHERE tenant_id = %s AND royalty_set_id::text = ANY(%s)))",
+                    (tenant_id, tenant_id, tenant_id, old_set_ids),
+                )
+                cur.execute(
+                    "DELETE FROM royalty_tiers WHERE tenant_id = %s AND rule_id IN (SELECT id FROM royalty_rules WHERE tenant_id = %s AND royalty_set_id::text = ANY(%s))",
+                    (tenant_id, tenant_id, old_set_ids),
+                )
+                cur.execute(
+                    "DELETE FROM royalty_rules WHERE tenant_id = %s AND royalty_set_id::text = ANY(%s)",
+                    (tenant_id, old_set_ids),
+                )
+            cur.execute(
+                "DELETE FROM royalty_sets WHERE tenant_id = %s AND id::text = ANY(%s)",
+                (tenant_id, old_set_ids),
+            )
             conn.commit()
             return {"ok": True, "tenant_slug": tenant_slug, "work_id": work_id, "deleted": True}
 
@@ -3521,6 +3792,29 @@ def delete_work_by_title_author(
             work_id = _resolve_work_id_by_title_author(cur, tenant_id, title, author)
             if not work_id:
                 raise HTTPException(status_code=404, detail="Work not found for given title and author")
-            cur.execute("DELETE FROM works WHERE tenant_id = %s AND id = %s", (tenant_id, work_id))
+            cur.execute(
+                "SELECT id FROM royalty_sets WHERE tenant_id = %s AND work_id = %s",
+                (tenant_id, work_id),
+            )
+            old_set_rows = cur.fetchall() or []
+            old_set_ids = [str(r["id"]) for r in old_set_rows if r.get("id")]
+
+            if old_set_ids:
+                cur.execute(
+                    "DELETE FROM royalty_tier_conditions WHERE tenant_id = %s AND tier_id IN (SELECT id FROM royalty_tiers WHERE tenant_id = %s AND rule_id IN (SELECT id FROM royalty_rules WHERE tenant_id = %s AND royalty_set_id::text = ANY(%s)))",
+                    (tenant_id, tenant_id, tenant_id, old_set_ids),
+                )
+                cur.execute(
+                    "DELETE FROM royalty_tiers WHERE tenant_id = %s AND rule_id IN (SELECT id FROM royalty_rules WHERE tenant_id = %s AND royalty_set_id::text = ANY(%s))",
+                    (tenant_id, tenant_id, old_set_ids),
+                )
+                cur.execute(
+                    "DELETE FROM royalty_rules WHERE tenant_id = %s AND royalty_set_id::text = ANY(%s)",
+                    (tenant_id, old_set_ids),
+                )
+                cur.execute(
+                    "DELETE FROM royalty_sets WHERE tenant_id = %s AND id::text = ANY(%s)",
+                    (tenant_id, old_set_ids),
+                )
             conn.commit()
             return {"ok": True, "tenant_slug": tenant_slug, "work_id": work_id, "deleted": True}
