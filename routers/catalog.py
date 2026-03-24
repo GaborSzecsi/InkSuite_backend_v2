@@ -3772,10 +3772,15 @@ def delete_work(work_id: str, tenant_slug: str = Query(...)):
                     "DELETE FROM royalty_rules WHERE tenant_id = %s AND royalty_set_id::text = ANY(%s)",
                     (tenant_id, old_set_ids),
                 )
+                cur.execute(
+                    "DELETE FROM royalty_sets WHERE tenant_id = %s AND id::text = ANY(%s)",
+                    (tenant_id, old_set_ids),
+                )
             cur.execute(
-                "DELETE FROM royalty_sets WHERE tenant_id = %s AND id::text = ANY(%s)",
-                (tenant_id, old_set_ids),
+                "DELETE FROM works WHERE tenant_id = %s AND id = %s",
+                (tenant_id, work_id),
             )
+
             conn.commit()
             return {"ok": True, "tenant_slug": tenant_slug, "work_id": work_id, "deleted": True}
 
