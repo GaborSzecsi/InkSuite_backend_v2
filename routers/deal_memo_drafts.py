@@ -281,7 +281,10 @@ def _upsert_agency(cur, tenant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     agent_phone_country_code = _s(body.get("agent_phone_country_code"))
     agent_phone_number = _s(body.get("agent_phone_number"))
 
-    contributor_party_id = _s(body.get("contributor_party_id"))
+    contributor_party_id = _s(
+        body.get("contributor_party_id")
+        or body.get("represented_party_id")
+    )
     work_id = _s(body.get("work_id"))
 
     if not agency_name.strip() and not agent_name.strip():
@@ -519,34 +522,48 @@ def _upsert_agency(cur, tenant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
             (tenant_id, agency_party_id, resolved_agent_party_id, True),
         )
 
-        if contributor_party_id:
+        if contributor_party_id and resolved_agent_party_id:
             if work_id:
+                cur.execute(
+                    """
+                    DELETE FROM party_representations
+                    WHERE tenant_id = %s
+                      AND represented_party_id = %s
+                      AND work_id = %s
+                    """,
+                    (tenant_id, contributor_party_id, work_id),
+                )
+
                 cur.execute(
                     """
                     INSERT INTO party_representations (
                         tenant_id, represented_party_id, agent_party_id, work_id,
                         is_primary, role_label, notes
                     )
-                    VALUES (%s, %s, %s, %s, %s, 'agent', '')
-                    ON CONFLICT (represented_party_id, agent_party_id, work_id) DO UPDATE SET
-                        is_primary = EXCLUDED.is_primary,
-                        updated_at = now()
+                    VALUES (%s, %s, %s, %s, true, 'agent', '')
                     """,
-                    (tenant_id, contributor_party_id, resolved_agent_party_id, work_id, True),
+                    (tenant_id, contributor_party_id, resolved_agent_party_id, work_id),
                 )
             else:
                 cur.execute(
                     """
+                    DELETE FROM party_representations
+                    WHERE tenant_id = %s
+                      AND represented_party_id = %s
+                      AND work_id IS NULL
+                    """,
+                    (tenant_id, contributor_party_id),
+                )
+
+                cur.execute(
+                    """
                     INSERT INTO party_representations (
                         tenant_id, represented_party_id, agent_party_id, work_id,
                         is_primary, role_label, notes
                     )
-                    VALUES (%s, %s, %s, NULL, %s, 'agent', '')
-                    ON CONFLICT (represented_party_id, agent_party_id, work_id) DO UPDATE SET
-                        is_primary = EXCLUDED.is_primary,
-                        updated_at = now()
+                    VALUES (%s, %s, %s, NULL, true, 'agent', '')
                     """,
-                    (tenant_id, contributor_party_id, resolved_agent_party_id, True),
+                    (tenant_id, contributor_party_id, resolved_agent_party_id),
                 )
 
     agency = _get_agency_detail(cur, tenant_id, agency_party_id)

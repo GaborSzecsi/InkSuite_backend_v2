@@ -36,6 +36,20 @@ class RoyaltyCalculator:
         # fallback for v1
         return model.dict()
 
+    @staticmethod
+    def _coerce_sales_row(row: Any) -> SalesData:
+        """Request bodies often send sales_data as plain dicts (RoyaltyStatementRequest uses list[Any])."""
+        if isinstance(row, SalesData):
+            return row
+        if isinstance(row, dict):
+            d = dict(row)
+            if "unit_price_or_net_revenue" not in d and "unitPriceOrNetRevenue" in d:
+                d["unit_price_or_net_revenue"] = d.get("unitPriceOrNetRevenue")
+            if "net_revenue" not in d and "netRevenue" in d:
+                d["net_revenue"] = d.get("netRevenue")
+            return SalesData.model_validate(d)
+        return SalesData.model_validate(row)
+
     def format_currency(self, val: float) -> str:
         if isinstance(val, (int, float)):
             if val == 0:
@@ -43,19 +57,34 @@ class RoyaltyCalculator:
             return f"(${abs(val):,.2f})" if val < 0 else f"${val:,.2f}"
         return str(val) if val else ""
 
-    def calculate_royalties(self, request: RoyaltyStatementRequest, book: Book) -> Dict[str, Any]:
+    def calculate_royalties(
+        self,
+        request: RoyaltyStatementRequest,
+        book: Book,
+        *,
+        book_id: str | None = None,
+        author_statement_history: List[Dict[str, Any]] | None = None,
+        illustrator_statement_history: List[Dict[str, Any]] | None = None,
+    ) -> Dict[str, Any]:
         lifetime_quantity_by_cat: Dict[str, int] = {}
         returns_to_date_by_cat: Dict[str, int] = {}
 
-        book_id = request.uid
+        bid = (book_id or request.uid or request.work_id or (str(book.uid) if book.uid else "") or "").strip()
         author_name = book.author.strip() if isinstance(book.author, str) else str(book.author).strip()
         illustrator_name = (book.illustrator.name.strip() if getattr(book, "illustrator", None) else "")
 
-        author_history = self._load_person_royalties(self.author_royalty_file).get(author_name, [])
-        illustrator_history = self._load_person_royalties(self.illustrator_royalty_file).get(illustrator_name, [])
+        if author_statement_history is not None:
+            author_history = author_statement_history
+        else:
+            author_history = self._load_person_royalties(self.author_royalty_file).get(author_name, [])
 
-        author_statements_for_book = [s for s in author_history if s.get("book_id") == book_id]
-        illustrator_statements_for_book = [s for s in illustrator_history if s.get("book_id") == book_id]
+        if illustrator_statement_history is not None:
+            illustrator_history = illustrator_statement_history
+        else:
+            illustrator_history = self._load_person_royalties(self.illustrator_royalty_file).get(illustrator_name, [])
+
+        author_statements_for_book = [s for s in author_history if str(s.get("book_id") or "") == bid]
+        illustrator_statements_for_book = [s for s in illustrator_history if str(s.get("book_id") or "") == bid]
 
         current_period_key = f"{request.period_start}|{request.period_end}"
         for stmt in author_statements_for_book:
@@ -77,8 +106,11 @@ class RoyaltyCalculator:
         total_royalty_author = 0.0
         total_royalty_illustrator = 0.0
 
-        for sales_row in request.sales_data:
-            cat = sales_row.category
+        for raw_sales in request.sales_data:
+            sales_row = self._coerce_sales_row(raw_sales)
+            cat = (sales_row.category or "").strip()
+            if not cat:
+                continue
             units = sales_row.units or 0
             returns = sales_row.returns or 0
             discount = sales_row.discount or 0
@@ -140,8 +172,12 @@ class RoyaltyCalculator:
         author_advance = -abs(request.author_advance)
         illustrator_advance = -abs(request.illustrator_advance)
 
-        author_last_balance = self._get_last_balance(author_statements_for_book, author_advance)
-        illustrator_last_balance = self._get_last_balance(illustrator_statements_for_book, illustrator_advance)
+        author_last_balance = self._get_last_balance(
+            author_statements_for_book, author_advance, current_period_key
+        )
+        illustrator_last_balance = self._get_last_balance(
+            illustrator_statements_for_book, illustrator_advance, current_period_key
+        )
 
         author_balance = author_last_balance + total_royalty_author
         illustrator_balance = illustrator_last_balance + total_royalty_illustrator
@@ -170,9 +206,21 @@ class RoyaltyCalculator:
             "returns_to_date_by_cat": returns_to_date_by_cat,
         }
 
-    def _get_last_balance(self, statements: List[Dict], default_advance: float) -> float:
-        if statements:
-            latest = sorted(statements, key=lambda x: x["period_end"], reverse=True)[0]
+    def _get_last_balance(
+        self,
+        statements: List[Dict],
+        default_advance: float,
+        exclude_period_key: str | None = None,
+    ) -> float:
+        rows = statements
+        if exclude_period_key:
+            rows = [
+                s
+                for s in statements
+                if f"{s.get('period_start')}|{s.get('period_end')}" != exclude_period_key
+            ]
+        if rows:
+            latest = sorted(rows, key=lambda x: x["period_end"], reverse=True)[0]
             return float(latest.get("balance", default_advance) or 0.0)
         return float(default_advance or 0.0)
 
@@ -189,7 +237,7 @@ class RoyaltyCalculator:
             "book_id": request.uid,
             "period_start": request.period_start,
             "period_end": request.period_end,
-            "sales_data": [self._dump(s) for s in request.sales_data],
+            "sales_data": [self._dump(self._coerce_sales_row(s)) for s in request.sales_data],
             "author": calculations["author"],
             "illustrator": calculations["illustrator"],
             "lifetime_quantity_by_cat": calculations["lifetime_quantity_by_cat"],

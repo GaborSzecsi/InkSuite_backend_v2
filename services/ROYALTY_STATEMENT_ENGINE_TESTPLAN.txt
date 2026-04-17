@@ -1,0 +1,45 @@
+Royalty statement engine — test plan
+====================================
+
+Prerequisites: run migrations including 004; seed tenant, work, editions with USD list prices,
+royalty_set, royalty_rules/tiers/conditions, royalty_periods, advances (recoupable), royalty_sales_lines.
+
+1) Hardcover list_price
+   - One HC edition, rule base list_price, flat or single tier, sales with units only.
+   - Expect basis_amount = net_units * frozen US list price; royalty_amount = basis * rate / 100.
+
+2) Paperback list_price
+   - Same as (1) with PB format_label matching edition category.
+
+3) E-book net_receipts
+   - Rule/tier base net_receipts; basis_amount = sum(publisher_receipts) for bucket; no list price required.
+
+4) Print discount tier switch (e.g. discount >= 60% → net_receipts)
+   - Two sales rows same edition: avg discount below threshold → list_price tier; above → net_receipts tier.
+   - Or separate buckets if different discounts split aggregates (engine uses one bucket per edition+format — use weighted avg discount for tier test).
+
+5) Returns exceed sales
+   - units_returned > units_sold for a line; net_units negative; basis and royalty_amount may be negative.
+
+6) Opening advance still negative after period
+   - Large recoupable advance; small earned; expect closing_recoupment_balance < 0, payable_this_period = 0,
+     recouped_this_period = min(earned, abs(opening)).
+
+7) Cross to payable
+   - Opening negative; earned large enough that available_after > 0; payable_this_period > 0, closing = 0.
+
+8) Re-run draft without duplication
+   - POST generate twice with same body, rebuild=false; line count unchanged; header updated; no duplicate statement rows
+     (unique index on tenant_id, work_id, royalty_set_id, party, period_id).
+
+9) Final statement locked
+   - status=final first run; second generate without rebuild → 400.
+
+10) Missing US list price
+    - list_price rule but edition has no USD price in edition_prices → 400 validation.
+
+11) No matching rule
+    - Sales bucket format_label does not match any royalty_rules.format_label → 400.
+
+12) Ambiguous tiers
+    - Two tiers with overlapping conditions both match → 400.

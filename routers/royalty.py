@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pathlib import Path
+import logging
 import json
 import traceback
 import base64
+import uuid as uuid_lib
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import os, glob, shutil, subprocess, tempfile
+from pydantic import BaseModel, Field
+from psycopg.rows import dict_row
+from fastapi import APIRouter, Request, HTTPException
+from psycopg.rows import dict_row
+from app.core.db import db_conn
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
@@ -20,7 +27,8 @@ from models.royalty import (
 )
 
 from services.royalty_calculator import RoyaltyCalculator
-from services.s3_books import load_books
+
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------
@@ -43,11 +51,8 @@ router = APIRouter(prefix="/royalty", tags=["royalty"])
 calculator = RoyaltyCalculator()
 
 # -----------------------------
-# Paths (only used as fallback)
+# Paths
 # -----------------------------
-# If you set MARBLE_BOOKS_FILE on Windows, it will use that when not on S3.
-BOOKS_FILE = Path(os.getenv("MARBLE_BOOKS_FILE", r"C:\Users\szecs\Documents\marble_app\book_data\books.json"))
-
 LOGO_PATH = Path(os.getenv("MARBLE_LOGO_PATH", r"C:\Users\szecs\Documents\marble_app\assets\logo long2 NEW.png"))
 UPLOADS_DIR = Path(os.getenv("MARBLE_UPLOADS_DIR", r"C:\Users\szecs\Documents\marble_app\data\uploads"))
 ROYALTY_DATA_DIR = Path(os.getenv("MARBLE_ROYALTY_DATA_DIR", r"C:\Users\szecs\Documents\marble_app\book_data"))
@@ -60,56 +65,672 @@ FORCE_WEASYPRINT = True
 
 
 # =============================
-#     BOOKS LOADING (FIX)
+#     Catalog work list / resolve (SQL)
 # =============================
-def _normalize_books_payload(data: Any) -> list[dict]:
-    if data is None:
+def _tenant_slug() -> str:
+    return (os.getenv("NEXT_PUBLIC_TENANT_SLUG") or os.getenv("TENANT_SLUG") or "marble-press").strip()
+
+
+def _import_catalog_mod():
+    try:
+        import routers.catalog as cat
+        return cat
+    except Exception:
+        try:
+            from routers import catalog as cat  # type: ignore
+            return cat
+        except Exception:
+            return None
+
+
+def _list_books_from_catalog(limit: int = 200) -> list[dict]:
+    """Same item shape as GET /api/catalog/works (for royalty book picker)."""
+    cat = _import_catalog_mod()
+    if not cat:
+        print("[royalty] catalog module unavailable for book list")
         return []
-    if isinstance(data, dict) and "books" in data:
-        data = data["books"]
-    if not isinstance(data, list):
-        raise TypeError(f"books payload must be list (or dict with 'books'), got {type(data).__name__}")
-    # ensure dicts
-    out: list[dict] = []
-    for b in data:
-        if isinstance(b, dict):
-            out.append(b)
+    try:
+        from app.core.db import db_conn
+        from psycopg.rows import dict_row
+    except Exception as e:
+        print("[royalty] DB import failed for book list:", e)
+        return []
+    try:
+        with db_conn() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                tenant_id = cat._get_tenant_id_from_slug(cur, _tenant_slug())
+                cur.execute(
+                    """
+                    SELECT w.*
+                    FROM works w
+                    WHERE w.tenant_id = %s
+                    ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC
+                    LIMIT %s
+                    """,
+                    (tenant_id, limit),
+                )
+                rows = cur.fetchall() or []
+                work_ids = [str(r["id"]) for r in rows if r.get("id") is not None]
+                author_by_work: Dict[str, str] = {}
+                if work_ids:
+                    cur.execute(
+                        """
+                        SELECT
+                            wc.work_id,
+                            wc.contributor_role,
+                            p.display_name AS author,
+                            wc.sequence_number,
+                            wc.id
+                        FROM work_contributors wc
+                        JOIN parties p ON p.id = wc.party_id
+                        WHERE wc.work_id::text = ANY(%s)
+                        ORDER BY wc.work_id, wc.sequence_number, wc.id
+                        """,
+                        (work_ids,),
+                    )
+                    all_rows = cur.fetchall() or []
+                    grouped: Dict[str, List[Dict[str, Any]]] = {}
+                    for r in all_rows:
+                        grouped.setdefault(str(r["work_id"]), []).append(r)
+                    for wid, grp in grouped.items():
+                        preferred = None
+                        for r in grp:
+                            if cat._is_author_role(cat._safe_str(r.get("contributor_role"))):
+                                preferred = r
+                                break
+                        if preferred is None and grp:
+                            preferred = grp[0]
+                        if preferred and preferred.get("author"):
+                            author_by_work[wid] = cat._clean_display_name(preferred.get("author"))
+                items: list[dict] = []
+                for r in rows:
+                    it = cat._work_row_to_list_item(r)
+                    wid = str(r.get("id", ""))
+                    if wid in author_by_work:
+                        it["author"] = author_by_work[wid]
+                    items.append(it)
+                return items
+    except Exception as e:
+        print("[royalty] catalog book list failed:", e)
+        traceback.print_exc()
+        return []
+
+
+def _catalog_agent_list_or_card_to_agent_dict(val: Any) -> Optional[dict]:
+    """
+    Book.author_agent / Illustrator.agent expect a single Agent-shaped dict.
+    Catalog may use a list of agent rows (agent_name, role_label, …) or an agency card dict.
+    Contact categories also flatten to top-level keys like author_agent = [rows].
+    """
+    if val is None:
+        return None
+    if isinstance(val, list):
+        if not val:
+            return None
+        val = val[0]
+    if not isinstance(val, dict):
+        return None
+    if val.get("agent_name") is not None or val.get("role_label") is not None:
+        return {
+            "name": str(val.get("agent_name") or val.get("name") or "").strip(),
+            "agency": str(val.get("role_label") or val.get("agency") or "").strip(),
+            "email": str(val.get("agent_email") or val.get("email") or "").strip(),
+            "address": val.get("address"),
+        }
+    name = val.get("agent") or val.get("contact") or val.get("name") or ""
+    return {
+        "name": str(name).strip(),
+        "agency": str(val.get("agency") or "").strip(),
+        "email": str(val.get("email") or "").strip(),
+        "address": val.get("address"),
+    }
+
+
+def _normalize_catalog_payload_for_royalty_book(payload: dict) -> dict:
+    """Map catalog full-work JSON to shapes Book (Pydantic) accepts."""
+    out = dict(payload)
+    auth = out.get("author")
+    if isinstance(auth, dict):
+        nm = auth.get("name") or auth.get("display_name") or ""
+        out["author"] = str(nm).strip() if nm else ""
+    aa = out.get("author_agent")
+    if aa is not None:
+        out["author_agent"] = _catalog_agent_list_or_card_to_agent_dict(aa)
+    elif isinstance(out.get("author_agency"), dict) and not _is_blank_agentish(out["author_agency"]):
+        out["author_agent"] = _catalog_agent_list_or_card_to_agent_dict(out["author_agency"])
+
+    ill = out.get("illustrator")
+    if isinstance(ill, dict):
+        ill = dict(ill)
+        if not (ill.get("name") or "").strip() and ill.get("display_name"):
+            ill["name"] = str(ill["display_name"]).strip()
+        ill["agent"] = _catalog_agent_list_or_card_to_agent_dict(ill.get("agent"))
+        out["illustrator"] = ill
     return out
 
 
-def _get_books_list() -> list[dict]:
+def _is_blank_agentish(d: dict) -> bool:
+    return not any(str(v or "").strip() for k, v in d.items() if k != "address")
+
+
+def _fetch_book_dict_from_catalog(request: RoyaltyStatementRequest) -> Optional[dict]:
+    """Load full work payload from PostgreSQL (same source as /api/catalog/works)."""
+    cat = _import_catalog_mod()
+    if not cat:
+        print("[royalty] cannot import catalog module")
+        return None
+    slug = _tenant_slug()
+    uid = (request.uid or "").strip()
+    work_id = (request.work_id or "").strip()
+    if not uid and not work_id:
+        return None
+    try:
+        from app.core.db import db_conn
+        from psycopg.rows import dict_row
+    except Exception as e:
+        print("[royalty] catalog DB import failed:", e)
+        return None
+
+    def _parse_uuid(val: str) -> Optional[uuid_lib.UUID]:
+        if not val:
+            return None
+        try:
+            return uuid_lib.UUID(str(val).strip())
+        except Exception:
+            return None
+
+    try:
+        with db_conn() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                try:
+                    tenant_id = cat._get_tenant_id_from_slug(cur, slug)
+                except HTTPException:
+                    return None
+
+                resolved: Optional[str] = None
+                wid_u = _parse_uuid(work_id)
+                if wid_u:
+                    cur.execute(
+                        "SELECT id FROM works WHERE tenant_id = %s AND id = %s LIMIT 1",
+                        (tenant_id, wid_u),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        resolved = str(row["id"])
+                if not resolved:
+                    uid_u = _parse_uuid(uid)
+                    if uid_u:
+                        cur.execute(
+                            "SELECT id FROM works WHERE tenant_id = %s AND uid = %s LIMIT 1",
+                            (tenant_id, uid_u),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            resolved = str(row["id"])
+                if not resolved and uid:
+                    uid_as_id = _parse_uuid(uid)
+                    if uid_as_id:
+                        cur.execute(
+                            "SELECT id FROM works WHERE tenant_id = %s AND id = %s LIMIT 1",
+                            (tenant_id, uid_as_id),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            resolved = str(row["id"])
+                if not resolved:
+                    return None
+                payload = cat._build_full_work_payload(cur, tenant_id, resolved)
+    except Exception as e:
+        print("[royalty] catalog book load failed:", e)
+        traceback.print_exc()
+        return None
+
+    return _normalize_catalog_payload_for_royalty_book(payload)
+
+
+def _resolve_book_dict(request: RoyaltyStatementRequest) -> Optional[dict]:
+    return _fetch_book_dict_from_catalog(request)
+
+
+def _calc_with_db_history(
+    request: RoyaltyStatementRequest,
+    book: Book,
+    book_data: dict,
+) -> Dict[str, Any]:
+    """Run calculator with per-work statement history from royalty_statements when available."""
+    bid = str(
+        (book.uid or request.uid or request.work_id or book_data.get("uid") or book_data.get("id") or "")
+    ).strip()
+    work_pk = str(book_data.get("id") or "").strip()
+    author_h: Optional[list] = None
+    ill_h: Optional[list] = None
+    if work_pk:
+        try:
+            from app.core.db import db_conn
+            from psycopg.rows import dict_row
+            from services import royalty_statement_db as rsdb
+
+            cat = _import_catalog_mod()
+            if cat:
+                with db_conn() as conn:
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        tenant_id = cat._get_tenant_id_from_slug(cur, _tenant_slug())
+                        a, i = rsdb.load_work_statement_histories(cur, tenant_id, work_pk)
+                author_h = a if a else None
+                ill_h = i if i else None
+        except Exception as e:
+            print("[royalty] DB statement history unavailable, using JSON fallback:", e)
+            traceback.print_exc()
+
+    return calculator.calculate_royalties(
+        request,
+        book,
+        book_id=bid,
+        author_statement_history=author_h,
+        illustrator_statement_history=ill_h,
+    )
+
+
+def _persist_statement_calculations_to_db(
+    request: RoyaltyStatementRequest,
+    book_data: dict,
+    calcs: Dict[str, Any],
+) -> None:
+    work_pk = str(book_data.get("id") or "").strip()
+    if not work_pk:
+        return
+    try:
+        from app.core.db import db_conn
+        from psycopg.rows import dict_row
+        from services import royalty_statement_db as rsdb
+
+        cat = _import_catalog_mod()
+        if not cat:
+            return
+        with db_conn() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                tenant_id = cat._get_tenant_id_from_slug(cur, _tenant_slug())
+                for party_key in ("author", "illustrator"):
+                    block = calcs.get(party_key) or {}
+                    rsdb.upsert_statement(
+                        cur,
+                        tenant_id,
+                        work_pk,
+                        party_key,
+                        request.period_start,
+                        request.period_end,
+                        block,
+                    )
+    except Exception as e:
+        print("[royalty] could not persist statement to DB:", e)
+        traceback.print_exc()
+
+# =============================
+#     Subrights / Period APIs
+# =============================
+
+class SubrightsIncomeItem(BaseModel):
+    period_id: str
+    work_id: str
+    royalty_set_id: str
+    subrights_type_id: str
+    income_date: str
+    publisher_receipts: Decimal = Field(..., ge=0)
+
+
+class SubrightsIncomeCreateBody(BaseModel):
+    items: List[SubrightsIncomeItem]
+
+
+def _get_tenant_id_for_royalty(cur) -> str:
+    cat = _import_catalog_mod()
+    if not cat:
+        raise HTTPException(status_code=500, detail="Catalog module unavailable.")
+    try:
+        return str(cat._get_tenant_id_from_slug(cur, _tenant_slug()))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not resolve tenant: {e}")
+
+
+def _get_existing_columns(cur, table_name: str) -> set[str]:
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = %s
+        """,
+        (table_name,),
+    )
+    return {str(r["column_name"]) for r in (cur.fetchall() or [])}
+
+
+def _resolve_active_royalty_set_id(cur, tenant_id: str, work_id: str) -> str:
+    cur.execute(
+        """
+        SELECT id::text
+        FROM royalty_sets
+        WHERE tenant_id = %s::uuid
+          AND work_id = %s::uuid
+        ORDER BY is_active DESC, version DESC, created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (tenant_id, work_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No royalty set found for work_id={work_id}",
+        )
+    return str(row["id"])
+
+
+def _assert_period_exists(cur, tenant_id: str, period_id: str) -> None:
+    cur.execute(
+        """
+        SELECT 1
+        FROM royalty_periods
+        WHERE tenant_id = %s::uuid
+          AND id = %s::uuid
+        LIMIT 1
+        """,
+        (tenant_id, period_id),
+    )
+    if not cur.fetchone():
+        raise HTTPException(status_code=404, detail=f"Royalty period not found: {period_id}")
+
+
+def _assert_work_exists(cur, tenant_id: str, work_id: str) -> None:
+    cur.execute(
+        """
+        SELECT 1
+        FROM works
+        WHERE tenant_id = %s::uuid
+          AND id = %s::uuid
+        LIMIT 1
+        """,
+        (tenant_id, work_id),
+    )
+    if not cur.fetchone():
+        raise HTTPException(status_code=404, detail=f"Work not found: {work_id}")
+
+
+def _assert_royalty_set_belongs_to_work(cur, tenant_id: str, royalty_set_id: str, work_id: str) -> None:
+    cur.execute(
+        """
+        SELECT 1
+        FROM royalty_sets
+        WHERE tenant_id = %s::uuid
+          AND id = %s::uuid
+          AND work_id = %s::uuid
+        LIMIT 1
+        """,
+        (tenant_id, royalty_set_id, work_id),
+    )
+    if not cur.fetchone():
+        raise HTTPException(
+            status_code=400,
+            detail=f"royalty_set_id {royalty_set_id} does not belong to work_id {work_id}",
+        )
+
+
+def _load_subrights_options_for_work(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
+    royalty_set_id = _resolve_active_royalty_set_id(cur, tenant_id, work_id)
+
+    cur.execute(
+        """
+        SELECT
+            rr.id::text AS rule_id,
+            rr.party::text AS party,
+            rr.mode::text AS mode,
+            rr.base::text AS base,
+            rr.percent,
+            rr.flat_rate_percent,
+            rr.subrights_type_id::text AS subrights_type_id,
+            st.name
+        FROM royalty_rules rr
+        JOIN subrights_types st
+          ON st.id = rr.subrights_type_id
+        WHERE rr.tenant_id = %s::uuid
+          AND rr.royalty_set_id = %s::uuid
+          AND rr.rights_type = 'subrights'::roy_rights_type
+          AND rr.subrights_type_id IS NOT NULL
+        ORDER BY st.name ASC, rr.party ASC, rr.id ASC
+        """,
+        (tenant_id, royalty_set_id),
+    )
+
+    rows = cur.fetchall() or []
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    for r in rows:
+        stid = str(r["subrights_type_id"])
+        rec = grouped.setdefault(
+            stid,
+            {
+                "rule_id": str(r["rule_id"]),
+                "subrights_type_id": stid,
+                "name": str(r.get("name") or ""),
+                "base": str(r.get("base") or "net_receipts"),
+                "author_percent": None,
+                "illustrator_percent": None,
+                "author_mode": None,
+                "illustrator_mode": None,
+            },
+        )
+
+        party = str(r.get("party") or "").lower()
+        pct_val = r.get("percent")
+        if pct_val is None:
+            pct_val = r.get("flat_rate_percent")
+        pct_num = float(pct_val) if pct_val is not None else None
+
+        if party == "author":
+            rec["author_percent"] = pct_num
+            rec["author_mode"] = r.get("mode")
+        elif party == "illustrator":
+            rec["illustrator_percent"] = pct_num
+            rec["illustrator_mode"] = r.get("mode")
+
+        # keep whichever base is stored on the rule; subrights should be net_receipts
+        if r.get("base") is not None:
+            rec["base"] = str(r["base"])
+
+    return list(grouped.values())
+
+
+def _insert_subrights_income_row(cur, tenant_id: str, item: SubrightsIncomeItem) -> None:
+    cols = _get_existing_columns(cur, "subrights_income_lines")
+
+    insert_cols: List[str] = [
+        "tenant_id",
+        "period_id",
+        "work_id",
+        "subrights_type_id",
+        "publisher_receipts",
+    ]
+    insert_vals: List[Any] = [
+        tenant_id,
+        item.period_id,
+        item.work_id,
+        item.subrights_type_id,
+        item.publisher_receipts,
+    ]
+
+    if "income_date" in cols:
+        insert_cols.append("income_date")
+        insert_vals.append(item.income_date)
+    elif "transaction_date" in cols:
+        insert_cols.append("transaction_date")
+        insert_vals.append(item.income_date)
+
+    if "royalty_set_id" in cols:
+        insert_cols.append("royalty_set_id")
+        insert_vals.append(item.royalty_set_id)
+
+    if "gross_amount" in cols:
+        insert_cols.append("gross_amount")
+        insert_vals.append(item.publisher_receipts)
+
+    placeholders = ", ".join(["%s"] * len(insert_cols))
+    sql = f"""
+        INSERT INTO subrights_income_lines ({", ".join(insert_cols)})
+        VALUES ({placeholders})
     """
-    ✅ Primary: S3 load_books()
-    Fallback: calculator.get_books()
-    Last fallback: BOOKS_FILE
+    cur.execute(sql, insert_vals)
+
+
+@router.get("/periods")
+def get_royalty_periods() -> List[Dict[str, Any]]:
+    try:
+        from app.core.db import db_conn
+        with db_conn() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                tenant_id = _get_tenant_id_for_royalty(cur)
+                cur.execute(
+                    """
+                    SELECT
+                        id::text AS id,
+                        period_code,
+                        period_start::text AS period_start,
+                        period_end::text AS period_end,
+                        COALESCE(is_closed, false) AS is_closed,
+
+                        CASE
+                            WHEN period_code LIKE '%%-H1'
+                                THEN split_part(period_code, '-', 1) || ' H1 (Jan 1 – Jun 30)'
+                            WHEN period_code LIKE '%%-H2'
+                                THEN split_part(period_code, '-', 1) || ' H2 (Jul 1 – Dec 31)'
+                            ELSE period_code
+                        END AS display_label
+
+                    FROM royalty_periods
+                    WHERE tenant_id = %s::uuid
+                      AND period_code ~ '^\d{4}-H[12]$'
+                    ORDER BY period_start DESC, period_end DESC
+                    """,
+                    (tenant_id,),
+                )
+                rows = cur.fetchall() or []
+                return [dict(r) for r in rows]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not load royalty periods: {e}")
+
+
+@router.get("/subrights/options")
+def get_subrights_options(work_id: str = Query(...)) -> List[Dict[str, Any]]:
     """
-    # 1) S3
+    Returns subrights options for the active royalty set on a work.
+    Output shape:
+    [{
+      rule_id,
+      subrights_type_id,
+      name,
+      base,
+      author_percent,
+      illustrator_percent,
+      author_mode,
+      illustrator_mode
+    }]
+    """
     try:
-        data = load_books()
-        return _normalize_books_payload(data)
+        from app.core.db import db_conn
+        with db_conn() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                tenant_id = _get_tenant_id_for_royalty(cur)
+                _assert_work_exists(cur, tenant_id, work_id)
+                return _load_subrights_options_for_work(cur, tenant_id, work_id)
+    except HTTPException:
+        raise
     except Exception as e:
-        print("[/royalty/books] load_books() failed:", e)
-        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Could not load subrights options: {e}")
 
-    # 2) Calculator fallback
+
+@router.post("/subrights/income")
+def create_subrights_income_rows(body: SubrightsIncomeCreateBody) -> Dict[str, Any]:
+    """
+    Saves manual subrights receipt rows for a royalty period.
+    Input:
+    {
+      "items": [{
+        "period_id",
+        "work_id",
+        "royalty_set_id",
+        "subrights_type_id",
+        "income_date",
+        "publisher_receipts"
+      }]
+    }
+    """
+    if not body.items:
+        raise HTTPException(status_code=400, detail="No subrights income rows were provided.")
+
     try:
-        data = calculator.get_books()
-        return _normalize_books_payload(data)
+        from app.core.db import db_conn
+        with db_conn() as conn:
+            prev_ac = conn.autocommit
+            conn.autocommit = False
+            try:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    tenant_id = _get_tenant_id_for_royalty(cur)
+
+                    for item in body.items:
+                        _assert_period_exists(cur, tenant_id, item.period_id)
+                        _assert_work_exists(cur, tenant_id, item.work_id)
+                        _assert_royalty_set_belongs_to_work(cur, tenant_id, item.royalty_set_id, item.work_id)
+
+                        cur.execute(
+                            """
+                            SELECT 1
+                            FROM subrights_types
+                            WHERE id = %s::uuid
+                            LIMIT 1
+                            """,
+                            (item.subrights_type_id,),
+                        )
+                        if not cur.fetchone():
+                            raise HTTPException(
+                                status_code=404,
+                                detail=f"Subrights type not found: {item.subrights_type_id}",
+                            )
+
+                        _insert_subrights_income_row(cur, tenant_id, item)
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = prev_ac
+
+        return {"message": "Saved", "saved_count": len(body.items)}
+    except HTTPException:
+        raise
     except Exception as e:
-        print("[/royalty/books] calculator.get_books() failed:", e)
-        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Could not save subrights income rows: {e}")
 
-    # 3) Local file fallback
-    try:
-        if BOOKS_FILE.exists():
-            arr = json.loads(BOOKS_FILE.read_text(encoding="utf-8"))
-            return _normalize_books_payload(arr)
-    except Exception as e:
-        print("[/royalty/books] BOOKS_FILE fallback failed:", e)
-        print(traceback.format_exc())
+def _require_tenant(request: Request) -> str:
+    tenant_slug = request.headers.get("X-Tenant")
+    if not tenant_slug:
+        raise HTTPException(status_code=403, detail="X-Tenant header required for royalty")
 
-    return []
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT id FROM tenants WHERE slug = %s LIMIT 1",
+                (tenant_slug,)
+            )
+            row = cur.fetchone()
 
+            if not row:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+
+            return row["id"]
 
 # =============================
 #           ROUTES
@@ -117,11 +738,7 @@ def _get_books_list() -> list[dict]:
 
 @router.get("/")
 def info():
-    books = []
-    try:
-        books = _get_books_list()
-    except Exception:
-        books = []
+    books = _list_books_from_catalog()
     total = len(books)
     return {
         "message": "Royalty Calculator API",
@@ -136,56 +753,242 @@ def info():
             "delete_statement": "/api/royalty/statements/{person_type}/{person_name} (DELETE)",
             "categories": "/api/royalty/categories",
             "format_types": "/api/royalty/format-types",
+            "periods": "/api/royalty/periods",
+            "subrights_options": "/api/royalty/subrights/options?work_id=...",
+            "subrights_income": "/api/royalty/subrights/income (POST)",
         },
         "total_books": total,
     }
 
 
 @router.get("/books", response_model=List[Dict[str, Any]])
-def get_books():
-    """
-    ✅ Returns a top-level JSON array of books from S3 (load_books()).
-    """
+def get_books(request: Request):
+    """Top-level JSON array of works from the catalog database, enriched with active royalty set id."""
     try:
-        return _get_books_list()
+        books = _list_books_from_catalog() or []
+
+        if not books:
+            return []
+
+        tenant_id = _require_tenant(request)
+
+        work_ids = []
+        for b in books:
+            work_id = b.get("id") or b.get("work_id")
+            if work_id:
+                work_ids.append(str(work_id))
+
+        royalty_by_work: Dict[str, Dict[str, Any]] = {}
+
+        if work_ids:
+            with db_conn() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT ON (rs.work_id)
+                            rs.work_id::text AS work_id,
+                            rs.id::text AS active_royalty_set_id,
+                            rs.version
+                        FROM royalty_sets rs
+                        WHERE rs.tenant_id = %s::uuid
+                          AND rs.work_id::text = ANY(%s)
+                        ORDER BY rs.work_id, rs.is_active DESC, rs.version DESC, rs.created_at DESC, rs.id DESC
+                        """,
+                        (tenant_id, work_ids),
+                    )
+                    for row in cur.fetchall() or []:
+                        royalty_by_work[str(row["work_id"])] = {
+                            "active_royalty_set_id": row["active_royalty_set_id"],
+                            "active_royalty_set_version": row["version"],
+                        }
+
+        enriched: List[Dict[str, Any]] = []
+        for b in books:
+            item = dict(b)
+            work_id = str(item.get("id") or item.get("work_id") or "")
+            extra = royalty_by_work.get(work_id, {})
+            item["active_royalty_set_id"] = extra.get("active_royalty_set_id")
+            item["active_royalty_set_version"] = extra.get("active_royalty_set_version")
+            enriched.append(item)
+
+        return enriched
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
 
 
 @router.post("/books")
 def save_book(payload: Dict[str, Any]):
-    """
-    Save or update a book while preserving ALL fields provided by the frontend.
-    Note: This still uses calculator.save_book_raw (your current behavior).
-    """
-    try:
-        result = calculator.save_book_raw(payload)
-        return {"message": "Book saved successfully", "book": result}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Books live in SQL; use POST /api/catalog/works (or the catalog UI) to create or update works."""
+    raise HTTPException(
+        status_code=410,
+        detail="Royalty JSON book storage is removed. Save works via POST /api/catalog/works.",
+    )
+
+@router.get("/periods")
+def get_periods(request: Request):
+    tenant_id = _require_tenant(request)
+
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("""
+                SELECT
+                    id,
+                    period_code,
+                    period_start,
+                    period_end,
+                    is_closed
+                FROM royalty_periods
+                WHERE tenant_id = %s
+                ORDER BY period_start DESC
+            """, (tenant_id,))
+
+            rows = cur.fetchall() or []
+
+    return rows
+
+@router.get("/subrights/options")
+def get_subrights_options(work_id: str, request: Request):
+    tenant_id = _require_tenant(request)
+
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+
+            # get active royalty set
+            cur.execute("""
+                SELECT id
+                FROM royalty_sets
+                WHERE tenant_id = %s
+                  AND work_id = %s
+                  AND is_active = true
+                LIMIT 1
+            """, (tenant_id, work_id))
+
+            rs = cur.fetchone()
+            if not rs:
+                return []
+
+            royalty_set_id = rs["id"]
+
+            # get subrights rules
+            cur.execute("""
+                SELECT
+                    rr.id AS rule_id,
+                    rr.subrights_type_id,
+                    st.name,
+                    rr.base,
+
+                    -- author %
+                    MAX(CASE WHEN rr.party = 'author' THEN rr.percent END) AS author_percent,
+
+                    -- illustrator %
+                    MAX(CASE WHEN rr.party = 'illustrator' THEN rr.percent END) AS illustrator_percent,
+
+                    MAX(CASE WHEN rr.party = 'author' THEN rr.mode END) AS author_mode,
+                    MAX(CASE WHEN rr.party = 'illustrator' THEN rr.mode END) AS illustrator_mode
+
+                FROM royalty_rules rr
+                JOIN subrights_types st
+                  ON st.id = rr.subrights_type_id
+
+                WHERE rr.tenant_id = %s
+                  AND rr.royalty_set_id = %s
+                  AND rr.rights_type = 'subrights'
+
+                GROUP BY rr.id, rr.subrights_type_id, st.name, rr.base
+                ORDER BY st.name
+            """, (tenant_id, royalty_set_id))
+
+            rows = cur.fetchall() or []
+
+    return rows
+
+from pydantic import BaseModel
+from typing import List
+from datetime import date
+
+
+class SubrightsIncomeItem(BaseModel):
+    period_id: str
+    work_id: str
+    royalty_set_id: str
+    subrights_type_id: str
+    income_date: date
+    publisher_receipts: float
+
+
+class SubrightsIncomePayload(BaseModel):
+    items: List[SubrightsIncomeItem]
+
+
+@router.post("/subrights/income")
+def save_subrights_income(payload: SubrightsIncomePayload, request: Request):
+    tenant_id = _require_tenant(request)
+
+    if not payload.items:
+        return {"ok": True, "inserted": 0}
+
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+
+            for item in payload.items:
+                cur.execute("""
+                    INSERT INTO subrights_income_lines (
+                        tenant_id,
+                        period_id,
+                        work_id,
+                        royalty_set_id,
+                        subrights_type_id,
+                        income_date,
+                        publisher_receipts,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now())
+                """, (
+                    tenant_id,
+                    item.period_id,
+                    item.work_id,
+                    item.royalty_set_id,
+                    item.subrights_type_id,
+                    item.income_date,
+                    item.publisher_receipts
+                ))
+
+        conn.commit()
+
+    return {"ok": True, "inserted": len(payload.items)}
 
 
 @router.delete("/books")
 def delete_book(title: str, author: str):
-    success = calculator.delete_book(title, author)
-    if success:
-        return {"message": "Book deleted successfully"}
-    raise HTTPException(status_code=404, detail="Book not found")
+    raise HTTPException(
+        status_code=410,
+        detail="Royalty JSON book storage is removed. Delete or archive works via the catalog API.",
+    )
 
 
 @router.post("/calculate")
 def calculate_royalties(request: RoyaltyStatementRequest):
     """
-    Finds the requested book by uid and returns the calculation dict.
-    ✅ Uses S3 books.
+    Finds the requested work by uid or work_id and returns the calculation dict (catalog / SQL only).
     """
-    books = _get_books_list()
-    for b in books:
-        if b.get("uid") == request.uid:
-            book = Book.model_validate(b)
-            calcs = calculator.calculate_royalties(request, book)
-            return {"message": "OK", "calculations": calcs}
-    raise HTTPException(status_code=404, detail=f"Book not found for uid: {request.uid}")
+    logger.info(
+        "POST /api/royalty/calculate work_id=%s uid=%s period=%s..%s",
+        request.work_id,
+        request.uid,
+        request.period_start,
+        request.period_end,
+    )
+    book_data = _resolve_book_dict(request)
+    if not book_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Book not found for uid/work_id: {request.uid or request.work_id}",
+        )
+    book = Book.model_validate(book_data)
+    calcs = _calc_with_db_history(request, book, book_data)
+    return {"message": "OK", "calculations": calcs}
 
 
 @router.post("/statements")
@@ -194,7 +997,7 @@ def save_royalty_statement(request: RoyaltyStatementRequest):
     Saves royalty statements and generates PDFs conditionally:
     - Author: if there is any sales/royalty row (same as before)
     - Illustrator: ONLY if there is at least one royalty % > 0
-    ✅ Uses S3 books.
+    Resolves the work from the catalog (SQL) only.
     """
     def has_party_rows(pdata: Dict | None) -> bool:
         if not pdata:
@@ -202,96 +1005,98 @@ def save_royalty_statement(request: RoyaltyStatementRequest):
         cats = pdata.get("categories") or []
         return bool(isinstance(cats, list) and len(cats) > 0)
 
-    books = _get_books_list()
-    for b in books:
-        if b.get("uid") == request.uid:
-            book = Book.model_validate(b)
+    book_data = _resolve_book_dict(request)
+    if not book_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Book not found for uid/work_id: {request.uid or request.work_id}",
+        )
+    book = Book.model_validate(book_data)
+    stmt_uid = str((book.uid or request.uid or book_data.get("uid") or request.work_id or "")).strip()
+    if not stmt_uid:
+        stmt_uid = str(book_data.get("id") or "")
 
-            # Calculate once
-            calcs = calculator.calculate_royalties(request, book)
-            author_data = calcs.get("author") or {}
-            illustrator_data = calcs.get("illustrator") or {}
+    calcs = _calc_with_db_history(request, book, book_data)
+    author_data = calcs.get("author") or {}
+    illustrator_data = calcs.get("illustrator") or {}
 
-            saved_parties: list[str] = []
+    saved_parties: list[str] = []
 
-            def write_party_json(party: str, party_data: Dict):
-                party_file = ROYALTY_DATA_DIR / f"{party}_royalty.json"
-                statement_data = {
-                    "uid": request.uid,
-                    "book_title": book.title,
-                    "book_author": book.author,
-                    "party": party,
-                    "period_start": request.period_start,
-                    "period_end": request.period_end,
-                    "generated_at": datetime.now().isoformat(),
-                    "sales_data": [
-                        sd.dict() if hasattr(sd, "dict") else dict(sd)
-                        for sd in request.sales_data
-                    ],
-                    "calculations": party_data,
-                }
-                try:
-                    existing: list = []
-                    if party_file.exists():
-                        maybe = json.loads(party_file.read_text(encoding="utf-8"))
-                        existing = maybe if isinstance(maybe, list) else []
-                    filtered = []
-                    for e in existing:
-                        e_uid = e.get("uid") or e.get("book_uid")
-                        if not (
-                            e_uid == statement_data["uid"]
-                            and e.get("period_start") == statement_data["period_start"]
-                            and e.get("period_end") == statement_data["period_end"]
-                        ):
-                            filtered.append(e)
-                    filtered.append(statement_data)
-                    ROYALTY_DATA_DIR.mkdir(parents=True, exist_ok=True)
-                    party_file.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
-                except Exception as e:
-                    print(f"[statements] Error saving to {party_file}: {e}")
+    def write_party_json(party: str, party_data: Dict):
+        party_file = ROYALTY_DATA_DIR / f"{party}_royalty.json"
+        statement_data = {
+            "uid": stmt_uid,
+            "book_title": book.title,
+            "book_author": book.author,
+            "party": party,
+            "period_start": request.period_start,
+            "period_end": request.period_end,
+            "generated_at": datetime.now().isoformat(),
+            "sales_data": [
+                sd.dict() if hasattr(sd, "dict") else dict(sd)
+                for sd in request.sales_data
+            ],
+            "calculations": party_data,
+        }
+        try:
+            existing: list = []
+            if party_file.exists():
+                maybe = json.loads(party_file.read_text(encoding="utf-8"))
+                existing = maybe if isinstance(maybe, list) else []
+            filtered = []
+            for e in existing:
+                e_uid = e.get("uid") or e.get("book_uid")
+                if not (
+                    e_uid == statement_data["uid"]
+                    and e.get("period_start") == statement_data["period_start"]
+                    and e.get("period_end") == statement_data["period_end"]
+                ):
+                    filtered.append(e)
+            filtered.append(statement_data)
+            ROYALTY_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            party_file.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[statements] Error saving to {party_file}: {e}")
 
-            book_upload_dir = UPLOADS_DIR / request.uid
-            book_upload_dir.mkdir(parents=True, exist_ok=True)
+    book_upload_dir = UPLOADS_DIR / stmt_uid
+    book_upload_dir.mkdir(parents=True, exist_ok=True)
 
-            # --- AUTHOR (unchanged)
-            if has_party_rows(author_data):
-                try:
-                    write_party_json("author", author_data)
-                    author_pdf = generate_statement_pdf(book, request, author_data, "author")
-                    author_filename = f"royalty_statement_author_{request.period_start}_{request.period_end}.pdf"
-                    (book_upload_dir / author_filename).write_bytes(author_pdf)
-                    print(f"[save] Saved author PDF to {(book_upload_dir / author_filename)}")
-                    saved_parties.append("author")
-                except Exception as e:
-                    print(f"[save] Error generating/saving author statement: {e}")
-            else:
-                print("[save] Skipping author statement (no author rows).")
+    if has_party_rows(author_data):
+        try:
+            write_party_json("author", author_data)
+            author_pdf = generate_statement_pdf(book, request, author_data, "author")
+            author_filename = f"royalty_statement_author_{request.period_start}_{request.period_end}.pdf"
+            (book_upload_dir / author_filename).write_bytes(author_pdf)
+            print(f"[save] Saved author PDF to {(book_upload_dir / author_filename)}")
+            saved_parties.append("author")
+        except Exception as e:
+            print(f"[save] Error generating/saving author statement: {e}")
+    else:
+        print("[save] Skipping author statement (no author rows).")
 
-            # --- ILLUSTRATOR: require royalty % > 0
-            if has_party_rows(illustrator_data) and has_positive_royalty_percent(illustrator_data):
-                try:
-                    write_party_json("illustrator", illustrator_data)
-                    illustrator_pdf = generate_statement_pdf(book, request, illustrator_data, "illustrator")
-                    illustrator_filename = f"royalty_statement_illustrator_{request.period_start}_{request.period_end}.pdf"
-                    (book_upload_dir / illustrator_filename).write_bytes(illustrator_pdf)
-                    print(f"[save] Saved illustrator PDF to {(book_upload_dir / illustrator_filename)}")
-                    saved_parties.append("illustrator")
-                except Exception as e:
-                    print(f"[save] Error generating/saving illustrator statement: {e}")
-            else:
-                print("[save] Skipping illustrator statement (no royalty % > 0).")
+    if has_party_rows(illustrator_data) and has_positive_royalty_percent(illustrator_data):
+        try:
+            write_party_json("illustrator", illustrator_data)
+            illustrator_pdf = generate_statement_pdf(book, request, illustrator_data, "illustrator")
+            illustrator_filename = f"royalty_statement_illustrator_{request.period_start}_{request.period_end}.pdf"
+            (book_upload_dir / illustrator_filename).write_bytes(illustrator_pdf)
+            print(f"[save] Saved illustrator PDF to {(book_upload_dir / illustrator_filename)}")
+            saved_parties.append("illustrator")
+        except Exception as e:
+            print(f"[save] Error generating/saving illustrator statement: {e}")
+    else:
+        print("[save] Skipping illustrator statement (no royalty % > 0).")
 
-            # Rebuild index but don't fail the request
-            try:
-                rebuild_author_index_from_log(ROYALTY_DATA_DIR)
-            except Exception as reidx_err:
-                print(f"[save] WARNING: could not rebuild author index: {reidx_err}")
+    try:
+        rebuild_author_index_from_log(ROYALTY_DATA_DIR)
+    except Exception as reidx_err:
+        print(f"[save] WARNING: could not rebuild author index: {reidx_err}")
 
-            if not saved_parties:
-                return {"message": "No statements saved (author/illustrator conditions not met).", "saved": []}
-            return {"message": "Saved", "saved": saved_parties}
+    _persist_statement_calculations_to_db(request, book_data, calcs)
 
-    raise HTTPException(status_code=404, detail=f"Book not found for uid: {request.uid}")
+    if not saved_parties:
+        return {"message": "No statements saved (author/illustrator conditions not met).", "saved": []}
+    return {"message": "Saved", "saved": saved_parties}
 
 
 @router.get("/statements/{person_type}/{person_name}")
@@ -342,19 +1147,19 @@ def render_royalty_statement(
         row has a royalty % strictly greater than 0. If not, return a 200
         HTML placeholder (for html) or 204 (for pdf) instead of 400.
     """
-    # Locate book (✅ S3)
-    books = _get_books_list()
-    book_data = next((b for b in books if b.get("uid") == request.uid), None)
+    book_data = _resolve_book_dict(request)
     if not book_data:
-        available_uids = [b.get("uid") for b in books if b.get("uid")][:5]
         raise HTTPException(
             status_code=404,
-            detail=f"Book not found for uid: {request.uid}. Available UIDs (first 5): {available_uids}",
+            detail=f"Book not found for uid/work_id: {request.uid or request.work_id}",
         )
     book = Book.model_validate(book_data)
+    stmt_uid = str((book.uid or request.uid or book_data.get("uid") or request.work_id or "")).strip()
+    if not stmt_uid:
+        stmt_uid = str(book_data.get("id") or "")
 
     # Calculate once
-    calcs = calculator.calculate_royalties(request, book)
+    calcs = _calc_with_db_history(request, book, book_data)
     party_data = calcs.get(party, {}) or {}
     has_rows = bool(party_data.get("categories"))
 
@@ -385,7 +1190,7 @@ def render_royalty_statement(
         raise HTTPException(status_code=400, detail=f"No {party} data in calculations")
 
     statement_data = {
-        "uid": request.uid,
+        "uid": stmt_uid,
         "book_title": book.title,
         "book_author": book.author,
         "party": party,

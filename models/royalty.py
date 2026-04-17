@@ -176,11 +176,17 @@ class PaymentSummary(BaseModel):
 
 
 class RoyaltyStatementRequest(BaseModel):
-    # REQUIRED uid from client
-    uid: str
+    uid: str | None = None
+    work_id: str | None = None
     period_start: str
     period_end: str
-    sales_data: List[SalesData]
+    sales_data: list[Any]
+    author_rates: dict[str, float]
+    illustrator_rates: dict[str, float]
+    author_advance: float = 0
+    illustrator_advance: float = 0
+    logo_url: str | None = None
+    logoUrl: str | None = None
 
     # Simple rates (legacy) are used when Book.royalties is not present
     author_rates: Dict[str, float] = Field(default_factory=dict)

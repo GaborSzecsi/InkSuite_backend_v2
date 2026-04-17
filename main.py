@@ -110,6 +110,8 @@ from routers import financialuploads  # noqa: E402
 from routers.contract_invites import router as contract_invites
 from routers.catalog import router as catalog_router
 from app.onix.router import router as onix_router
+from routers.salesdata import router as salesdata_router
+from routers.royalty_engine import router as royalty_engine_router
 
 # ---------------------------------------------------------------------
 # Routers (mount ONCE, consistently)
@@ -132,6 +134,7 @@ app.include_router(onix_router, prefix="/api")
 
 # Core
 app.include_router(royalty.router, prefix="/api", tags=["Royalty"])
+app.include_router(royalty_engine_router, prefix="/api", tags=["Royalty Statements Engine"])
 app.include_router(books.router, prefix="/api", tags=["Books"])
 app.include_router(uploads.router, prefix="/api", tags=["Uploads"])
 app.include_router(banking.router, prefix="/api", tags=["Banking"])
@@ -149,6 +152,7 @@ app.include_router(ingest.router, prefix="/api", tags=["Ingest"])
 
 # Financials: mount under /api so it’s protected and consistent with your frontend URLs
 app.include_router(financials_router, prefix="/api", tags=["Financials"])
+app.include_router(salesdata_router, prefix="/api")
 
 # Upload endpoints under /api
 app.include_router(financialuploads.router, prefix="/api", tags=["Financial Uploads"])

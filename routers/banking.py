@@ -1,15 +1,21 @@
-import os, json, pathlib
+import os
+import json
+import pathlib
 from typing import Any, Dict
-from fastapi import APIRouter
+
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
-router = APIRouter()
+router = APIRouter(prefix="/banking", tags=["Banking"])
+
 DATA_DIR = os.environ.get("DATA_DIR", "./data")
 BANK_FILE = os.path.join(DATA_DIR, "banking.json")
+
 pathlib.Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 if not os.path.exists(BANK_FILE):
     with open(BANK_FILE, "w", encoding="utf-8") as f:
         json.dump({}, f)
+
 
 class USBankInfo(BaseModel):
     routing: str
@@ -18,6 +24,7 @@ class USBankInfo(BaseModel):
     bankName: str | None = None
     bankAddress: str | None = None
     validated: bool | None = None
+
 
 class ForeignBankInfo(BaseModel):
     bankName: str | None = None
@@ -28,18 +35,22 @@ class ForeignBankInfo(BaseModel):
     accountNumber: str | None = None
     currency: str | None = None
 
+
 class BankingParty(BaseModel):
     isForeign: bool = False
     us: USBankInfo | None = None
     foreign: ForeignBankInfo | None = None
 
+
 class BankingEnvelope(BaseModel):
     author: BankingParty = Field(default_factory=BankingParty)
     illustrator: BankingParty = Field(default_factory=BankingParty)
 
+
 def _load() -> Dict[str, Any]:
     with open(BANK_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def _save(payload: Dict[str, Any]) -> None:
     tmp = BANK_FILE + ".tmp"
@@ -47,14 +58,16 @@ def _save(payload: Dict[str, Any]) -> None:
         json.dump(payload, f, indent=2)
     os.replace(tmp, BANK_FILE)
 
-@router.get("/{book_key}", response_model=BankingEnvelope)
-def get_banking(book_key: str):
-    db = _load()
-    return db.get(book_key, BankingEnvelope().model_dump())
 
-@router.put("/{book_key}", response_model=BankingEnvelope)
-def put_banking(book_key: str, payload: BankingEnvelope):
+@router.get("", response_model=BankingEnvelope)
+def get_banking(bookKey: str = Query(...)):
     db = _load()
-    db[book_key] = payload.model_dump()
+    return db.get(bookKey, BankingEnvelope().model_dump())
+
+
+@router.put("", response_model=BankingEnvelope)
+def put_banking(payload: BankingEnvelope, bookKey: str = Query(...)):
+    db = _load()
+    db[bookKey] = payload.model_dump()
     _save(db)
     return payload

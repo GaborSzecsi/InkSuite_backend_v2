@@ -179,9 +179,27 @@ def _clean_nan(obj: Any) -> Any:
     return obj
 
 
+def _author_key_part(author_val: Any) -> str:
+    if author_val is None:
+        return ""
+    if isinstance(author_val, str):
+        return author_val.strip().lower()
+    if isinstance(author_val, dict):
+        name = (
+            author_val.get("name")
+            or " ".join(
+                x for x in (author_val.get("first_name"), author_val.get("last_name")) if x
+            ).strip()
+        )
+        return (name or "").strip().lower()
+    return str(author_val).strip().lower()
+
+
 def _make_key(b: Dict[str, Any]) -> str:
     t = (b.get("title") or "").strip().lower()
-    a = (b.get("author") or "").strip().lower()
+    a = _author_key_part(b.get("author"))
+    if not a and b.get("author_name"):
+        a = str(b.get("author_name") or "").strip().lower()
     return f"{t}__{a}" if (t or a) else ""
 
 

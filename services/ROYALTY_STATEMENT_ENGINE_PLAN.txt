@@ -1,0 +1,13 @@
+Royalty statement engine — implementation plan
+================================================
+
+Modules: services/royalty_statement_engine.py (core), routers/royalty_engine.py (API),
+migrations/004_royalty_statement_engine.sql (DDL).
+
+Flow: load period + work + royalty_set; load sales for period; bucket by edition_id + format label;
+match first_rights rule; pick tier by conditions; basis from rule/tier base (list_price uses edition USD list
+price × net_units; net_receipts uses sum publisher_receipts); persist lines + header with recoupment.
+
+Draft idempotency: unique (tenant_id, work_id, royalty_set_id, party, period_id); delete lines then replace.
+
+See royalty_statement_engine.py docstrings for function boundaries.
