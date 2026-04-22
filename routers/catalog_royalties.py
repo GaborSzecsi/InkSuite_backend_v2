@@ -6,199 +6,6 @@ from typing import Any, Dict, Optional
 from .catalog_shared import (_safe_str,)
 
 
-def _clone_royalty_graph_to_work(
-    cur,
-    tenant_id: str,
-    work_id: str,
-    source_royalty_set_id: str,
-    author_party_id: Optional[str] = None,
-    illustrator_party_id: Optional[str] = None,
-) -> str:
-    target_set_id = _get_royalty_set_for_write(cur, tenant_id, work_id)
-
-    _clear_royalty_graph_for_set(cur, tenant_id, target_set_id)
-
-    try:
-        cur.execute(
-            """
-            DELETE FROM advances
-            WHERE tenant_id = %s
-              AND royalty_set_id = %s
-            """,
-            (tenant_id, target_set_id),
-        )
-    except Exception:
-        pass
-
-    cur.execute(
-        """
-        SELECT
-            rr.party,
-            rr.rights_type,
-            rr.format_label,
-            rr.mode,
-            rr.base,
-            rr.escalating,
-            rr.flat_rate_percent,
-            rr.percent,
-            rr.notes,
-            st.name AS subrights_name,
-            rr.id AS source_rule_id
-        FROM royalty_rules rr
-        LEFT JOIN subrights_types st
-          ON st.id = rr.subrights_type_id
-        WHERE rr.tenant_id = %s
-          AND rr.royalty_set_id = %s
-        ORDER BY rr.party, rr.rights_type, rr.format_label, rr.id
-        """,
-        (tenant_id, source_royalty_set_id),
-    )
-    rule_rows = cur.fetchall() or []
-
-    for rr in rule_rows:
-        rule_obj = {
-            "format": _safe_str(rr.get("format_label")),
-            "format_label": _safe_str(rr.get("format_label")),
-            "mode": _safe_str(rr.get("mode")),
-            "base": _safe_str(rr.get("base")),
-            "escalating": bool(rr.get("escalating") or False),
-            "flat_rate_percent": rr.get("flat_rate_percent"),
-            "percent": rr.get("percent"),
-            "note": _safe_str(rr.get("notes")),
-            "notes": _safe_str(rr.get("notes")),
-            "tiers": [],
-        }
-
-        if _safe_str(rr.get("rights_type")) == "subrights":
-            rule_obj["name"] = _safe_str(rr.get("subrights_name") or rr.get("format_label"))
-            rule_obj["subrights_name"] = _safe_str(rr.get("subrights_name") or rr.get("format_label"))
-
-        cur.execute(
-            """
-            SELECT id, tier_order, rate_percent, base, note
-            FROM royalty_tiers
-            WHERE tenant_id = %s
-              AND rule_id = %s
-            ORDER BY tier_order ASC, id ASC
-            """,
-            (tenant_id, rr["source_rule_id"]),
-        )
-        tier_rows = cur.fetchall() or []
-
-        for tr in tier_rows:
-            tier_obj = {
-                "rate_percent": tr.get("rate_percent"),
-                "base": _safe_str(tr.get("base")),
-                "note": _safe_str(tr.get("note")),
-                "conditions": [],
-            }
-
-            try:
-                cur.execute(
-                    """
-                    SELECT kind, comparator, value, value_min, value_max
-                    FROM royalty_tier_conditions
-                    WHERE tenant_id = %s
-                      AND tier_id = %s
-                    ORDER BY id ASC
-                    """,
-                    (tenant_id, tr["id"]),
-                )
-                cond_rows = cur.fetchall() or []
-                has_range = True
-            except Exception:
-                cur.execute(
-                    """
-                    SELECT kind, comparator, value
-                    FROM royalty_tier_conditions
-                    WHERE tenant_id = %s
-                      AND tier_id = %s
-                    ORDER BY id ASC
-                    """,
-                    (tenant_id, tr["id"]),
-                )
-                cond_rows = cur.fetchall() or []
-                has_range = False
-
-            for cr in cond_rows:
-                cond = {
-                    "kind": _safe_str(cr.get("kind")),
-                    "comparator": _safe_str(cr.get("comparator")),
-                }
-                if cond["comparator"] == "between" and has_range:
-                    cond["value"] = [cr.get("value_min"), cr.get("value_max")]
-                    cond["value_min"] = cr.get("value_min")
-                    cond["value_max"] = cr.get("value_max")
-                else:
-                    cond["value"] = cr.get("value")
-                    if has_range and cr.get("value_min") is not None:
-                        cond["value_min"] = cr.get("value_min")
-                    if has_range and cr.get("value_max") is not None:
-                        cond["value_max"] = cr.get("value_max")
-                tier_obj["conditions"].append(cond)
-
-            rule_obj["tiers"].append(tier_obj)
-
-        _insert_royalty_rule(
-            cur,
-            tenant_id,
-            target_set_id,
-            _safe_str(rr.get("party")),
-            _safe_str(rr.get("rights_type")),
-            rule_obj,
-        )
-
-    try:
-        cur.execute(
-            """
-            SELECT party, amount, currency, recoupable
-            FROM advances
-            WHERE tenant_id = %s
-              AND royalty_set_id = %s
-            ORDER BY created_at ASC, id ASC
-            """,
-            (tenant_id, source_royalty_set_id),
-        )
-        adv_rows = cur.fetchall() or []
-    except Exception:
-        adv_rows = []
-
-    for ar in adv_rows:
-        party = _safe_str(ar.get("party")).lower()
-        party_id = None
-        if party == "author":
-            party_id = author_party_id
-        elif party == "illustrator":
-            party_id = illustrator_party_id
-
-        cur.execute(
-            """
-            INSERT INTO advances (
-                tenant_id,
-                royalty_set_id,
-                work_id,
-                party,
-                party_id,
-                amount,
-                currency,
-                recoupable
-            )
-            VALUES (%s, %s, %s, %s::roy_party, %s, %s, %s, %s)
-            """,
-            (
-                tenant_id,
-                target_set_id,
-                work_id,
-                party,
-                party_id,
-                ar.get("amount"),
-                ar.get("currency") or "USD",
-                bool(ar.get("recoupable") if ar.get("recoupable") is not None else True),
-            ),
-        )
-
-    return target_set_id
-
 
 def _royalty_set_has_dependents(cur, tenant_id: str, royalty_set_id: str) -> bool:
     checks = [
@@ -453,6 +260,7 @@ def _insert_royalty_rule(
 
     notes = _safe_str(rule_obj.get("note") or rule_obj.get("notes"))
 
+    condition_mode = (_safe_str(rule_obj.get("condition_mode")) or "").lower()
     subrights_type_id: Optional[str] = None
     insert_format_label = format_label
 
@@ -460,6 +268,7 @@ def _insert_royalty_rule(
         subrights_type_id = _resolve_subrights_type_id(cur, tenant_id, rule_obj)
         if not subrights_type_id:
             return
+
         if not insert_format_label:
             cur.execute(
                 "SELECT name FROM subrights_types WHERE id = %s",
@@ -467,8 +276,16 @@ def _insert_royalty_rule(
             )
             st_row = cur.fetchone()
             insert_format_label = _safe_str(st_row.get("name")) if st_row else ""
+
         if base not in ("net_receipts", "list_price"):
             base = "net_receipts"
+
+        sub_name = (_safe_str(rule_obj.get("name") or rule_obj.get("subrights_name")) or "").lower()
+
+        # Canada / Export are derived from prevailing US rate
+        if any(k in sub_name for k in ["canada", "export"]):
+            percent = None
+            flat_rate = None
 
     cur.execute(
         """
@@ -546,6 +363,9 @@ def _insert_royalty_rule(
             kind = (_safe_str(cond.get("kind")) or "units").lower()
             if kind not in ("units", "discount"):
                 kind = "units"
+            
+            if condition_mode == "all_copies" and kind == "units":
+                continue
 
             comp = _safe_str(cond.get("comparator")) or "<"
             if comp not in ("<", "<=", ">", ">=", "=", "!=", "<>", "between"):
@@ -744,6 +564,17 @@ def _fetch_royalties_graph(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
         party = _safe_str(rr.get("party")) or "author"
         rights_type = _safe_str(rr.get("rights_type")) or "first_rights"
 
+        subrights_name = _safe_str(rr.get("subrights_name") or rr.get("format_label"))
+        sub_name_lc = subrights_name.lower()
+
+        percent_val = rr.get("percent")
+        flat_rate_val = rr.get("flat_rate_percent")
+
+        # Canada / Export are derived from prevailing US rate, so never surface a stored %
+        if rights_type == "subrights" and any(k in sub_name_lc for k in ["canada", "export"]):
+            percent_val = None
+            flat_rate_val = None
+
         rule_obj: Dict[str, Any] = {
             "id": str(rule_id),
             "format": _safe_str(rr.get("format_label")),
@@ -751,18 +582,16 @@ def _fetch_royalties_graph(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
             "mode": _safe_str(rr.get("mode")),
             "base": _safe_str(rr.get("base")),
             "escalating": bool(rr.get("escalating") or False),
-            "flat_rate_percent": rr.get("flat_rate_percent"),
-            "percent": rr.get("percent"),
+            "flat_rate_percent": flat_rate_val,
+            "percent": percent_val,
             "note": _safe_str(rr.get("notes")),
             "notes": _safe_str(rr.get("notes")),
             "tiers": [],
         }
 
         if rights_type == "subrights":
-            rule_obj["name"] = _safe_str(rr.get("subrights_name") or rr.get("format_label"))
-            rule_obj["subrights_name"] = _safe_str(
-                rr.get("subrights_name") or rr.get("format_label")
-            )
+            rule_obj["name"] = subrights_name
+            rule_obj["subrights_name"] = subrights_name
 
         cur.execute(
             """

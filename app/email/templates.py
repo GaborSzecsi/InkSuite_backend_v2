@@ -12,6 +12,32 @@ from datetime import datetime
 
 INVITE_AGENT_SUBJECT = "Action Required: Review Draft Contract"
 
+def render_royalty_statement_email(
+    contributor_name: str,
+    title: str,
+    period: str,
+    payable: float,
+    signature: str = "Marble Press",
+) -> tuple[str, str]:
+    subject = f"Royalty Statement – {title} ({period})"
+
+    body = f"""Dear {contributor_name},
+
+Please find attached your royalty statement for:
+
+Title: {title}
+Period: {period}
+
+Amount payable: ${payable:,.2f}
+
+If you have any questions, please feel free to reach out.
+
+Best regards,
+{signature}
+"""
+
+    return subject, body
+
 
 def render_invite_agent_email(
     reviewer_name: str,

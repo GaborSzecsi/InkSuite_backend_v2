@@ -112,6 +112,29 @@ def _pick_party_block(work_payload: Dict[str, Any], party: str) -> Dict[str, Any
     blk = work_payload.get("author")
     return blk if isinstance(blk, dict) else {}
 
+def _load_prior_earned_to_date(
+    cur,
+    tenant_id: str,
+    work_id: str,
+    party: str,
+    period_end,
+) -> Decimal:
+    cur.execute(
+        """
+        SELECT COALESCE(SUM(COALESCE(rs.earned_this_period, 0)), 0) AS total
+        FROM royalty_statements rs
+        JOIN royalty_periods rp
+          ON rp.id = rs.period_id
+        WHERE rs.tenant_id = %s::uuid
+          AND rs.work_id = %s::uuid
+          AND rs.party = %s
+          AND rp.period_end < %s
+        """,
+        (tenant_id, work_id, party, period_end),
+    )
+    row = cur.fetchone()
+    return _d((row or {}).get("total"))
+
 
 def _collect_statement_isbns(work_payload: Dict[str, Any]) -> List[str]:
     seen = set()
@@ -1099,6 +1122,8 @@ def generate_statement(
     else:
         adv = total_recoupable_advances(cur, tenant_id, royalty_set_id, party)
         opening = -_money(adv) if adv > 0 else Decimal("0")
+    
+    advance_paid_original = _money(total_recoupable_advances(cur, tenant_id, royalty_set_id, party))
 
     closing, payable, recouped, available_after = compute_header_amounts(
         opening, _money(earned_total), adjustments_this_period
@@ -1244,6 +1269,18 @@ def generate_statement(
             ),
         )
 
+    earned_this_period = _d(earned_total)
+
+    prior_earned_to_date = _load_prior_earned_to_date(
+        cur,
+        tenant_id,
+        work_id,
+        party,
+        period.period_end,
+    )
+
+    earned_to_date = prior_earned_to_date + earned_this_period
+
     return {
         "statement_id": stmt_id,
         "period_id": resolved_period_id,
@@ -1254,6 +1291,8 @@ def generate_statement(
         "header": {
             "opening_recoupment_balance": str(opening),
             "earned_this_period": str(_money(earned_total)),
+            "earned_to_date": str(_money(earned_to_date)),
+            "advance_paid_original": str(advance_paid_original),
             "adjustments_this_period": str(adjustments_this_period),
             "closing_recoupment_balance": str(closing),
             "recouped_this_period": str(recouped),
@@ -1290,6 +1329,10 @@ def fetch_statement_bundle(cur, statement_id: str) -> Dict[str, Any]:
     royalty_set_id = str(head["royalty_set_id"])
     party = str(head["party"])
 
+    hdr["advance_paid_original"] = str(
+        _money(total_recoupable_advances(cur, tenant_id, royalty_set_id, party))
+    )
+
     period_meta: Dict[str, Any] = {}
     try:
         cur.execute(
@@ -1310,6 +1353,20 @@ def fetch_statement_bundle(cur, statement_id: str) -> Dict[str, Any]:
             }
     except Exception:
         period_meta = {}
+
+    current_period_end = period_meta.get("period_end")
+    if current_period_end:
+        prior_earned_to_date = _load_prior_earned_to_date(
+            cur,
+            tenant_id,
+            work_id,
+            party,
+            current_period_end,
+        )
+        earned_this_period = _d(hdr.get("earned_this_period"))
+        hdr["earned_to_date"] = str(_money(prior_earned_to_date + earned_this_period))
+    else:
+        hdr["earned_to_date"] = str(_money(_d(hdr.get("earned_this_period"))))
 
     try:
         work_payload = _build_full_work_payload(cur, tenant_id, work_id)
