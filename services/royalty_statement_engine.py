@@ -797,7 +797,6 @@ def load_previous_closing_recoupment(
     cur,
     tenant_id: str,
     work_id: str,
-    royalty_set_id: str,
     party: str,
     current_period_end: Any,
 ) -> Optional[Decimal]:
@@ -809,13 +808,12 @@ def load_previous_closing_recoupment(
           ON rp.id = rs.period_id
         WHERE rs.tenant_id = %s::uuid
           AND rs.work_id = %s::uuid
-          AND rs.royalty_set_id = %s::uuid
-          AND rs.party = %s
+          AND rs.party = %s::roy_party
           AND rp.period_end < %s
-        ORDER BY rp.period_end DESC
+        ORDER BY rp.period_end DESC, rs.created_at DESC
         LIMIT 1
         """,
-        (tenant_id, work_id, royalty_set_id, party, current_period_end),
+        (tenant_id, work_id, party, current_period_end),
     )
     row = cur.fetchone()
     if not row or row.get("closing_recoupment_balance") is None:
@@ -1115,7 +1113,7 @@ def generate_statement(
         )
 
     prev_close = load_previous_closing_recoupment(
-        cur, tenant_id, work_id, royalty_set_id, party, period.period_end
+        cur, tenant_id, work_id, party, period.period_end
     )
     if prev_close is not None:
         opening = prev_close
