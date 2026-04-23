@@ -1233,23 +1233,48 @@ def save_statement_pdf_endpoint(statement_id: str, request: Request) -> Dict[str
 @router.post("/distribution-queue/bulk-send")
 def bulk_send_distribution_endpoint(body: BulkSendBody, request: Request) -> Dict[str, Any]:
     if not body.items:
-        return {"items": [], "sent_count": 0}
+        return {"items": [], "sent_count": 0, "failed_count": 0}
 
     results: list[Dict[str, Any]] = []
-    for item in body.items:
-        result = send_statement_endpoint(
-            statement_id=item.statement_id,
-            body=SendStatementBody(
-                contributor_email=item.contributor_email,
-                agent_email=item.agent_email,
-                send_to_contributor=item.send_to_contributor,
-                send_to_agent=item.send_to_agent,
-            ),
-            request=request,
-        )
-        results.append(result)
+    sent_count = 0
+    failed_count = 0
 
-    return {"items": results, "sent_count": len(results)}
+    for item in body.items:
+        try:
+            result = send_statement_endpoint(
+                statement_id=item.statement_id,
+                body=SendStatementBody(
+                    contributor_email=item.contributor_email,
+                    agent_email=item.agent_email,
+                    send_to_contributor=item.send_to_contributor,
+                    send_to_agent=item.send_to_agent,
+                ),
+                request=request,
+            )
+            results.append(result)
+            sent_count += 1
+        except HTTPException as e:
+            results.append({
+                "ok": False,
+                "statement_id": item.statement_id,
+                "status_code": e.status_code,
+                "detail": e.detail,
+            })
+            failed_count += 1
+        except Exception as e:
+            results.append({
+                "ok": False,
+                "statement_id": item.statement_id,
+                "status_code": 500,
+                "detail": str(e),
+            })
+            failed_count += 1
+
+    return {
+        "items": results,
+        "sent_count": sent_count,
+        "failed_count": failed_count,
+    }
 
 
 @router.post("/{statement_id}/send")
