@@ -1305,32 +1305,23 @@ def send_statement_endpoint(statement_id: str, body: SendStatementBody, request:
                 agent_email = (body.agent_email or recipients.get("agent_email") or "").strip()
 
                 to_email = contributor_email if body.send_to_contributor else ""
-                cc_email = agent_email if body.send_to_agent else ""
+
+                ccs: list[str] = []
+                if body.send_to_agent and agent_email:
+                    ccs.append(agent_email)
 
                 monitor_email = "gabor.szecsi@marblepress.com"
-                if monitor_email and monitor_email != to_email:
-                    if cc_email:
-                        existing_ccs = [x.strip() for x in cc_email.split(",") if x.strip()]
-                        if monitor_email not in existing_ccs:
-                            existing_ccs.append(monitor_email)
-                        cc_email = ", ".join(existing_ccs)
-                    else:
-                        cc_email = monitor_email
+                if monitor_email and monitor_email != to_email and monitor_email not in ccs:
+                    ccs.append(monitor_email)
 
-                if not to_email and not cc_email:
+                if not to_email and not ccs:
                     raise HTTPException(status_code=400, detail="Select at least one recipient email.")
 
-                if not to_email and cc_email:
-                    to_email = cc_email
-                    cc_email = None
+                if not to_email and ccs:
+                    to_email = ccs[0]
+                    ccs = ccs[1:]
 
-
-                if not to_email and not cc_email:
-                    raise HTTPException(status_code=400, detail="Select at least one recipient email.")
-
-                if not to_email and cc_email:
-                    to_email = cc_email
-                    cc_email = None
+                cc_email = ", ".join(ccs) if ccs else None
 
                 settings = _load_tenant_email_settings_or_400(tenant_slug)
                 username, password = _load_smtp_secret(settings["smtp_secret_id"])
