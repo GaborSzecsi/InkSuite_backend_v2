@@ -227,99 +227,75 @@ def _fetch_party_summary(cur, tenant_id: str, party_id: str) -> Dict[str, Any]:
     }
 
 
-def _fetch_party_address_lines(cur, tenant_id: str, party_id: str) -> List[str]:
-    try:
-        try:
-            cur.execute(
-                """
-                SELECT street, city, state, postal_code, country
-                FROM party_addresses
-                WHERE tenant_id = %s
-                  AND party_id = %s
-                ORDER BY label = 'primary' DESC, id ASC
-                LIMIT 1
-                """,
-                (tenant_id, party_id),
-            )
-            r = cur.fetchone()
-        except Exception:
-            cur.execute(
-                """
-                SELECT street, city, state, zip, country
-                FROM party_addresses
-                WHERE tenant_id = %s
-                  AND party_id = %s
-                ORDER BY id ASC
-                LIMIT 1
-                """,
-                (tenant_id, party_id),
-            )
-            r = cur.fetchone()
-
-        if not r:
-            return []
-
-        street = _safe_str(r.get("street"))
-        city = _safe_str(r.get("city"))
-        state = _safe_str(r.get("state"))
-        postal = _safe_str(r.get("postal_code") or r.get("zip"))
-        country = _safe_str(r.get("country"))
-
-        line1 = street
-        line2 = ", ".join([x for x in (city, state, postal, country) if x])
-        return [x for x in (line1, line2) if x]
-    except Exception:
-        return []
+def _party_address_postal_column(cur) -> str:
+    """Return the deployed postal column without triggering a failed query."""
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'party_addresses'
+          AND column_name IN ('postal_code', 'zip')
+        ORDER BY CASE WHEN column_name = 'postal_code' THEN 0 ELSE 1 END
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    return _safe_str(row.get("column_name")) if row else ""
 
 
 def _fetch_party_address(cur, tenant_id: str, party_id: str) -> Dict[str, Any]:
     try:
-        try:
-            cur.execute(
-                """
-                SELECT street, city, state, postal_code, country
-                FROM party_addresses
-                WHERE tenant_id = %s
-                  AND party_id = %s
-                ORDER BY label = 'primary' DESC, id ASC
-                LIMIT 1
-                """,
-                (tenant_id, party_id),
-            )
-            r = cur.fetchone()
-            if not r:
-                return {}
-            return {
-                "street": _safe_str(r.get("street")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("postal_code")),
-                "country": _safe_str(r.get("country")),
-            }
-        except Exception:
-            cur.execute(
-                """
-                SELECT street, city, state, zip, country
-                FROM party_addresses
-                WHERE tenant_id = %s
-                  AND party_id = %s
-                ORDER BY id ASC
-                LIMIT 1
-                """,
-                (tenant_id, party_id),
-            )
-            r = cur.fetchone()
-            if not r:
-                return {}
-            return {
-                "street": _safe_str(r.get("street")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("zip")),
-                "country": _safe_str(r.get("country")),
-            }
+        postal_column = _party_address_postal_column(cur)
+        postal_select = f"{postal_column} AS postal_value" if postal_column else "'' AS postal_value"
+
+        cur.execute(
+            f"""
+            SELECT street, city, state, {postal_select}, country
+            FROM party_addresses
+            WHERE tenant_id = %s
+              AND party_id = %s
+            ORDER BY
+                CASE WHEN COALESCE(label, '') = 'primary' THEN 0 ELSE 1 END,
+                id ASC
+            LIMIT 1
+            """,
+            (tenant_id, party_id),
+        )
+        r = cur.fetchone()
+        if not r:
+            return {}
+
+        return {
+            "street": _safe_str(r.get("street")),
+            "city": _safe_str(r.get("city")),
+            "state": _safe_str(r.get("state")),
+            "zip": _safe_str(r.get("postal_value")),
+            "postal_code": _safe_str(r.get("postal_value")),
+            "country": _safe_str(r.get("country")),
+        }
     except Exception:
         return {}
+
+
+def _fetch_party_address_lines(cur, tenant_id: str, party_id: str) -> List[str]:
+    address = _fetch_party_address(cur, tenant_id, party_id)
+    if not address:
+        return []
+
+    line1 = _safe_str(address.get("street"))
+    city_state_postal = " ".join(
+        x
+        for x in (
+            _safe_str(address.get("city")),
+            _safe_str(address.get("state")),
+            _safe_str(address.get("zip")),
+        )
+        if x
+    )
+    country = _safe_str(address.get("country"))
+    line2 = ", ".join(x for x in (city_state_postal, country) if x)
+    return [x for x in (line1, line2) if x]
 
 
 def _fetch_editions(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
@@ -1353,6 +1329,13 @@ def _fetch_contributors(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any
                 "address_state": _safe_str(address.get("state")),
                 "address_zip": _safe_str(address.get("zip")),
                 "address_country": _safe_str(address.get("country")),
+                # Generic aliases used by older Book Information and Book Management forms.
+                "street": _safe_str(address.get("street")),
+                "city": _safe_str(address.get("city")),
+                "state": _safe_str(address.get("state")),
+                "zip": _safe_str(address.get("zip")),
+                "postal_code": _safe_str(address.get("zip")),
+                "country": _safe_str(address.get("country")),
                 "socials": socials,
             }
         )
