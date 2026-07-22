@@ -166,6 +166,13 @@ def _require_tables(cur) -> None:
         "agency_profiles",
         "agency_agent_links",
         "party_representations",
+        "deal_memo_contributors",
+        "deal_memo_contributor_addresses",
+        "deal_memo_contributor_socials",
+        "deal_memo_contributor_awards",
+        "deal_memo_contributor_identifiers",
+        "deal_memo_contributor_representations",
+        "deal_memo_representation_addresses",
     ]
     cur.execute(
         """
@@ -723,6 +730,715 @@ def _hydrate_royalties(cur, draft_id: str) -> dict:
     return out
 
 
+
+def _list_of_dicts(value: Any) -> List[dict]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _first(value: dict, *keys: str, default: Any = "") -> Any:
+    for key in keys:
+        if key in value and value.get(key) not in (None, ""):
+            return value.get(key)
+    return default
+
+
+def _normalized_role_code(raw: Any, fallback: str = "A01") -> str:
+    value = _s(raw).upper()
+    aliases = {
+        "AUTHOR": "A01",
+        "WRITER": "A01",
+        "A01": "A01",
+        "ILLUSTRATOR": "A12",
+        "ARTIST": "A12",
+        "ILLUSTRATION": "A12",
+        "A12": "A12",
+        "TRANSLATOR": "B06",
+        "EDITOR": "B01",
+        "NARRATOR": "E07",
+        "PHOTOGRAPHER": "A13",
+    }
+    return aliases.get(value, value or fallback)
+
+
+def _default_role_label(role_code: str) -> str:
+    return {
+        "A01": "Author",
+        "A12": "Illustrator",
+        "B01": "Editor",
+        "B06": "Translator",
+        "E07": "Narrator",
+        "A13": "Photographer",
+    }.get(role_code, role_code)
+
+
+def _name_parts(contributor: dict) -> dict:
+    nested = contributor.get("name") if isinstance(contributor.get("name"), dict) else {}
+    return {
+        "titles_before_names": _s(_first(contributor, "titles_before_names", "titlesBeforeNames", default=_first(nested, "titles_before_names", "titlesBeforeNames"))),
+        "names_before_key": _s(_first(contributor, "names_before_key", "namesBeforeKey", "first_name", "firstName", default=_first(nested, "names_before_key", "namesBeforeKey", "first_name", "firstName"))),
+        "prefix_to_key": _s(_first(contributor, "prefix_to_key", "prefixToKey", default=_first(nested, "prefix_to_key", "prefixToKey"))),
+        "key_names": _s(_first(contributor, "key_names", "keyNames", "last_name", "lastName", default=_first(nested, "key_names", "keyNames", "last_name", "lastName"))),
+        "suffix_to_key": _s(_first(contributor, "suffix_to_key", "suffixToKey", default=_first(nested, "suffix_to_key", "suffixToKey"))),
+        "letters_after_names": _s(_first(contributor, "letters_after_names", "lettersAfterNames", default=_first(nested, "letters_after_names", "lettersAfterNames"))),
+        "person_name_inverted": _s(_first(contributor, "person_name_inverted", "personNameInverted", default=_first(nested, "person_name_inverted", "personNameInverted"))),
+    }
+
+
+def _display_name(contributor: dict) -> str:
+    raw_name = contributor.get("name")
+    if isinstance(raw_name, str) and raw_name.strip():
+        return raw_name.strip()
+    return _s(
+        _first(
+            contributor,
+            "display_name",
+            "displayName",
+            "full_name",
+            "fullName",
+            "contributor_name",
+            "contributorName",
+            "corporate_name",
+            "corporateName",
+        )
+    ) or _person_name(raw_name)
+
+
+def _address_rows(contributor: dict) -> List[dict]:
+    rows = _list_of_dicts(_first(contributor, "addresses", "address_list", "addressList", default=[]))
+    if rows:
+        return rows
+    address = contributor.get("address")
+    return [dict(address)] if isinstance(address, dict) else []
+
+
+def _representation_rows(contributor: dict) -> List[dict]:
+    rows = _list_of_dicts(_first(contributor, "representations", "representation", "agents", default=[]))
+    if rows:
+        return rows
+    agency = contributor.get("agency")
+    if isinstance(agency, dict):
+        return [dict(agency)]
+    return []
+
+
+def _contributors_from_body(body: Dict[str, Any]) -> List[dict]:
+    """
+    Return the richest structured contributor collection in the request.
+
+    Some frontend versions send the same contributor records under more than
+    one key. One collection can be stale while another contains the newly
+    entered socials, awards, and identifiers. Prefer the collection carrying
+    the most contributor detail instead of blindly accepting the first one.
+    """
+    candidate_sets: List[List[dict]] = []
+
+    for key in ("contributors", "contributor_cards", "contributorCards"):
+        rows = _list_of_dicts(body.get(key))
+        if rows:
+            candidate_sets.append(rows)
+
+    if candidate_sets:
+        def information_score(rows: List[dict]) -> int:
+            score = 0
+
+            for contributor in rows:
+                socials = _list_of_dicts(
+                    _first(
+                        contributor,
+                        "socials",
+                        "social",
+                        "social_profiles",
+                        "socialProfiles",
+                        "social_media_profiles",
+                        "socialMediaProfiles",
+                        default=[],
+                    )
+                )
+                awards = _list_of_dicts(
+                    _first(
+                        contributor,
+                        "awards",
+                        "awards_honors",
+                        "awards_and_honors",
+                        "awardsHonors",
+                        "honors",
+                        default=[],
+                    )
+                )
+                identifiers = _list_of_dicts(
+                    _first(
+                        contributor,
+                        "identifiers",
+                        "contributor_identifiers",
+                        "contributorIdentifiers",
+                        default=[],
+                    )
+                )
+
+                # Strongly prefer the collection containing repeatable details.
+                score += 100 * (len(socials) + len(awards) + len(identifiers))
+
+                # Use ordinary populated fields as a tie-breaker.
+                for key in (
+                    "display_name",
+                    "displayName",
+                    "name",
+                    "email",
+                    "website",
+                    "phone_number",
+                    "phoneNumber",
+                    "birth_date",
+                    "birthDate",
+                    "citizenship",
+                ):
+                    value = contributor.get(key)
+                    if isinstance(value, str) and value.strip():
+                        score += 1
+                    elif value not in (None, "", [], {}):
+                        score += 1
+
+            return score
+
+        return max(candidate_sets, key=information_score)
+
+    rows: List[dict] = []
+
+    author = body.get("author")
+    if isinstance(author, dict):
+        item = dict(author)
+        item.setdefault("role_code", "A01")
+        item.setdefault("role_label", "Author")
+        item.setdefault("sequence_number", 1)
+        item.setdefault("party_id", body.get("contributor_party_id"))
+        rows.append(item)
+
+    illustrator = body.get("illustrator")
+    if isinstance(illustrator, dict):
+        item = dict(illustrator)
+        item.setdefault("role_code", "A12")
+        item.setdefault("role_label", "Illustrator")
+        item.setdefault("sequence_number", 1)
+        item.setdefault(
+            "party_id",
+            body.get("contributor_party_id")
+            if _s(body.get("contributor_role")).lower() == "illustrator"
+            else None,
+        )
+        rows.append(item)
+
+    # Keep legacy clients working. Only create the active legacy contributor
+    # when no structured contributor object/list was supplied.
+    if not rows:
+        scope = _s(
+            body.get("contributor_role")
+            or body.get("contributorRole")
+            or "author"
+        ).lower()
+        prefix = "illustrator" if scope == "illustrator" else "author"
+        name_key = "illustrator_name" if prefix == "illustrator" else "author"
+        name = _s(body.get(name_key))
+
+        if name:
+            rows.append(
+                {
+                    "party_id": body.get("contributor_party_id"),
+                    "role_code": "A12" if prefix == "illustrator" else "A01",
+                    "role_label": "Illustrator" if prefix == "illustrator" else "Author",
+                    "sequence_number": 1,
+                    "contributor_type": "person",
+                    "display_name": name,
+                    "email": body.get(f"{prefix}_email"),
+                    "website": body.get(f"{prefix}_website"),
+                    "phone_country_code": body.get(f"{prefix}_phone_country_code"),
+                    "phone_number": body.get(f"{prefix}_phone_number"),
+                    "birth_date": body.get(f"{prefix}_birth_date"),
+                    "birth_city": body.get(f"{prefix}_birth_city"),
+                    "birth_country": body.get(f"{prefix}_birth_country"),
+                    "citizenship": body.get(f"{prefix}_citizenship"),
+                    "address": {
+                        "label": "primary",
+                        "street": body.get(f"{prefix}_street"),
+                        "city": body.get(f"{prefix}_city"),
+                        "state": body.get(f"{prefix}_state"),
+                        "zip": body.get(f"{prefix}_zip"),
+                        "country": body.get(f"{prefix}_country"),
+                        "is_non_us": body.get(f"{prefix}_non_us"),
+                    },
+                }
+            )
+
+    return rows
+
+
+def _save_deal_memo_contributors(
+    cur,
+    tenant_id: str,
+    draft_id: str,
+    body: Dict[str, Any],
+) -> None:
+    contributors = _contributors_from_body(body)
+
+    cur.execute(
+        "DELETE FROM deal_memo_contributors WHERE tenant_id = %s AND deal_memo_draft_id = %s",
+        (tenant_id, draft_id),
+    )
+
+    role_counts: Dict[str, int] = {}
+    for contributor in contributors:
+        role_code = _normalized_role_code(
+            _first(contributor, "role_code", "roleCode", "contributor_role", "contributorRole", "role"),
+            "A01",
+        )
+        role_counts[role_code] = role_counts.get(role_code, 0) + 1
+        sequence_number = _int_or_none(
+            _first(contributor, "sequence_number", "sequenceNumber", "sequence", default=role_counts[role_code])
+        ) or role_counts[role_code]
+        if sequence_number < 1:
+            sequence_number = role_counts[role_code]
+
+        contributor_type = _s(_first(contributor, "contributor_type", "contributorType", "type", default="person")).lower()
+        if contributor_type in ("org", "corporate", "company"):
+            contributor_type = "organization"
+        if contributor_type not in ("person", "organization"):
+            contributor_type = "person"
+
+        parts = _name_parts(contributor)
+        cur.execute(
+            """
+            INSERT INTO deal_memo_contributors (
+                tenant_id, deal_memo_draft_id, party_id,
+                role_code, role_label, sequence_number, contributor_type,
+                display_name, titles_before_names, names_before_key,
+                prefix_to_key, key_names, suffix_to_key, letters_after_names,
+                person_name_inverted, pen_name, corporate_name,
+                language_code, country_code, region_code,
+                email, website, phone_country_code, phone_number,
+                birth_date, death_date, birth_city, birth_country, citizenship
+            )
+            VALUES (
+                %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s
+            )
+            RETURNING id
+            """,
+            (
+                tenant_id,
+                draft_id,
+                _s(_first(contributor, "party_id", "partyId", "contributor_party_id", "contributorPartyId")) or None,
+                role_code,
+                _s(_first(contributor, "role_label", "roleLabel")) or _default_role_label(role_code),
+                sequence_number,
+                contributor_type,
+                _display_name(contributor),
+                parts["titles_before_names"],
+                parts["names_before_key"],
+                parts["prefix_to_key"],
+                parts["key_names"],
+                parts["suffix_to_key"],
+                parts["letters_after_names"],
+                parts["person_name_inverted"],
+                _s(_first(contributor, "pen_name", "penName")),
+                _s(_first(contributor, "corporate_name", "corporateName")),
+                _s(_first(contributor, "language_code", "languageCode", "language")),
+                _s(_first(contributor, "country_code", "countryCode")),
+                _s(_first(contributor, "region_code", "regionCode")),
+                _s(contributor.get("email")),
+                _s(contributor.get("website")),
+                _s(_first(contributor, "phone_country_code", "phoneCountryCode")),
+                _s(_first(contributor, "phone_number", "phoneNumber", "phone")),
+                _date_or_none(_first(contributor, "birth_date", "birthDate")),
+                _date_or_none(_first(contributor, "death_date", "deathDate")),
+                _s(_first(contributor, "birth_city", "birthCity")),
+                _s(_first(contributor, "birth_country", "birthCountry")),
+                _s(contributor.get("citizenship")),
+            ),
+        )
+        contributor_id = str(cur.fetchone()["id"])
+
+        for item_order, address in enumerate(_address_rows(contributor)):
+            cur.execute(
+                """
+                INSERT INTO deal_memo_contributor_addresses (
+                    tenant_id, deal_memo_contributor_id, label,
+                    street, city, state, zip, country, is_non_us, item_order
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    contributor_id,
+                    _s(address.get("label")) or ("primary" if item_order == 0 else "other"),
+                    _s(address.get("street")),
+                    _s(address.get("city")),
+                    _s(address.get("state")),
+                    _s(_first(address, "zip", "postal_code", "postalCode")),
+                    _s(address.get("country")),
+                    _bool(_first(address, "is_non_us", "isNonUs", "nonUS", "non_us", default=False)),
+                    item_order,
+                ),
+            )
+
+        socials = _list_of_dicts(
+            _first(
+                contributor,
+                "socials",
+                "social",
+                "social_profiles",
+                "socialProfiles",
+                "social_media_profiles",
+                "socialMediaProfiles",
+                default=[],
+            )
+        )
+        for item_order, social in enumerate(socials):
+            platform = _s(_first(social, "platform", "type", "name"))
+            url = _s(_first(social, "url", "value", "handle"))
+            if not platform or not url:
+                continue
+            cur.execute(
+                """
+                INSERT INTO deal_memo_contributor_socials (
+                    tenant_id, deal_memo_contributor_id, platform, url, item_order
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                (tenant_id, contributor_id, platform, url, item_order),
+            )
+
+        awards = _list_of_dicts(
+            _first(
+                contributor,
+                "awards",
+                "awards_honors",
+                "awards_and_honors",
+                "awardsHonors",
+                "honors",
+                default=[],
+            )
+        )
+        for item_order, award in enumerate(awards):
+            award_name = _s(_first(award, "award_name", "awardName", "name"))
+            if not award_name:
+                continue
+            cur.execute(
+                """
+                INSERT INTO deal_memo_contributor_awards (
+                    tenant_id, deal_memo_contributor_id, award_name,
+                    award_year, award_result, notes, item_order
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    tenant_id,
+                    contributor_id,
+                    award_name,
+                    _s(_first(award, "award_year", "awardYear", "year")),
+                    _s(_first(award, "award_result", "awardResult", "result")),
+                    _s(award.get("notes")),
+                    item_order,
+                ),
+            )
+
+        identifiers = _list_of_dicts(_first(contributor, "identifiers", "contributor_identifiers", "contributorIdentifiers", default=[]))
+        for item_order, identifier in enumerate(identifiers):
+            identifier_type = _s(_first(identifier, "identifier_type", "identifierType", "type", "scheme"))
+            identifier_value = _s(_first(identifier, "identifier_value", "identifierValue", "value", "id"))
+            if not identifier_type or not identifier_value:
+                continue
+            cur.execute(
+                """
+                INSERT INTO deal_memo_contributor_identifiers (
+                    tenant_id, deal_memo_contributor_id,
+                    identifier_type, identifier_value, item_order
+                ) VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (deal_memo_contributor_id, identifier_type, identifier_value)
+                DO UPDATE SET item_order = EXCLUDED.item_order, updated_at = now()
+                """,
+                (tenant_id, contributor_id, identifier_type, identifier_value, item_order),
+            )
+
+        for item_order, representation in enumerate(_representation_rows(contributor)):
+            cur.execute(
+                """
+                INSERT INTO deal_memo_contributor_representations (
+                    tenant_id, deal_memo_contributor_id,
+                    agency_party_id, agent_party_id,
+                    agency_name, agent_name, email, website,
+                    phone_country_code, phone_number,
+                    is_primary, item_order
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    tenant_id,
+                    contributor_id,
+                    _s(_first(representation, "agency_party_id", "agencyPartyId")) or None,
+                    _s(_first(representation, "agent_party_id", "agentPartyId")) or None,
+                    _s(_first(representation, "agency_name", "agencyName", "name")),
+                    _s(_first(representation, "agent_name", "agentName")),
+                    _s(_first(representation, "email", "agent_email", "agentEmail", "agency_email", "agencyEmail")),
+                    _s(_first(representation, "website", "agency_website", "agencyWebsite")),
+                    _s(_first(representation, "phone_country_code", "phoneCountryCode", "agent_phone_country_code", "agentPhoneCountryCode")),
+                    _s(_first(representation, "phone_number", "phoneNumber", "agent_phone_number", "agentPhoneNumber")),
+                    _bool(_first(representation, "is_primary", "isPrimary", default=(item_order == 0))),
+                    item_order,
+                ),
+            )
+            representation_id = str(cur.fetchone()["id"])
+            rep_addresses = _address_rows(representation)
+            for address_order, address in enumerate(rep_addresses):
+                cur.execute(
+                    """
+                    INSERT INTO deal_memo_representation_addresses (
+                        tenant_id, representation_id, label,
+                        street, city, state, zip, country, is_non_us, item_order
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        tenant_id,
+                        representation_id,
+                        _s(address.get("label")) or ("primary" if address_order == 0 else "other"),
+                        _s(address.get("street")),
+                        _s(address.get("city")),
+                        _s(address.get("state")),
+                        _s(_first(address, "zip", "postal_code", "postalCode")),
+                        _s(address.get("country")),
+                        _bool(_first(address, "is_non_us", "isNonUs", "nonUS", "non_us", default=False)),
+                        address_order,
+                    ),
+                )
+
+
+def _hydrate_deal_memo_contributors(cur, tenant_id: str, draft_id: str) -> List[dict]:
+    cur.execute(
+        """
+        SELECT *
+        FROM deal_memo_contributors
+        WHERE tenant_id = %s AND deal_memo_draft_id = %s
+        ORDER BY sequence_number ASC, created_at ASC, id ASC
+        """,
+        (tenant_id, draft_id),
+    )
+    contributors = [dict(row) for row in (cur.fetchall() or [])]
+    out: List[dict] = []
+
+    for row in contributors:
+        contributor_id = str(row["id"])
+        cur.execute(
+            """
+            SELECT label, street, city, state, zip, country, is_non_us, item_order
+            FROM deal_memo_contributor_addresses
+            WHERE tenant_id = %s AND deal_memo_contributor_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, contributor_id),
+        )
+        addresses = [
+            {
+                "label": _s(a.get("label")),
+                "street": _s(a.get("street")),
+                "city": _s(a.get("city")),
+                "state": _s(a.get("state")),
+                "zip": _s(a.get("zip")),
+                "country": _s(a.get("country")),
+                "is_non_us": bool(a.get("is_non_us") or False),
+                "isNonUs": bool(a.get("is_non_us") or False),
+                "nonUS": bool(a.get("is_non_us") or False),
+            }
+            for a in (cur.fetchall() or [])
+        ]
+
+        cur.execute(
+            """
+            SELECT platform, url, item_order
+            FROM deal_memo_contributor_socials
+            WHERE tenant_id = %s AND deal_memo_contributor_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, contributor_id),
+        )
+        socials = [
+            {
+                "platform": _s(item.get("platform")),
+                "url": _s(item.get("url")),
+                "handle": _s(item.get("url")),
+                "item_order": int(item.get("item_order") or 0),
+            }
+            for item in (cur.fetchall() or [])
+        ]
+
+        cur.execute(
+            """
+            SELECT award_name, award_year, award_result, notes, item_order
+            FROM deal_memo_contributor_awards
+            WHERE tenant_id = %s AND deal_memo_contributor_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, contributor_id),
+        )
+        awards = [
+            {
+                "award_name": _s(item.get("award_name")),
+                "awardName": _s(item.get("award_name")),
+                "name": _s(item.get("award_name")),
+                "award_year": _s(item.get("award_year")),
+                "awardYear": _s(item.get("award_year")),
+                "year": _s(item.get("award_year")),
+                "award_result": _s(item.get("award_result")),
+                "awardResult": _s(item.get("award_result")),
+                "result": _s(item.get("award_result")),
+                "notes": _s(item.get("notes")),
+                "item_order": int(item.get("item_order") or 0),
+            }
+            for item in (cur.fetchall() or [])
+        ]
+
+        cur.execute(
+            """
+            SELECT identifier_type, identifier_value, item_order
+            FROM deal_memo_contributor_identifiers
+            WHERE tenant_id = %s AND deal_memo_contributor_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, contributor_id),
+        )
+        identifiers = [
+            {
+                "identifier_type": _s(item.get("identifier_type")),
+                "identifierType": _s(item.get("identifier_type")),
+                "type": _s(item.get("identifier_type")),
+                "identifier_value": _s(item.get("identifier_value")),
+                "identifierValue": _s(item.get("identifier_value")),
+                "value": _s(item.get("identifier_value")),
+                "item_order": int(item.get("item_order") or 0),
+            }
+            for item in (cur.fetchall() or [])
+        ]
+
+        cur.execute(
+            """
+            SELECT *
+            FROM deal_memo_contributor_representations
+            WHERE tenant_id = %s AND deal_memo_contributor_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, contributor_id),
+        )
+        representations: List[dict] = []
+        for rep_row in (cur.fetchall() or []):
+            rep = dict(rep_row)
+            rep_id = str(rep["id"])
+            cur.execute(
+                """
+                SELECT label, street, city, state, zip, country, is_non_us, item_order
+                FROM deal_memo_representation_addresses
+                WHERE tenant_id = %s AND representation_id = %s
+                ORDER BY item_order ASC, created_at ASC, id ASC
+                """,
+                (tenant_id, rep_id),
+            )
+            rep_addresses = [
+                {
+                    "label": _s(a.get("label")),
+                    "street": _s(a.get("street")),
+                    "city": _s(a.get("city")),
+                    "state": _s(a.get("state")),
+                    "zip": _s(a.get("zip")),
+                    "country": _s(a.get("country")),
+                    "is_non_us": bool(a.get("is_non_us") or False),
+                    "isNonUs": bool(a.get("is_non_us") or False),
+                    "nonUS": bool(a.get("is_non_us") or False),
+                }
+                for a in (cur.fetchall() or [])
+            ]
+            rep.pop("tenant_id", None)
+            rep.pop("deal_memo_contributor_id", None)
+            rep["id"] = rep_id
+            rep["agencyPartyId"] = _s(rep.get("agency_party_id"))
+            rep["agentPartyId"] = _s(rep.get("agent_party_id"))
+            rep["agencyName"] = _s(rep.get("agency_name"))
+            rep["agentName"] = _s(rep.get("agent_name"))
+            rep["phoneCountryCode"] = _s(rep.get("phone_country_code"))
+            rep["phoneNumber"] = _s(rep.get("phone_number"))
+            rep["isPrimary"] = bool(rep.get("is_primary") or False)
+            rep["addresses"] = rep_addresses
+            rep["address"] = rep_addresses[0] if rep_addresses else {}
+            representations.append(rep)
+
+        item = {
+            "id": contributor_id,
+            "party_id": _s(row.get("party_id")),
+            "partyId": _s(row.get("party_id")),
+            "role_code": _s(row.get("role_code")),
+            "roleCode": _s(row.get("role_code")),
+            "role_label": _s(row.get("role_label")),
+            "roleLabel": _s(row.get("role_label")),
+            "sequence_number": int(row.get("sequence_number") or 1),
+            "sequenceNumber": int(row.get("sequence_number") or 1),
+            "contributor_type": _s(row.get("contributor_type")) or "person",
+            "contributorType": _s(row.get("contributor_type")) or "person",
+            "display_name": _s(row.get("display_name")),
+            "displayName": _s(row.get("display_name")),
+            "name": _s(row.get("display_name")),
+            "titles_before_names": _s(row.get("titles_before_names")),
+            "titlesBeforeNames": _s(row.get("titles_before_names")),
+            "names_before_key": _s(row.get("names_before_key")),
+            "namesBeforeKey": _s(row.get("names_before_key")),
+            "prefix_to_key": _s(row.get("prefix_to_key")),
+            "prefixToKey": _s(row.get("prefix_to_key")),
+            "key_names": _s(row.get("key_names")),
+            "keyNames": _s(row.get("key_names")),
+            "suffix_to_key": _s(row.get("suffix_to_key")),
+            "suffixToKey": _s(row.get("suffix_to_key")),
+            "letters_after_names": _s(row.get("letters_after_names")),
+            "lettersAfterNames": _s(row.get("letters_after_names")),
+            "person_name_inverted": _s(row.get("person_name_inverted")),
+            "personNameInverted": _s(row.get("person_name_inverted")),
+            "pen_name": _s(row.get("pen_name")),
+            "penName": _s(row.get("pen_name")),
+            "corporate_name": _s(row.get("corporate_name")),
+            "corporateName": _s(row.get("corporate_name")),
+            "language_code": _s(row.get("language_code")),
+            "languageCode": _s(row.get("language_code")),
+            "country_code": _s(row.get("country_code")),
+            "countryCode": _s(row.get("country_code")),
+            "region_code": _s(row.get("region_code")),
+            "regionCode": _s(row.get("region_code")),
+            "email": _s(row.get("email")),
+            "website": _s(row.get("website")),
+            "phone_country_code": _s(row.get("phone_country_code")),
+            "phoneCountryCode": _s(row.get("phone_country_code")),
+            "phone_number": _s(row.get("phone_number")),
+            "phoneNumber": _s(row.get("phone_number")),
+            "birth_date": _jsonable(row.get("birth_date")),
+            "birthDate": _jsonable(row.get("birth_date")),
+            "death_date": _jsonable(row.get("death_date")),
+            "deathDate": _jsonable(row.get("death_date")),
+            "birth_city": _s(row.get("birth_city")),
+            "birthCity": _s(row.get("birth_city")),
+            "birth_country": _s(row.get("birth_country")),
+            "birthCountry": _s(row.get("birth_country")),
+            "citizenship": _s(row.get("citizenship")),
+            "addresses": addresses,
+            "address": addresses[0] if addresses else {},
+            "socials": socials,
+            "socialProfiles": socials,
+            "awards": awards,
+            "identifiers": identifiers,
+            "contributorIdentifiers": identifiers,
+            "representations": representations,
+        }
+        out.append(item)
+
+    return out
+
 def _row_to_draft(cur, tenant_id: str, row: dict) -> dict:
     created_at = row.get("created_at")
     updated_at = row.get("updated_at")
@@ -876,6 +1592,46 @@ def _row_to_draft(cur, tenant_id: str, row: dict) -> dict:
     draft_id = str(row["id"])
     out["advanceSchedule"] = _hydrate_advance_schedule(cur, draft_id)
     out["royalties"] = _hydrate_royalties(cur, draft_id)
+
+    contributors = _hydrate_deal_memo_contributors(cur, tenant_id, draft_id)
+    out["contributors"] = contributors
+    out["contributor_cards"] = contributors
+    out["contributorCards"] = contributors
+
+    # Preserve legacy author/illustrator response fields while exposing every
+    # structured field through the normalized contributor objects.
+    author_contributor = next((c for c in contributors if c.get("role_code") == "A01"), None)
+    illustrator_contributor = next((c for c in contributors if c.get("role_code") == "A12"), None)
+    if author_contributor:
+        out["authorContributor"] = author_contributor
+        out["author_contributor"] = author_contributor
+        out["author_card"] = author_contributor
+
+        # Flat compatibility aliases used by older Deal Memo hydration paths.
+        out["author_socials"] = author_contributor.get("socials") or []
+        out["author_social_profiles"] = author_contributor.get("socials") or []
+        out["author_social_media_profiles"] = author_contributor.get("socials") or []
+        out["author_awards"] = author_contributor.get("awards") or []
+        out["author_awards_honors"] = author_contributor.get("awards") or []
+        out["author_awards_and_honors"] = author_contributor.get("awards") or []
+        out["author_identifiers"] = author_contributor.get("identifiers") or []
+        out["author_contributor_identifiers"] = author_contributor.get("identifiers") or []
+
+    if illustrator_contributor:
+        out["illustrator"] = illustrator_contributor
+        out["illustratorContributor"] = illustrator_contributor
+        out["illustrator_contributor"] = illustrator_contributor
+        out["illustrator_card"] = illustrator_contributor
+
+        out["illustrator_socials"] = illustrator_contributor.get("socials") or []
+        out["illustrator_social_profiles"] = illustrator_contributor.get("socials") or []
+        out["illustrator_social_media_profiles"] = illustrator_contributor.get("socials") or []
+        out["illustrator_awards"] = illustrator_contributor.get("awards") or []
+        out["illustrator_awards_honors"] = illustrator_contributor.get("awards") or []
+        out["illustrator_awards_and_honors"] = illustrator_contributor.get("awards") or []
+        out["illustrator_identifiers"] = illustrator_contributor.get("identifiers") or []
+        out["illustrator_contributor_identifiers"] = illustrator_contributor.get("identifiers") or []
+
     return out
 
 
@@ -895,6 +1651,13 @@ def _fetch_one_draft(cur, tenant_id: str, uid: str) -> dict | None:
 
 
 def _clear_children(cur, draft_id: str) -> None:
+    # Child address/social/award/identifier/representation rows cascade from
+    # deal_memo_contributors.
+    cur.execute(
+        "DELETE FROM deal_memo_contributors WHERE deal_memo_draft_id = %s",
+        (draft_id,),
+    )
+
     cur.execute(
         """
         DELETE FROM deal_memo_advance_installments
@@ -1357,6 +2120,7 @@ def upsert_deal_memo(
             _clear_children(cur, draft_id)
             _save_advance_schedule(cur, tenant_id, draft_id, body)
             _save_royalties(cur, tenant_id, draft_id, body)
+            _save_deal_memo_contributors(cur, tenant_id, draft_id, body)
 
             row = _fetch_one_draft(cur, tenant_id, uid)
             if not row:

@@ -189,9 +189,16 @@ def _normalize_contributor_role(role: str) -> str:
 
 def _role_to_scope(role: str) -> str:
     normalized = _normalize_contributor_role(role)
+
+    if normalized == "author":
+        return "author"
+
     if normalized == "illustrator":
         return "illustrator"
-    return "author"
+
+    # Other ONIX contributor roles do not use the legacy
+    # author/illustrator profile scope.
+    return ""
 
 
 def _is_author_role(role: str) -> bool:

@@ -1,6 +1,4 @@
 # app/onix/assembly.py
-# Canonical ONIX assembly from editions + works + edition_* tables. No raw XML as source.
-
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -22,21 +20,11 @@ def _norm_isbn13(val: Any) -> str:
     return s[:17] if s else ""
 
 
-def _json_obj(val: Any) -> Dict[str, Any]:
-    if isinstance(val, dict):
-        return val
-    if not val:
-        return {}
-    try:
-        import json
-        parsed = json.loads(val) if isinstance(val, str) else {}
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
-        return {}
-
-
 def _get_tenant_id_from_slug(cur, tenant_slug: str) -> str:
-    cur.execute("SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1", (tenant_slug.strip(),))
+    cur.execute(
+        "SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1",
+        (tenant_slug.strip(),),
+    )
     row = cur.fetchone()
     if not row:
         cur.execute("SELECT id FROM tenants ORDER BY id LIMIT 1")
@@ -47,7 +35,6 @@ def _get_tenant_id_from_slug(cur, tenant_slug: str) -> str:
 
 
 def _contributor_display_name(raw: Any) -> str:
-    """Use only plain name strings; skip values that look like serialized dicts/objects."""
     s = _norm(raw)
     if not s:
         return ""
@@ -55,9 +42,7 @@ def _contributor_display_name(raw: Any) -> str:
         return ""
     if "'name'" in s or '"name"' in s or "': '" in s:
         return ""
-    if len(s) > 200:
-        return s[:200].strip()
-    return s
+    return s[:200].strip() if len(s) > 200 else s
 
 
 def _contributors_summary_for_work(cur, tenant_id: str, work_id: str) -> str:
@@ -65,12 +50,15 @@ def _contributors_summary_for_work(cur, tenant_id: str, work_id: str) -> str:
         """
         SELECT p.display_name, wc.contributor_role
         FROM work_contributors wc
-        JOIN parties p ON p.id = wc.party_id
-        WHERE wc.work_id = %s AND p.tenant_id = %s
+        JOIN parties p
+          ON p.id = wc.party_id
+         AND p.tenant_id = wc.tenant_id
+        WHERE wc.tenant_id = %s
+          AND wc.work_id = %s
         ORDER BY wc.sequence_number ASC
         LIMIT 5
         """,
-        (work_id, tenant_id),
+        (tenant_id, work_id),
     )
     rows = cur.fetchall() or []
     names = [_contributor_display_name(r.get("display_name")) for r in rows]
@@ -80,25 +68,25 @@ def _contributors_summary_for_work(cur, tenant_id: str, work_id: str) -> str:
 def _latest_raw_import_at(cur, tenant_id: str, isbn13_norm: str) -> Optional[str]:
     if not isbn13_norm:
         return None
-    cur.execute(
-        """
-        SELECT MAX(created_at) AS ts
-        FROM onix_raw_products
-        WHERE tenant_id = %s AND normalize_isbn(isbn13) = normalize_isbn(%s)
-        """,
-        (tenant_id, isbn13_norm),
-    )
-    row = cur.fetchone()
-    ts = row.get("ts") if row else None
-    return ts.isoformat() if ts else None
+
+    try:
+        cur.execute(
+            """
+            SELECT MAX(created_at) AS ts
+            FROM onix_raw_products
+            WHERE tenant_id = %s
+              AND normalize_isbn(isbn13) = normalize_isbn(%s)
+            """,
+            (tenant_id, isbn13_norm),
+        )
+        row = cur.fetchone()
+        ts = row.get("ts") if row else None
+        return ts.isoformat() if ts else None
+    except Exception:
+        return None
 
 
 def _display_title_for_listing(work_title: str, series_title: str, subtitle: str) -> str:
-    """
-    Listing/display rule:
-    - series books: Series Title: Subtitle
-    - standalone books: Title
-    """
     wt = _norm(work_title)
     st = _norm(series_title)
     sub = _norm(subtitle)
@@ -112,21 +100,13 @@ def _display_title_for_listing(work_title: str, series_title: str, subtitle: str
     return st
 
 
-def _publication_date_from_row(ed: Dict[str, Any], se: Dict[str, Any]) -> str:
-    """
-    Prefer normalized edition.publication_date, then legacy source_extras.pub_date,
-    then work publication date.
-    """
+def _publication_date_from_row(ed: Dict[str, Any]) -> str:
     pub_date = ed.get("publication_date")
     if pub_date:
         try:
             return pub_date.isoformat()
         except Exception:
             return _norm(pub_date)
-
-    legacy_pub = _norm(se.get("pub_date") or se.get("publication_date") or "")
-    if legacy_pub:
-        return legacy_pub
 
     work_pub = ed.get("work_pub_date")
     if work_pub:
@@ -138,11 +118,12 @@ def _publication_date_from_row(ed: Dict[str, Any], se: Dict[str, Any]) -> str:
     return ""
 
 
-def _map_legacy_format_to_onix_product_form(fmt: str) -> str:
-    """
-    Conservative mapping from legacy/source format strings to ONIX ProductForm.
-    """
-    f = _norm(fmt).lower()
+def _map_format_to_onix_product_form(product_form: str, product_form_detail: str) -> str:
+    pf = _norm(product_form)
+    if pf:
+        return pf
+
+    f = _norm(product_form_detail).lower()
     if not f:
         return ""
 
@@ -160,73 +141,26 @@ def _map_legacy_format_to_onix_product_form(fmt: str) -> str:
     return ""
 
 
-def _is_digital_product(product_form: str, legacy_format: str) -> bool:
+def _is_digital_product(product_form: str, product_form_detail: str) -> bool:
     pf = _norm(product_form).upper()
-    lf = _norm(legacy_format).lower()
+    detail = _norm(product_form_detail).lower()
 
     if pf in {"DG", "AJ"}:
         return True
 
-    if any(x in lf for x in ["ebook", "e-book", "epub", "kindle", "digital", "audiobook", "audio book", "audio"]):
-        return True
-
-    return False
+    return any(
+        x in detail
+        for x in ["ebook", "e-book", "epub", "kindle", "digital", "audiobook", "audio book", "audio"]
+    )
 
 
 def _title_fields_for_payload(ed: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Preserve both standalone-book and series-book semantics.
-
-    Standalone books:
-      title = works.title
-      subtitle = works.subtitle (optional)
-
-    Series books:
-      title = works.title
-      subtitle = works.subtitle
-      series_title = works.series_title
-      series_number = works.series_number
-    """
-    work_title = _norm(ed.get("work_title") or "")
-    work_subtitle = _norm(ed.get("work_subtitle") or "")
-    series_title = _norm(ed.get("series_title") or "")
-    series_number = int(ed.get("series_number") or 0)
-
     return {
-        "title": work_title,
-        "subtitle": work_subtitle,
-        "series_title": series_title,
-        "series_number": series_number,
+        "title": _norm(ed.get("work_title") or ""),
+        "subtitle": _norm(ed.get("work_subtitle") or ""),
+        "series_title": _norm(ed.get("series_title") or ""),
+        "series_number": int(ed.get("series_number") or 0),
     }
-
-
-def _legacy_price_rows(se: Dict[str, Any]) -> List[Dict[str, Any]]:
-    prices: List[Dict[str, Any]] = []
-
-    price_us = _norm(se.get("price_us") or "")
-    price_can = _norm(se.get("price_can") or "")
-
-    try:
-        if price_us not in ("", "0", "0.0", "0.00"):
-            prices.append({
-                "price_type_code": "01",
-                "price_amount": float(price_us),
-                "currency_code": "USD",
-            })
-    except Exception:
-        pass
-
-    try:
-        if price_can not in ("", "0", "0.0", "0.00"):
-            prices.append({
-                "price_type_code": "01",
-                "price_amount": float(price_can),
-                "currency_code": "CAD",
-            })
-    except Exception:
-        pass
-
-    return prices
 
 
 def list_exportable_products(
@@ -241,7 +175,7 @@ def list_exportable_products(
     page_size: int = 50,
     sort: str = "title",
 ) -> Dict[str, Any]:
-    """List exportable products (one row per edition/ISBN)."""
+    """List exportable products, one row per edition/ISBN, from normalized tables."""
     with db_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
@@ -255,24 +189,35 @@ def list_exportable_products(
                 params.append(_norm_isbn13(isbn))
 
             if title:
-                conditions.append("(w.title ILIKE %s OR w.subtitle ILIKE %s OR w.series_title ILIKE %s)")
+                conditions.append(
+                    "(w.title ILIKE %s OR w.subtitle ILIKE %s OR w.series_title ILIKE %s)"
+                )
                 t = f"%{_norm(title)}%"
                 params.extend([t, t, t])
 
             if contributor:
                 conditions.append(
-                    "EXISTS (SELECT 1 FROM work_contributors wc "
-                    "JOIN parties p ON p.id = wc.party_id "
-                    "WHERE wc.work_id = w.id AND p.tenant_id = w.tenant_id AND p.display_name ILIKE %s)"
+                    """
+                    EXISTS (
+                        SELECT 1
+                        FROM work_contributors wc
+                        JOIN parties p
+                          ON p.id = wc.party_id
+                         AND p.tenant_id = wc.tenant_id
+                        WHERE wc.tenant_id = w.tenant_id
+                          AND wc.work_id = w.id
+                          AND p.display_name ILIKE %s
+                    )
+                    """
                 )
                 params.append(f"%{_norm(contributor)}%")
 
             if format_filter:
                 conditions.append(
-                    "(e.product_form ILIKE %s OR e.product_form_detail ILIKE %s OR e.source_extras->>'format' ILIKE %s)"
+                    "(e.product_form ILIKE %s OR e.product_form_detail ILIKE %s)"
                 )
                 ff = f"%{_norm(format_filter)}%"
-                params.extend([ff, ff, ff])
+                params.extend([ff, ff])
 
             if status_filter:
                 conditions.append("e.status = %s")
@@ -280,15 +225,24 @@ def list_exportable_products(
 
             if q:
                 conditions.append(
-                    "("
-                    "w.title ILIKE %s OR "
-                    "w.subtitle ILIKE %s OR "
-                    "w.series_title ILIKE %s OR "
-                    "e.isbn13 ILIKE %s OR "
-                    "EXISTS (SELECT 1 FROM work_contributors wc "
-                    "JOIN parties p ON p.id = wc.party_id "
-                    "WHERE wc.work_id = w.id AND p.tenant_id = w.tenant_id AND p.display_name ILIKE %s)"
-                    ")"
+                    """
+                    (
+                        w.title ILIKE %s OR
+                        w.subtitle ILIKE %s OR
+                        w.series_title ILIKE %s OR
+                        e.isbn13 ILIKE %s OR
+                        EXISTS (
+                            SELECT 1
+                            FROM work_contributors wc
+                            JOIN parties p
+                              ON p.id = wc.party_id
+                             AND p.tenant_id = wc.tenant_id
+                            WHERE wc.tenant_id = w.tenant_id
+                              AND wc.work_id = w.id
+                              AND p.display_name ILIKE %s
+                        )
+                    )
+                    """
                 )
                 ql = f"%{_norm(q)}%"
                 params.extend([ql, ql, ql, ql, ql])
@@ -298,12 +252,13 @@ def list_exportable_products(
             if sort == "isbn":
                 order_sql = "e.isbn13"
             elif sort == "pub_date":
-                order_sql = "e.publication_date DESC NULLS LAST, e.isbn13"
+                order_sql = "COALESCE(e.publication_date, w.publication_date) DESC NULLS LAST, e.isbn13"
             elif sort == "updated":
-                order_sql = "e.updated_at DESC NULLS LAST, e.isbn13"
+                order_sql = "COALESCE(e.updated_at, w.updated_at) DESC NULLS LAST, e.isbn13"
             else:
                 order_sql = (
-                    "CASE WHEN COALESCE(w.series_title, '') = '' THEN COALESCE(w.title, '') ELSE COALESCE(w.series_title, '') END, "
+                    "CASE WHEN COALESCE(w.series_title, '') = '' "
+                    "THEN COALESCE(w.title, '') ELSE COALESCE(w.series_title, '') END, "
                     "NULLIF(w.series_number, 0) NULLS LAST, "
                     "COALESCE(w.subtitle, ''), "
                     "e.isbn13"
@@ -322,7 +277,6 @@ def list_exportable_products(
                     e.publishing_status,
                     e.status,
                     e.inventory_number,
-                    e.source_extras,
                     e.updated_at,
                     w.title,
                     w.subtitle,
@@ -330,7 +284,9 @@ def list_exportable_products(
                     w.series_number,
                     w.publisher_or_imprint,
                     w.publisher_name,
-                    w.imprint_name
+                    w.imprint_name,
+                    w.publication_date AS work_pub_date,
+                    w.updated_at AS work_updated_at
                 FROM editions e
                 JOIN works w
                   ON w.id = e.work_id
@@ -358,7 +314,6 @@ def list_exportable_products(
 
             items: List[Dict[str, Any]] = []
             for r in rows:
-                se = _json_obj(r.get("source_extras"))
                 contrib_summary = _contributors_summary_for_work(cur, tenant_id, str(r["work_id"]))
 
                 pub_date = ""
@@ -367,45 +322,59 @@ def list_exportable_products(
                         pub_date = r["publication_date"].isoformat()
                     except Exception:
                         pub_date = _norm(r.get("publication_date"))
-                if not pub_date:
-                    pub_date = _norm(se.get("pub_date") or se.get("publication_date") or "")
+                if not pub_date and r.get("work_pub_date"):
+                    try:
+                        pub_date = r["work_pub_date"].isoformat()
+                    except Exception:
+                        pub_date = _norm(r.get("work_pub_date"))
 
-                product_form = _norm(r.get("product_form") or "")
-                if not product_form:
-                    product_form = _map_legacy_format_to_onix_product_form(se.get("format"))
+                product_form = _map_format_to_onix_product_form(
+                    r.get("product_form"),
+                    r.get("product_form_detail"),
+                )
 
                 work_title = _norm(r.get("title") or "")
                 work_subtitle = _norm(r.get("subtitle") or "")
                 work_series_title = _norm(r.get("series_title") or "")
 
-                is_digital = _is_digital_product(product_form, _norm(se.get("format") or ""))
+                is_digital = _is_digital_product(product_form, _norm(r.get("product_form_detail") or ""))
                 inventory_number = ""
                 if not is_digital:
-                    inventory_number = _norm(r.get("inventory_number") or se.get("loc_number") or "0") or "0"
+                    inventory_number = _norm(r.get("inventory_number") or "0") or "0"
 
-                items.append({
-                    "edition_id": str(r["edition_id"]),
-                    "work_id": str(r["work_id"]),
-                    "isbn13": _norm(r.get("isbn13") or se.get("isbn13") or ""),
-                    "record_reference": _norm(r.get("record_reference") or ""),
-                    "title": work_title,
-                    "subtitle": work_subtitle,
-                    "series_title": work_series_title,
-                    "series_number": int(r.get("series_number") or 0),
-                    "display_title": _display_title_for_listing(work_title, work_series_title, work_subtitle),
-                    "contributors_summary": contrib_summary,
-                    "product_form": product_form or _norm(se.get("format") or ""),
-                    "product_form_detail": _norm(r.get("product_form_detail") or ""),
-                    "publisher_or_imprint": _norm(
-                        r.get("publisher_or_imprint") or r.get("publisher_name") or r.get("imprint_name") or ""
-                    ),
-                    "publication_date": pub_date or None,
-                    "publishing_status": _norm(r.get("publishing_status") or ""),
-                    "inventory_number": inventory_number,
-                    "status": _norm(r.get("status") or ""),
-                    "updated_at": r.get("updated_at").isoformat() if r.get("updated_at") else None,
-                    "latest_raw_import_at": _latest_raw_import_at(cur, tenant_id, _norm_isbn13(r.get("isbn13") or "")),
-                })
+                items.append(
+                    {
+                        "edition_id": str(r["edition_id"]),
+                        "work_id": str(r["work_id"]),
+                        "isbn13": _norm(r.get("isbn13") or ""),
+                        "record_reference": _norm(r.get("record_reference") or ""),
+                        "title": work_title,
+                        "subtitle": work_subtitle,
+                        "series_title": work_series_title,
+                        "series_number": int(r.get("series_number") or 0),
+                        "display_title": _display_title_for_listing(
+                            work_title, work_series_title, work_subtitle
+                        ),
+                        "contributors_summary": contrib_summary,
+                        "product_form": product_form or _norm(r.get("product_form_detail") or ""),
+                        "product_form_detail": _norm(r.get("product_form_detail") or ""),
+                        "publisher_or_imprint": _norm(
+                            r.get("publisher_or_imprint")
+                            or r.get("publisher_name")
+                            or r.get("imprint_name")
+                            or ""
+                        ),
+                        "publication_date": pub_date or None,
+                        "publishing_status": _norm(r.get("publishing_status") or ""),
+                        "inventory_number": inventory_number,
+                        "status": _norm(r.get("status") or ""),
+                        "validation_status": "unvalidated",
+                        "updated_at": r.get("updated_at").isoformat() if r.get("updated_at") else None,
+                        "latest_raw_import_at": _latest_raw_import_at(
+                            cur, tenant_id, _norm_isbn13(r.get("isbn13") or "")
+                        ),
+                    }
+                )
 
             return {
                 "items": items,
@@ -416,7 +385,6 @@ def list_exportable_products(
 
 
 def get_exportable_product_by_isbn(tenant_slug: str, isbn13: str) -> Optional[Dict[str, Any]]:
-    """Return full exportable product payload for one ISBN, or None."""
     norm = _norm_isbn13(isbn13)
     if not norm:
         return None
@@ -445,18 +413,15 @@ def build_onix_product_payload(
     edition_id: str,
     cur=None,
 ) -> Dict[str, Any]:
-    """Build canonical ONIX product dict for one edition (for XML serialization)."""
-    import json
-
     if cur is None:
         with db_conn() as conn:
             with conn.cursor(row_factory=dict_row) as cur2:
-                return _build_one(cur2, tenant_id, edition_id, json)
+                return _build_one(cur2, tenant_id, edition_id)
 
-    return _build_one(cur, tenant_id, edition_id, json)
+    return _build_one(cur, tenant_id, edition_id)
 
 
-def _build_one(cur, tenant_id: str, edition_id: str, json_mod) -> Dict[str, Any]:
+def _build_one(cur, tenant_id: str, edition_id: str) -> Dict[str, Any]:
     cur.execute(
         """
         SELECT
@@ -488,7 +453,6 @@ def _build_one(cur, tenant_id: str, edition_id: str, json_mod) -> Dict[str, Any]
         return {}
 
     work_id = str(ed["work_id"])
-    se = _json_obj(ed.get("source_extras"))
 
     title_fields = _title_fields_for_payload(ed)
     title = title_fields["title"]
@@ -497,76 +461,90 @@ def _build_one(cur, tenant_id: str, edition_id: str, json_mod) -> Dict[str, Any]
     series_number = title_fields["series_number"]
 
     publisher = _norm(
-        ed.get("publisher_or_imprint") or ed.get("publisher_name") or ed.get("imprint_name") or ""
+        ed.get("publisher_or_imprint")
+        or ed.get("publisher_name")
+        or ed.get("imprint_name")
+        or ""
     )
     language = _norm(ed.get("language") or "")
     isbn13 = _norm_isbn13(ed.get("isbn13") or "")
     record_reference = _norm(ed.get("record_reference") or "")
 
-    product_form = _norm(ed.get("product_form") or "")
-    if not product_form:
-        product_form = _map_legacy_format_to_onix_product_form(se.get("format"))
+    product_form = _map_format_to_onix_product_form(
+        ed.get("product_form"),
+        ed.get("product_form_detail"),
+    )
     if not product_form:
         product_form = "BC"
 
     product_form_detail = _norm(ed.get("product_form_detail") or "")
-    publication_date = _publication_date_from_row(ed, se)
+    publication_date = _publication_date_from_row(ed)
     publishing_status = _norm(ed.get("publishing_status") or "")
     if not publishing_status:
         publishing_status = "04"
 
-    legacy_format = _norm(se.get("format") or "")
-    is_digital = _is_digital_product(product_form, legacy_format)
+    is_digital = _is_digital_product(product_form, product_form_detail)
 
     inventory_number = ""
     if not is_digital:
-        inventory_number = _norm(ed.get("inventory_number") or se.get("loc_number") or "0") or "0"
+        inventory_number = _norm(ed.get("inventory_number") or "0") or "0"
 
     identifiers: List[Dict[str, str]] = []
     if isbn13:
-        identifiers.append({
-            "id_type": "15",
-            "id_type_name": "ISBN-13",
-            "id_value": isbn13,
-        })
+        identifiers.append(
+            {
+                "id_type": "15",
+                "id_type_name": "ISBN-13",
+                "id_value": isbn13,
+            }
+        )
 
-    # Only physical products get inventory / locator / proprietary number
     if inventory_number:
-        identifiers.append({
-            "id_type": "01",
-            "id_type_name": "Proprietary",
-            "id_value": inventory_number,
-        })
+        identifiers.append(
+            {
+                "id_type": "01",
+                "id_type_name": "Proprietary",
+                "id_value": inventory_number,
+            }
+        )
 
-    cur.execute(
-        """
-        SELECT id_type, id_type_name, id_value
-        FROM edition_identifiers
-        WHERE tenant_id = %s AND edition_id = %s
-        """,
-        (tenant_id, edition_id),
-    )
-    for r in (cur.fetchall() or []):
-        id_value = _norm(r.get("id_value") or "")
-        if id_value:
-            identifiers.append({
-                "id_type": _norm(r.get("id_type") or ""),
-                "id_type_name": _norm(r.get("id_type_name") or ""),
-                "id_value": id_value,
-            })
+    try:
+        cur.execute(
+            """
+            SELECT id_type, id_type_name, id_value
+            FROM edition_identifiers
+            WHERE tenant_id = %s AND edition_id = %s
+            """,
+            (tenant_id, edition_id),
+        )
+        for r in cur.fetchall() or []:
+            id_value = _norm(r.get("id_value") or "")
+            if id_value:
+                identifiers.append(
+                    {
+                        "id_type": _norm(r.get("id_type") or ""),
+                        "id_type_name": _norm(r.get("id_type_name") or ""),
+                        "id_value": id_value,
+                    }
+                )
+    except Exception:
+        pass
 
     contributors: List[Dict[str, Any]] = []
     cur.execute(
         """
         SELECT wc.contributor_role, wc.sequence_number, p.display_name, p.person_name_inverted
         FROM work_contributors wc
-        JOIN parties p ON p.id = wc.party_id
-        WHERE wc.work_id = %s AND p.tenant_id = %s
+        JOIN parties p
+          ON p.id = wc.party_id
+         AND p.tenant_id = wc.tenant_id
+        WHERE wc.tenant_id = %s
+          AND wc.work_id = %s
         ORDER BY wc.sequence_number ASC
         """,
-        (work_id, tenant_id),
+        (tenant_id, work_id),
     )
-    for r in (cur.fetchall() or []):
+    for r in cur.fetchall() or []:
         role = _norm(r.get("contributor_role") or "")
         role_upper = role.upper()
 
@@ -575,61 +553,70 @@ def _build_one(cur, tenant_id: str, edition_id: str, json_mod) -> Dict[str, Any]
         elif role_upper in ("A12", "ILLUSTRATOR"):
             role = "A12"
 
-        raw_name = r.get("display_name") or r.get("person_name_inverted") or ""
-        if isinstance(raw_name, dict):
-            name = _contributor_display_name(raw_name.get("display_name") or raw_name.get("name") or "")
-        else:
-            name = _contributor_display_name(str(raw_name).strip())
-
+        name = _contributor_display_name(
+            r.get("display_name") or r.get("person_name_inverted") or ""
+        )
         if not name:
             continue
 
-        contributors.append({
-            "role": role or "A01",
-            "sequence_number": int(r.get("sequence_number") or 1),
-            "name": name,
-        })
+        contributors.append(
+            {
+                "role": role or "A01",
+                "sequence_number": int(r.get("sequence_number") or 1),
+                "name": name,
+            }
+        )
 
     subjects: List[Dict[str, str]] = []
-    cur.execute(
-        """
-        SELECT scheme_id, subject_code, heading_text
-        FROM edition_subjects
-        WHERE tenant_id = %s AND edition_id = %s
-        """,
-        (tenant_id, edition_id),
-    )
-    for r in (cur.fetchall() or []):
-        heading_text = _norm(r.get("heading_text") or "")
-        subject_code = _norm(r.get("subject_code") or "")
-        scheme_id = _norm(r.get("scheme_id") or "")
-        if heading_text or subject_code:
-            subjects.append({
-                "scheme_id": scheme_id,
-                "subject_code": subject_code,
-                "heading_text": heading_text,
-            })
+    try:
+        cur.execute(
+            """
+            SELECT scheme_id, subject_code, heading_text
+            FROM edition_subjects
+            WHERE tenant_id = %s AND edition_id = %s
+            """,
+            (tenant_id, edition_id),
+        )
+        for r in cur.fetchall() or []:
+            heading_text = _norm(r.get("heading_text") or "")
+            subject_code = _norm(r.get("subject_code") or "")
+            scheme_id = _norm(r.get("scheme_id") or "")
+            if heading_text or subject_code:
+                subjects.append(
+                    {
+                        "scheme_id": scheme_id,
+                        "subject_code": subject_code,
+                        "heading_text": heading_text,
+                    }
+                )
+    except Exception:
+        pass
 
     texts: List[Dict[str, str]] = []
-    cur.execute(
-        """
-        SELECT text_type, text_value
-        FROM edition_texts
-        WHERE tenant_id = %s AND edition_id = %s
-        """,
-        (tenant_id, edition_id),
-    )
-    for r in (cur.fetchall() or []):
-        text_type = _norm(r.get("text_type") or "")
-        text_value = _norm(r.get("text_value") or "")
-        if text_value:
-            texts.append({
-                "text_type": text_type,
-                "text_value": text_value,
-            })
+    try:
+        cur.execute(
+            """
+            SELECT text_type, text_value
+            FROM edition_texts
+            WHERE tenant_id = %s AND edition_id = %s
+            """,
+            (tenant_id, edition_id),
+        )
+        for r in cur.fetchall() or []:
+            text_type = _norm(r.get("text_type") or "")
+            text_value = _norm(r.get("text_value") or "")
+            if text_value:
+                texts.append(
+                    {
+                        "text_type": text_type,
+                        "text_value": text_value,
+                    }
+                )
+    except Exception:
+        pass
 
     main_description = _norm(ed.get("main_description") or "")
-    if main_description and not any(_norm(t.get("text_type")) for t in texts):
+    if main_description and not texts:
         texts.insert(0, {"text_type": "Main Description", "text_value": main_description})
 
     bio_note = _norm(ed.get("biographical_note") or "")
@@ -645,7 +632,7 @@ def _build_one(cur, tenant_id: str, edition_id: str, json_mod) -> Dict[str, Any]
         """,
         (tenant_id, edition_id),
     )
-    for sd in (cur.fetchall() or []):
+    for sd in cur.fetchall() or []:
         sd_id = sd.get("id")
         prices: List[Dict[str, Any]] = []
 
@@ -653,40 +640,29 @@ def _build_one(cur, tenant_id: str, edition_id: str, json_mod) -> Dict[str, Any]
             """
             SELECT price_type_code, price_amount, currency_code
             FROM edition_prices
-            WHERE supply_detail_id = %s
+            WHERE tenant_id = %s
+              AND supply_detail_id = %s
             """,
-            (sd_id,),
+            (tenant_id, sd_id),
         )
-        for pr in (cur.fetchall() or []):
-            prices.append({
-                "price_type_code": _norm(pr.get("price_type_code") or "01"),
-                "price_amount": float(pr["price_amount"]) if pr.get("price_amount") is not None else None,
-                "currency_code": _norm(pr.get("currency_code") or "USD"),
-            })
+        for pr in cur.fetchall() or []:
+            prices.append(
+                {
+                    "price_type_code": _norm(pr.get("price_type_code") or "01"),
+                    "price_amount": float(pr["price_amount"]) if pr.get("price_amount") is not None else None,
+                    "currency_code": _norm(pr.get("currency_code") or "USD"),
+                }
+            )
 
-        # Fallback to legacy source_extras prices if edition_prices is empty
-        if not prices:
-            prices = _legacy_price_rows(se)
+        supply_details.append(
+            {
+                "supplier_name": _norm(sd.get("supplier_name") or ""),
+                "product_availability": _norm(sd.get("product_availability") or ""),
+                "on_sale_date": sd.get("on_sale_date").isoformat() if sd.get("on_sale_date") else "",
+                "prices": prices,
+            }
+        )
 
-        supply_details.append({
-            "supplier_name": _norm(sd.get("supplier_name") or ""),
-            "product_availability": _norm(sd.get("product_availability") or ""),
-            "on_sale_date": sd.get("on_sale_date").isoformat() if sd.get("on_sale_date") else "",
-            "prices": prices,
-        })
-
-    # If there are no edition_supply_details rows at all, still emit a minimal supply block from legacy prices.
-    if not supply_details:
-        legacy_prices = _legacy_price_rows(se)
-        if legacy_prices:
-            supply_details.append({
-                "supplier_name": "",
-                "product_availability": "",
-                "on_sale_date": "",
-                "prices": legacy_prices,
-            })
-
-    # Keep current DB-based cover fallback, but prefer edition over work.
     cover_link = _norm(ed.get("cover_image_link") or ed.get("work_cover_link") or "")
 
     return {
@@ -711,28 +687,25 @@ def _build_one(cur, tenant_id: str, edition_id: str, json_mod) -> Dict[str, Any]
         "inventory_number": inventory_number,
         "edition_id": edition_id,
         "work_id": work_id,
-        "extras": se,
+        "extras": {},
     }
 
 
 def build_onix_message_payload(tenant_id: str, edition_ids: List[str], cur=None) -> Dict[str, Any]:
-    """Build ONIX message with multiple products."""
-    import json
-
     products: List[Dict[str, Any]] = []
 
     if cur is None:
         with db_conn() as conn:
             with conn.cursor(row_factory=dict_row) as cur2:
                 for eid in edition_ids:
-                    p = _build_one(cur2, tenant_id, eid, json)
-                    if p:
-                        products.append(p)
+                    product = _build_one(cur2, tenant_id, eid)
+                    if product:
+                        products.append(product)
     else:
         for eid in edition_ids:
-            p = _build_one(cur, tenant_id, eid, json)
-            if p:
-                products.append(p)
+            product = _build_one(cur, tenant_id, eid)
+            if product:
+                products.append(product)
 
     return {
         "release": "3.0",

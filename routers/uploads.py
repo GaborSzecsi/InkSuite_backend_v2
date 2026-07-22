@@ -102,6 +102,10 @@ def _guess_kind(filename: str) -> str:
         return "author_contract"
     if "illustrator_contract" in f or "__illustrator_contract" in f:
         return "illustrator_contract"
+    if "author_photo" in f or "__author_photo" in f:
+        return "author_photo"
+    if "illustrator_photo" in f or "__illustrator_photo" in f:
+        return "illustrator_photo"
     if "w9" in f:
         return "w9"
     return "other"
@@ -230,7 +234,13 @@ def list_book_assets(bookUid: str = Query(...)):
                     size = int(obj.get("Size") or 0)
 
                     url = _s3_url_for_key(key)
-                    item = {"name": name, "url": url, "size": size}
+                    item = {
+                        "name": name,
+                        "filename": name,
+                        "kind": _guess_kind(name),
+                        "url": url,
+                        "size": size,
+                    }
 
                     if _is_cover(name) and cover is None:
                         cover = item
@@ -271,7 +281,7 @@ def list_book_assets(bookUid: str = Query(...)):
             if _is_cover(name) and cover is None:
                 cover = {"name": name, "url": url, "size": size}
             else:
-                files.append({"name": name, "url": url, "size": size})
+                files.append({"name": name, "filename": name, "kind": _guess_kind(name), "url": url, "size": size})
 
         return {"bookUid": uid, "cover": cover, "files": files}
 

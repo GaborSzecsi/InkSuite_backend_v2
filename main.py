@@ -112,6 +112,7 @@ from routers.catalog import router as catalog_router
 from app.onix.router import router as onix_router
 from routers.salesdata import router as salesdata_router
 from routers.royalty_engine import router as royalty_engine_router
+from routers.bookdev_email import router as bookdev_email_router
 
 # ---------------------------------------------------------------------
 # Routers (mount ONCE, consistently)
@@ -125,6 +126,7 @@ app.include_router(settings_router, prefix="/api")
 app.include_router(contract_invites, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(onix_router, prefix="/api")
+app.include_router(bookdev_email_router, prefix="/api", tags=["Book Development Requests"])
 
 # Uploads read router: mount ONCE.
 # If uploads_read has absolute paths like "/api/uploads/book-assets" inside it, mount WITHOUT prefix.

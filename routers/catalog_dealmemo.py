@@ -182,6 +182,424 @@ def _build_party_payload_from_draft(draft: Dict[str, Any], scope: str) -> Dict[s
     return payload
 
 
+def _get_deal_memo_contributor_snapshot(
+    cur,
+    tenant_id: str,
+    deal_memo_draft_id: str,
+    role_code: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Return the normalized contributor snapshot for the requested role.
+
+    The legacy deal_memo_drafts columns remain the fallback, so adding these
+    tables does not change the existing Deal Memo behavior.
+    """
+    cur.execute(
+        """
+        SELECT *
+        FROM deal_memo_contributors
+        WHERE tenant_id = %s
+          AND deal_memo_draft_id = %s
+          AND upper(role_code) = upper(%s)
+        ORDER BY sequence_number ASC, created_at ASC, id ASC
+        LIMIT 1
+        """,
+        (tenant_id, deal_memo_draft_id, role_code),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _load_snapshot_children(
+    cur,
+    tenant_id: str,
+    contributor_snapshot_id: str,
+) -> Dict[str, List[Dict[str, Any]]]:
+    child_specs = {
+        "addresses": (
+            "deal_memo_contributor_addresses",
+            "item_order ASC, created_at ASC, id ASC",
+        ),
+        "socials": (
+            "deal_memo_contributor_socials",
+            "item_order ASC, created_at ASC, id ASC",
+        ),
+        "awards": (
+            "deal_memo_contributor_awards",
+            "item_order ASC, created_at ASC, id ASC",
+        ),
+        "identifiers": (
+            "deal_memo_contributor_identifiers",
+            "item_order ASC, created_at ASC, id ASC",
+        ),
+    }
+
+    output: Dict[str, List[Dict[str, Any]]] = {}
+    for key, (table_name, order_by) in child_specs.items():
+        cur.execute(
+            f"""
+            SELECT *
+            FROM {table_name}
+            WHERE tenant_id = %s
+              AND deal_memo_contributor_id = %s
+            ORDER BY {order_by}
+            """,
+            (tenant_id, contributor_snapshot_id),
+        )
+        output[key] = [dict(row) for row in (cur.fetchall() or [])]
+
+    return output
+
+
+def _build_party_payload_from_snapshot(
+    snapshot: Dict[str, Any],
+    children: Dict[str, List[Dict[str, Any]]],
+    scope: str,
+    draft: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Build the same payload shape already consumed by _upsert_party_core(),
+    but prefer values from the normalized Deal Memo snapshot.
+    """
+    prefix = "illustrator" if scope == "illustrator" else "author"
+    legacy_payload = _build_party_payload_from_draft(draft, scope)
+    legacy_party = dict(legacy_payload.get(scope) or {})
+    primary_address = (children.get("addresses") or [{}])[0]
+
+    display_name = _safe_str(
+        snapshot.get("display_name")
+        or snapshot.get("pen_name")
+        or snapshot.get("corporate_name")
+        or legacy_party.get("name")
+    )
+
+    payload: Dict[str, Any] = {
+        scope: {
+            "name": display_name,
+            "email": _safe_str(snapshot.get("email") or legacy_party.get("email")),
+            "website": _safe_str(snapshot.get("website") or legacy_party.get("website")),
+            "phone_country_code": _safe_str(
+                snapshot.get("phone_country_code")
+                or legacy_party.get("phone_country_code")
+            ),
+            "phone_number": _safe_str(
+                snapshot.get("phone_number") or legacy_party.get("phone_number")
+            ),
+            "address": {
+                "street": _safe_str(
+                    primary_address.get("street")
+                    or (legacy_party.get("address") or {}).get("street")
+                ),
+                "city": _safe_str(
+                    primary_address.get("city")
+                    or (legacy_party.get("address") or {}).get("city")
+                ),
+                "state": _safe_str(
+                    primary_address.get("state")
+                    or (legacy_party.get("address") or {}).get("state")
+                ),
+                "zip": _safe_str(
+                    primary_address.get("zip")
+                    or (legacy_party.get("address") or {}).get("zip")
+                ),
+                "country": _safe_str(
+                    primary_address.get("country")
+                    or (legacy_party.get("address") or {}).get("country")
+                ),
+            },
+        },
+        f"{prefix}_birth_city": _safe_str(
+            snapshot.get("birth_city") or legacy_payload.get(f"{prefix}_birth_city")
+        ),
+        f"{prefix}_birth_country": _safe_str(
+            snapshot.get("birth_country")
+            or legacy_payload.get(f"{prefix}_birth_country")
+        ),
+        f"{prefix}_birth_date": (
+            snapshot.get("birth_date")
+            or legacy_payload.get(f"{prefix}_birth_date")
+        ),
+        f"{prefix}_citizenship": _safe_str(
+            snapshot.get("citizenship")
+            or legacy_payload.get(f"{prefix}_citizenship")
+        ),
+        f"{prefix}_bio": _safe_str(legacy_payload.get(f"{prefix}_bio")),
+        f"{prefix}_book_bio": _safe_str(
+            legacy_payload.get(f"{prefix}_book_bio")
+        ),
+        f"{prefix}_website_bio": _safe_str(
+            legacy_payload.get(f"{prefix}_website_bio")
+        ),
+    }
+    return payload
+
+
+def _update_party_extended_columns(
+    cur,
+    tenant_id: str,
+    party_id: str,
+    snapshot: Dict[str, Any],
+) -> None:
+    cur.execute(
+        """
+        UPDATE parties
+        SET display_name = %s,
+            names_before_key = %s,
+            key_names = %s,
+            person_name_inverted = %s,
+            corporate_name = %s,
+            email = %s,
+            website = %s,
+            phone_country_code = %s,
+            phone_number = %s,
+            birth_date = %s,
+            birth_city = %s,
+            birth_country = %s,
+            citizenship = %s,
+            titles_before_names = %s,
+            prefix_to_key = %s,
+            suffix_to_key = %s,
+            letters_after_names = %s,
+            pen_name = %s,
+            death_date = %s,
+            language_code = %s,
+            country_code = %s,
+            region_code = %s,
+            updated_at = now()
+        WHERE tenant_id = %s
+          AND id = %s
+        """,
+        (
+            _safe_str(snapshot.get("display_name")),
+            _safe_str(snapshot.get("names_before_key")),
+            _safe_str(snapshot.get("key_names")),
+            _safe_str(snapshot.get("person_name_inverted")),
+            _safe_str(snapshot.get("corporate_name")),
+            _safe_str(snapshot.get("email")),
+            _safe_str(snapshot.get("website")),
+            _safe_str(snapshot.get("phone_country_code")),
+            _safe_str(snapshot.get("phone_number")),
+            _parse_date_or_none(snapshot.get("birth_date")),
+            _safe_str(snapshot.get("birth_city")),
+            _safe_str(snapshot.get("birth_country")),
+            _safe_str(snapshot.get("citizenship")),
+            _safe_str(snapshot.get("titles_before_names")),
+            _safe_str(snapshot.get("prefix_to_key")),
+            _safe_str(snapshot.get("suffix_to_key")),
+            _safe_str(snapshot.get("letters_after_names")),
+            _safe_str(snapshot.get("pen_name")),
+            _parse_date_or_none(snapshot.get("death_date")),
+            _safe_str(snapshot.get("language_code")),
+            _safe_str(snapshot.get("country_code")),
+            _safe_str(snapshot.get("region_code")),
+            tenant_id,
+            party_id,
+        ),
+    )
+
+
+def _replace_party_addresses_from_snapshot(
+    cur,
+    tenant_id: str,
+    party_id: str,
+    rows: List[Dict[str, Any]],
+) -> None:
+    cur.execute(
+        """
+        DELETE FROM party_addresses
+        WHERE tenant_id = %s
+          AND party_id = %s
+        """,
+        (tenant_id, party_id),
+    )
+
+    for row in rows:
+        cur.execute(
+            """
+            INSERT INTO party_addresses (
+                id,
+                tenant_id,
+                party_id,
+                label,
+                street,
+                city,
+                state,
+                zip,
+                country,
+                is_non_us
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                tenant_id,
+                party_id,
+                _safe_str(row.get("label")) or "primary",
+                _safe_str(row.get("street")),
+                _safe_str(row.get("city")),
+                _safe_str(row.get("state")),
+                _safe_str(row.get("zip")),
+                _safe_str(row.get("country")),
+                bool(row.get("is_non_us") or False),
+            ),
+        )
+
+
+def _replace_party_socials_from_snapshot(
+    cur,
+    tenant_id: str,
+    party_id: str,
+    rows: List[Dict[str, Any]],
+) -> None:
+    cur.execute(
+        """
+        DELETE FROM party_socials
+        WHERE tenant_id = %s
+          AND party_id = %s
+        """,
+        (tenant_id, party_id),
+    )
+
+    for row in rows:
+        platform = _safe_str(row.get("platform")).strip()
+        url = _safe_str(row.get("url")).strip()
+        if not platform or not url:
+            continue
+
+        cur.execute(
+            """
+            INSERT INTO party_socials (
+                id, tenant_id, party_id, platform, url
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (str(uuid.uuid4()), tenant_id, party_id, platform, url),
+        )
+
+
+def _replace_party_awards_from_snapshot(
+    cur,
+    tenant_id: str,
+    party_id: str,
+    rows: List[Dict[str, Any]],
+) -> None:
+    cur.execute(
+        """
+        DELETE FROM contributor_awards
+        WHERE tenant_id = %s
+          AND party_id = %s
+        """,
+        (tenant_id, party_id),
+    )
+
+    for index, row in enumerate(rows):
+        award_name = _safe_str(row.get("award_name")).strip()
+        if not award_name:
+            continue
+
+        cur.execute(
+            """
+            INSERT INTO contributor_awards (
+                id,
+                tenant_id,
+                party_id,
+                award_name,
+                award_year,
+                award_result,
+                notes,
+                item_order
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                tenant_id,
+                party_id,
+                award_name,
+                _safe_str(row.get("award_year")),
+                _safe_str(row.get("award_result")),
+                _safe_str(row.get("notes")),
+                int(row.get("item_order") or index),
+            ),
+        )
+
+
+def _replace_party_identifiers_from_snapshot(
+    cur,
+    tenant_id: str,
+    party_id: str,
+    rows: List[Dict[str, Any]],
+) -> None:
+    cur.execute(
+        """
+        DELETE FROM contributor_identifiers
+        WHERE tenant_id = %s
+          AND party_id = %s
+        """,
+        (tenant_id, party_id),
+    )
+
+    for index, row in enumerate(rows):
+        identifier_type = _safe_str(row.get("identifier_type")).strip()
+        identifier_value = _safe_str(row.get("identifier_value")).strip()
+        if not identifier_type or not identifier_value:
+            continue
+
+        cur.execute(
+            """
+            INSERT INTO contributor_identifiers (
+                id,
+                tenant_id,
+                party_id,
+                identifier_type,
+                identifier_value,
+                item_order
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                tenant_id,
+                party_id,
+                identifier_type,
+                identifier_value,
+                int(row.get("item_order") or index),
+            ),
+        )
+
+
+def _sync_normalized_snapshot_to_party(
+    cur,
+    tenant_id: str,
+    party_id: str,
+    snapshot: Optional[Dict[str, Any]],
+    children: Optional[Dict[str, List[Dict[str, Any]]]],
+) -> None:
+    if not snapshot:
+        return
+
+    normalized_children = children or {
+        "addresses": [],
+        "socials": [],
+        "awards": [],
+        "identifiers": [],
+    }
+
+    _update_party_extended_columns(cur, tenant_id, party_id, snapshot)
+    _replace_party_addresses_from_snapshot(
+        cur, tenant_id, party_id, normalized_children.get("addresses") or []
+    )
+    _replace_party_socials_from_snapshot(
+        cur, tenant_id, party_id, normalized_children.get("socials") or []
+    )
+    _replace_party_awards_from_snapshot(
+        cur, tenant_id, party_id, normalized_children.get("awards") or []
+    )
+    _replace_party_identifiers_from_snapshot(
+        cur, tenant_id, party_id, normalized_children.get("identifiers") or []
+    )
+
+
 def _ensure_work_row_for_author(cur, tenant_id: str, draft: Dict[str, Any]) -> str:
     work_id = str(uuid.uuid4())
     work_uid = str(uuid.uuid4())
@@ -767,17 +1185,55 @@ def _create_or_update_from_author_deal_memo(
 ) -> str:
     work_id = _ensure_work_row_for_author(cur, tenant_id, draft)
 
-    author_name = _safe_str(draft.get("author"))
+    snapshot = _get_deal_memo_contributor_snapshot(
+        cur,
+        tenant_id,
+        str(draft["id"]),
+        "A01",
+    )
+    children = (
+        _load_snapshot_children(cur, tenant_id, str(snapshot["id"]))
+        if snapshot
+        else None
+    )
+
+    author_name = _safe_str(
+        (snapshot or {}).get("display_name")
+        or (snapshot or {}).get("pen_name")
+        or draft.get("author")
+    )
     if not author_name:
         raise HTTPException(status_code=400, detail="Author name is required")
 
-    author_email = _safe_str(draft.get("author_email"))
-    author_party_id = _get_or_create_party(cur, tenant_id, author_name, author_email, "person")
+    author_email = _safe_str(
+        (snapshot or {}).get("email") or draft.get("author_email")
+    )
+    author_party_id = _safe_str((snapshot or {}).get("party_id")) or None
+    if not author_party_id:
+        author_party_id = _get_or_create_party(
+            cur, tenant_id, author_name, author_email, "person"
+        )
     if not author_party_id:
         raise HTTPException(status_code=500, detail="Could not create author party")
 
-    payload = _build_party_payload_from_draft(draft, "author")
+    payload = (
+        _build_party_payload_from_snapshot(
+            snapshot,
+            children or {},
+            "author",
+            draft,
+        )
+        if snapshot
+        else _build_party_payload_from_draft(draft, "author")
+    )
     _upsert_party_core(cur, tenant_id, author_party_id, payload, "author")
+    _sync_normalized_snapshot_to_party(
+        cur,
+        tenant_id,
+        author_party_id,
+        snapshot,
+        children,
+    )
 
     _ensure_work_contributor(
         cur,
@@ -785,7 +1241,7 @@ def _create_or_update_from_author_deal_memo(
         work_id,
         author_party_id,
         "A01",
-        1,
+        int((snapshot or {}).get("sequence_number") or 1),
     )
 
     _ensure_party_representation_from_ids(
@@ -824,19 +1280,62 @@ def _apply_illustrator_deal_memo_to_existing_work(
 ) -> str:
     work_id = _require_existing_work_for_illustrator(cur, tenant_id, draft)
 
-    illustrator_name = _safe_str(draft.get("illustrator_name") or draft.get("illustrator"))
+    snapshot = _get_deal_memo_contributor_snapshot(
+        cur,
+        tenant_id,
+        str(draft["id"]),
+        "A12",
+    )
+    children = (
+        _load_snapshot_children(cur, tenant_id, str(snapshot["id"]))
+        if snapshot
+        else None
+    )
+
+    illustrator_name = _safe_str(
+        (snapshot or {}).get("display_name")
+        or (snapshot or {}).get("pen_name")
+        or draft.get("illustrator_name")
+        or draft.get("illustrator")
+    )
     if not illustrator_name:
         raise HTTPException(status_code=400, detail="Illustrator name is required")
 
-    illustrator_email = _safe_str(draft.get("illustrator_email"))
-    illustrator_party_id = _get_or_create_party(
-        cur, tenant_id, illustrator_name, illustrator_email, "person"
+    illustrator_email = _safe_str(
+        (snapshot or {}).get("email") or draft.get("illustrator_email")
     )
+    illustrator_party_id = _safe_str((snapshot or {}).get("party_id")) or None
+    if not illustrator_party_id:
+        illustrator_party_id = _get_or_create_party(
+            cur, tenant_id, illustrator_name, illustrator_email, "person"
+        )
     if not illustrator_party_id:
         raise HTTPException(status_code=500, detail="Could not create illustrator party")
 
-    payload = _build_party_payload_from_draft(draft, "illustrator")
-    _upsert_party_core(cur, tenant_id, illustrator_party_id, payload, "illustrator")
+    payload = (
+        _build_party_payload_from_snapshot(
+            snapshot,
+            children or {},
+            "illustrator",
+            draft,
+        )
+        if snapshot
+        else _build_party_payload_from_draft(draft, "illustrator")
+    )
+    _upsert_party_core(
+        cur,
+        tenant_id,
+        illustrator_party_id,
+        payload,
+        "illustrator",
+    )
+    _sync_normalized_snapshot_to_party(
+        cur,
+        tenant_id,
+        illustrator_party_id,
+        snapshot,
+        children,
+    )
 
     _ensure_work_contributor(
         cur,
@@ -844,7 +1343,7 @@ def _apply_illustrator_deal_memo_to_existing_work(
         work_id,
         illustrator_party_id,
         "A12",
-        2,
+        int((snapshot or {}).get("sequence_number") or 2),
     )
 
     _ensure_party_representation_from_ids(

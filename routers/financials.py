@@ -1,204 +1,32 @@
-# marble_app/routers/financials.py
+# routers/financials.py
 from __future__ import annotations
 
-import json
-import os
-import re
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-import boto3
-from botocore.config import Config
-from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 from fastapi import APIRouter, HTTPException, Query
+from psycopg.rows import dict_row
 
-# Mounted in main.py with prefix="/api", so using prefix="/financials" here
-# yields URLs like /api/financials/..., which matches the frontend.
+from app.core.db import db_conn
+
 router = APIRouter(prefix="/financials", tags=["Financials"])
 
-# =========
-# ENV
-# =========
-AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 
-S3_BUCKET = os.getenv("S3_BUCKET", "inksuite-data").strip()
-TENANT_PREFIX = os.getenv("TENANT_PREFIX", "tenants/marble-press").strip().rstrip("/")
-
-# S3 keys live under book_data
-FINANCIALS_KEY = os.getenv(
-    "FINANCIALS_S3_KEY",
-    f"{TENANT_PREFIX}/book_data/financials.json",
-).strip()
-BOOKS_KEY = os.getenv(
-    "BOOKS_S3_KEY",
-    f"{TENANT_PREFIX}/book_data/books.json",
-).strip()
-
-# Local fallbacks (make local dev robust; also helps EC2 if S3 is temporarily broken)
-LOCAL_FINANCIALS_PATH = Path(
-    os.getenv("LOCAL_FINANCIALS_PATH", "./book_data/financials.json")
-).resolve()
-LOCAL_BOOKS_PATH = Path(
-    os.getenv("LOCAL_BOOKS_PATH", "./book_data/books.json")
-).resolve()
-
-# Toggle: in local dev you may want to skip S3 entirely
-USE_S3 = os.getenv("USE_S3", "1").strip().lower() not in ("0", "false", "no")
-
-_PERIOD_RE = re.compile(r"^\d{4}-\d{2}$")
-
-# =========
-# S3 helpers
-# =========
-def _s3_client():
-    # If EC2 has an instance role, boto3 will auto-discover creds.
-    return boto3.client(
-        "s3",
-        region_name=AWS_REGION,
-        config=Config(retries={"max_attempts": 5, "mode": "standard"}),
+def _get_tenant_id(cur, tenant_slug: str = "marble-press") -> str:
+    cur.execute(
+        """
+        SELECT id
+        FROM public.tenants
+        WHERE lower(slug) = lower(%s)
+        LIMIT 1
+        """,
+        (tenant_slug,),
     )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_slug}")
+    return str(row["id"])
 
-def _read_local_json(path: Path) -> Any:
-    if not path.exists():
-        raise FileNotFoundError(str(path))
-    raw = path.read_text(encoding="utf-8")
-    return json.loads(raw)
-
-def _load_json_from_s3(key: str) -> Any:
-    if not S3_BUCKET:
-        raise HTTPException(status_code=500, detail="S3_BUCKET env var is empty")
-    if not key:
-        raise HTTPException(status_code=500, detail="S3 key is empty")
-
-    s3 = _s3_client()
-    try:
-        obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
-        raw = obj["Body"].read().decode("utf-8")
-        return json.loads(raw)
-    except ClientError as e:
-        # preserve NoSuchKey vs permissions vs other
-        raise HTTPException(status_code=500, detail=f"S3 ClientError for s3://{S3_BUCKET}/{key}: {e}")
-    except (EndpointConnectionError, NoCredentialsError) as e:
-        raise HTTPException(status_code=500, detail=f"S3 connection/credentials error for s3://{S3_BUCKET}/{key}: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read s3://{S3_BUCKET}/{key}: {e}")
-
-def _load_with_fallback(kind: str, s3_key: str, local_path: Path) -> Tuple[Any, str]:
-    """
-    Return (data, source) where source is 's3' or 'local'.
-    """
-    s3_err: Optional[str] = None
-
-    if USE_S3:
-        try:
-            return _load_json_from_s3(s3_key), "s3"
-        except HTTPException as e:
-            s3_err = str(e.detail)
-
-    # local fallback
-    try:
-        return _read_local_json(local_path), "local"
-    except Exception as le:
-        # If both fail, give a very explicit error
-        detail = (
-            f"Failed to load {kind}. "
-            f"Tried S3 key s3://{S3_BUCKET}/{s3_key}"
-            + (f" (error: {s3_err})" if s3_err else " (skipped S3)")
-            + f" and local path {str(local_path)} (error: {le})."
-        )
-        raise HTTPException(status_code=500, detail=detail)
-
-def _load_financials() -> Tuple[Dict[str, Any], str]:
-    data, src = _load_with_fallback("financials.json", FINANCIALS_KEY, LOCAL_FINANCIALS_PATH)
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=500, detail=f"financials.json loaded from {src} is not a JSON object")
-    return data, src
-
-def _load_books() -> Tuple[List[Dict[str, Any]], str]:
-    data, src = _load_with_fallback("books.json", BOOKS_KEY, LOCAL_BOOKS_PATH)
-    if isinstance(data, list):
-        return [b for b in data if isinstance(b, dict)], src
-    # tolerate non-list by returning empty list
-    return [], src
-
-# =========
-# coercion helpers
-# =========
-def to_num(v: Any) -> float:
-    try:
-        n = float(v)
-        return n if n == n else 0.0
-    except Exception:
-        return 0.0
-
-def to_int(v: Any) -> int:
-    try:
-        return int(float(v))
-    except Exception:
-        return 0
-
-def has_inventory(v: Any) -> bool:
-    if v is None:
-        return False
-    try:
-        float(v)
-        return True
-    except Exception:
-        return False
-
-def friendly_format_label(fmt: str) -> str:
-    u = (fmt or "").upper()
-    return {
-        "HC": "Hardcover",
-        "PB": "Paperback",
-        "BB": "Board Book",
-        "EBK": "Ebook",
-        "AUD": "Audiobook",
-        "LP": "Large Print",
-    }.get(u, u or "")
-
-# =========
-# Book key resolution
-# =========
-def resolve_book_keys(input_key: str, books: List[Dict[str, Any]]) -> List[str]:
-    """
-    Your financials.json might key by uid or id (or sometimes other variants).
-    This returns candidate keys to try in byBook[...].
-    """
-    target = (input_key or "").strip()
-    if not target:
-        return []
-
-    candidates = set()
-
-    for b in books:
-        possible = [
-            b.get("uid"),
-            b.get("id"),
-            b.get("book_uid"),
-            b.get("slug"),
-        ]
-        possible = [p for p in possible if isinstance(p, str) and p.strip()]
-
-        if target in possible:
-            for p in possible:
-                candidates.add(p)
-            candidates.add(target)
-            break
-
-    if not candidates:
-        candidates.add(target)
-
-    return list(candidates)
-
-def period_year(period_key: str) -> Optional[int]:
-    if not isinstance(period_key, str) or not _PERIOD_RE.match(period_key):
-        return None
-    try:
-        return int(period_key[:4])
-    except Exception:
-        return None
 
 def _normalize_month(month: Any) -> Optional[str]:
     if month is None:
@@ -207,17 +35,16 @@ def _normalize_month(month: Any) -> Optional[str]:
         mm = int(str(month).strip())
         if 1 <= mm <= 12:
             return f"{mm:02d}"
-        return None
     except Exception:
-        return None
+        pass
+    return None
+
 
 def build_period_keys(mode: str, year: int, month: Optional[Any], season: Optional[str]) -> List[str]:
     mode_u = (mode or "MONTH").upper()
 
     if mode_u == "MONTH":
-        mm = _normalize_month(month)
-        if not mm:
-            mm = f"{datetime.utcnow().month:02d}"
+        mm = _normalize_month(month) or f"{datetime.utcnow().month:02d}"
         return [f"{year:04d}-{mm}"]
 
     s = (season or "").upper()
@@ -227,27 +54,44 @@ def build_period_keys(mode: str, year: int, month: Optional[Any], season: Option
     months = ["01", "02", "03", "04", "05", "06"] if s == "SPRING" else ["07", "08", "09", "10", "11", "12"]
     return [f"{year:04d}-{m}" for m in months]
 
-# =========
-# Routes
-# =========
+
+def _friendly_label(fmt: str) -> str:
+    return {
+        "HC": "Hardcover",
+        "PB": "Paperback",
+        "BB": "Board Book",
+        "EBK": "Ebook",
+        "AUD": "Audiobook",
+    }.get((fmt or "").upper(), fmt or "")
+
+
+FMT_CASE = """
+CASE
+  WHEN lower(e.product_form) LIKE '%%hard%%' THEN 'HC'
+  WHEN lower(e.product_form) LIKE '%%paper%%' THEN 'PB'
+  WHEN lower(e.product_form) LIKE '%%board%%' THEN 'BB'
+  WHEN lower(e.product_form) LIKE '%%ebook%%' OR lower(e.product_form) LIKE '%%e-book%%' THEN 'EBK'
+  WHEN lower(e.product_form) LIKE '%%audio%%' THEN 'AUD'
+  ELSE upper(e.product_form)
+END
+"""
+
+
 @router.get("/health")
 def financials_health():
-    fin_ok = LOCAL_FINANCIALS_PATH.exists() or bool(FINANCIALS_KEY)
-    books_ok = LOCAL_BOOKS_PATH.exists() or bool(BOOKS_KEY)
     return {
         "ok": True,
-        "useS3": USE_S3,
-        "region": AWS_REGION,
-        "bucket": S3_BUCKET,
-        "tenantPrefix": TENANT_PREFIX,
-        "financialsKey": FINANCIALS_KEY,
-        "booksKey": BOOKS_KEY,
-        "localFinancialsPath": str(LOCAL_FINANCIALS_PATH),
-        "localBooksPath": str(LOCAL_BOOKS_PATH),
-        "localFinancialsExists": LOCAL_FINANCIALS_PATH.exists(),
-        "localBooksExists": LOCAL_BOOKS_PATH.exists(),
-        "sanity": {"financialsConfigured": fin_ok, "booksConfigured": books_ok},
+        "source": "sql",
+        "tables": [
+            "works",
+            "editions",
+            "royalty_periods",
+            "royalty_sales_lines",
+            "inventory_movements",
+            "fraser_ca_sales_lines",
+        ],
     }
+
 
 @router.get("/book-kpis")
 def get_book_kpis(
@@ -258,187 +102,252 @@ def get_book_kpis(
     season: Optional[str] = Query(None),
     format: str = Query("ALL"),
 ):
-    financials, fin_src = _load_financials()
-    books, books_src = _load_books()
-    candidate_keys = resolve_book_keys(bookUid, books)
-
     keys = build_period_keys(mode, year, month, season)
+    latest_key = keys[-1]
     fmt_filter = (format or "ALL").upper()
 
-    total_units = 0
-    total_returns = 0
-    total_free = 0
-    total_fraser_units = 0
-    total_fraser_dollars = 0.0
+    fmt_sql = ""
+    if fmt_filter != "ALL":
+        fmt_sql = f" AND {FMT_CASE} = %s "
 
-    latest_inv_key = ""
-    latest_inv_sum: Optional[int] = None
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id(cur)
 
-    for period_key in keys:
-        period = financials.get(period_key) or {}
-        by_book = period.get("byBook") or {}
-        if not isinstance(by_book, dict):
-            continue
+            sales_params: List[Any] = [tenant_id, bookUid, bookUid, keys]
+            if fmt_filter != "ALL":
+                sales_params.append(fmt_filter)
 
-        book_entry = None
-        for bk in candidate_keys:
-            be = by_book.get(bk)
-            if isinstance(be, dict) and isinstance(be.get("formats"), dict):
-                book_entry = be
-                break
-        if not book_entry:
-            continue
+            cur.execute(
+                f"""
+                SELECT
+                  COALESCE(SUM(r.units_sold), 0) AS units_sold,
+                  COALESCE(SUM(r.units_returned), 0) AS returns,
+                  COALESCE(SUM(r.publisher_receipts), 0) AS publisher_receipts
+                FROM public.royalty_sales_lines r
+                JOIN public.royalty_periods rp ON rp.id = r.period_id
+                JOIN public.editions e ON e.id = r.edition_id
+                JOIN public.works w ON w.id = e.work_id
+                WHERE r.tenant_id = %s
+                  AND (w.id::text = %s OR COALESCE(w.uid::text, '') = %s)
+                  AND rp.period_code = ANY(%s)
+                  {fmt_sql}
+                """,
+                sales_params,
+            )
+            sales = cur.fetchone() or {}
 
-        formats = book_entry.get("formats") or {}
-        if not isinstance(formats, dict):
-            continue
+            inv_period_params: List[Any] = [tenant_id, bookUid, bookUid, keys]
+            if fmt_filter != "ALL":
+                inv_period_params.append(fmt_filter)
 
-        if fmt_filter == "ALL":
-            rows = [r for r in formats.values() if isinstance(r, dict)]
-        else:
-            r = formats.get(fmt_filter)
-            rows = [r] if isinstance(r, dict) else []
+            cur.execute(
+                f"""
+                SELECT
+                  COALESCE(SUM(CASE WHEN m.movement_type = 'complimentary_shipment' THEN -m.quantity ELSE 0 END), 0) AS free_copies,
+                  COALESCE(SUM(CASE WHEN m.movement_type = 'shipment_to_fraser_CA' THEN -m.quantity ELSE 0 END), 0) AS fraser_shipments
+                FROM public.inventory_movements m
+                JOIN public.editions e ON e.id = m.edition_id
+                JOIN public.works w ON w.id = e.work_id
+                WHERE m.tenant_id = %s
+                  AND (w.id::text = %s OR COALESCE(w.uid::text, '') = %s)
+                  AND to_char(m.movement_date, 'YYYY-MM') = ANY(%s)
+                  {fmt_sql}
+                """,
+                inv_period_params,
+            )
+            inv_period = cur.fetchone() or {}
 
-        if not rows:
-            continue
+            fr_params: List[Any] = [tenant_id, bookUid, bookUid, keys]
+            if fmt_filter != "ALL":
+                fr_params.append(fmt_filter)
 
-        period_inv_sum = 0
-        has_any_inv = False
+            cur.execute(
+                f"""
+                SELECT
+                  COALESCE(SUM(f.units_sold), 0) AS fraser_units,
+                  COALESCE(SUM(f.publisher_receipts), 0) AS fraser_dollars
+                FROM public.fraser_ca_sales_lines f
+                JOIN public.royalty_periods rp ON rp.id = f.period_id
+                JOIN public.editions e ON e.id = f.edition_id
+                JOIN public.works w ON w.id = e.work_id
+                WHERE f.tenant_id = %s
+                  AND (w.id::text = %s OR COALESCE(w.uid::text, '') = %s)
+                  AND rp.period_code = ANY(%s)
+                  {fmt_sql}
+                """,
+                fr_params,
+            )
+            fr = cur.fetchone() or {}
 
-        for row in rows:
-            sales = row.get("sales") if isinstance(row.get("sales"), dict) else {}
-            us = sales.get("us") if isinstance(sales.get("us"), dict) else {}
-            fr = sales.get("fraser") if isinstance(sales.get("fraser"), dict) else {}
+            inv_move_params: List[Any] = [tenant_id, bookUid, bookUid, latest_key]
+            if fmt_filter != "ALL":
+                inv_move_params.append(fmt_filter)
 
-            us_net = us.get("unitsNet")
-            us_ret = us.get("unitsReturns")
+            sales_to_date_params: List[Any] = [tenant_id, bookUid, bookUid, latest_key]
+            if fmt_filter != "ALL":
+                sales_to_date_params.append(fmt_filter)
 
-            fr_net = fr.get("unitsNet")
-            fr_dollars = fr.get("dollars")
+            cur.execute(
+                f"""
+                WITH movements AS (
+                  SELECT
+                    e.id AS edition_id,
+                    COALESCE(SUM(CASE WHEN m.movement_type = 'receipt' THEN m.quantity ELSE 0 END), 0) AS received,
+                    COALESCE(SUM(CASE WHEN m.movement_type = 'complimentary_shipment' THEN -m.quantity ELSE 0 END), 0) AS free_copies,
+                    COALESCE(SUM(CASE WHEN m.movement_type = 'shipment_to_fraser_CA' THEN -m.quantity ELSE 0 END), 0) AS fraser_shipped
+                  FROM public.inventory_movements m
+                  JOIN public.editions e ON e.id = m.edition_id
+                  JOIN public.works w ON w.id = e.work_id
+                  WHERE m.tenant_id = %s
+                    AND (w.id::text = %s OR COALESCE(w.uid::text, '') = %s)
+                    AND to_char(m.movement_date, 'YYYY-MM') <= %s
+                    {fmt_sql}
+                  GROUP BY e.id
+                ),
+                sales_to_date AS (
+                  SELECT
+                    e.id AS edition_id,
+                    COALESCE(SUM(r.units_sold - r.units_returned), 0) AS net_units
+                  FROM public.royalty_sales_lines r
+                  JOIN public.royalty_periods rp ON rp.id = r.period_id
+                  JOIN public.editions e ON e.id = r.edition_id
+                  JOIN public.works w ON w.id = e.work_id
+                  WHERE r.tenant_id = %s
+                    AND (w.id::text = %s OR COALESCE(w.uid::text, '') = %s)
+                    AND rp.period_code <= %s
+                    {fmt_sql}
+                  GROUP BY e.id
+                )
+                SELECT
+                  COALESCE(SUM(
+                    COALESCE(m.received, 0)
+                    - COALESCE(m.free_copies, 0)
+                    - COALESCE(m.fraser_shipped, 0)
+                    - COALESCE(s.net_units, 0)
+                  ), 0) AS inventory_end
+                FROM movements m
+                LEFT JOIN sales_to_date s ON s.edition_id = m.edition_id
+                """,
+                inv_move_params + sales_to_date_params,
+            )
+            inv_end = cur.fetchone() or {}
 
-            total_units += to_int(us_net if us_net is not None else row.get("unitsSold"))
-            total_returns += to_int(us_ret if us_ret is not None else row.get("returns"))
-            total_free += to_int(row.get("freeCopies"))
+            return {
+                "unitsSold": float(sales.get("units_sold") or 0),
+                "returns": float(sales.get("returns") or 0),
+                "freeCopies": float(inv_period.get("free_copies") or 0),
+                "inventoryEnd": float(inv_end.get("inventory_end") or 0),
+                "fraserShipments": float(inv_period.get("fraser_shipments") or 0) + float(fr.get("fraser_units") or 0),
+                "fraserDollars": round(float(fr.get("fraser_dollars") or 0), 2),
+                "periods": keys,
+                "_source": {"financials": "sql", "books": "sql"},
+            }
 
-            total_fraser_units += to_int(fr_net if fr_net is not None else row.get("fraserShipments"))
-            total_fraser_dollars += to_num(fr_dollars if fr_dollars is not None else row.get("fraserDollars"))
-
-            inv_end = row.get("inventoryEnd")
-            if has_inventory(inv_end):
-                period_inv_sum += to_int(inv_end)
-                has_any_inv = True
-
-        if has_any_inv and (not latest_inv_key or period_key > latest_inv_key):
-            latest_inv_key = period_key
-            latest_inv_sum = period_inv_sum
-
-    return {
-        "unitsSold": total_units,
-        "returns": total_returns,
-        "freeCopies": total_free,
-        "inventoryEnd": latest_inv_sum if latest_inv_sum is not None else 0,
-        "fraserShipments": total_fraser_units,
-        "fraserDollars": round(total_fraser_dollars, 2),
-        "periods": keys,
-        "_source": {"financials": fin_src, "books": books_src},
-    }
 
 @router.get("/book-format-stats")
 def get_book_format_stats(
     bookUid: str = Query(...),
     year: int = Query(default_factory=lambda: datetime.utcnow().year),
 ):
-    financials, fin_src = _load_financials()
-    books, books_src = _load_books()
-    candidate_keys = resolve_book_keys(bookUid, books)
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id(cur)
 
-    period_keys = sorted([k for k in financials.keys() if isinstance(k, str) and _PERIOD_RE.match(k)])
+            cur.execute(
+                f"""
+                WITH edition_base AS (
+                  SELECT
+                    e.id AS edition_id,
+                    e.product_form,
+                    {FMT_CASE} AS fmt
+                  FROM public.editions e
+                  JOIN public.works w ON w.id = e.work_id
+                  WHERE e.tenant_id = %s
+                    AND (w.id::text = %s OR COALESCE(w.uid::text, '') = %s)
+                ),
+                inv AS (
+                  SELECT
+                    eb.fmt,
+                    COALESCE(SUM(CASE WHEN m.movement_type = 'receipt' THEN m.quantity ELSE 0 END), 0) AS total_printed,
+                    COALESCE(SUM(CASE WHEN m.movement_type = 'complimentary_shipment' THEN -m.quantity ELSE 0 END), 0) AS free_copies,
+                    COALESCE(SUM(CASE WHEN m.movement_type = 'shipment_to_fraser_CA' THEN -m.quantity ELSE 0 END), 0) AS fraser_shipped
+                  FROM edition_base eb
+                  LEFT JOIN public.inventory_movements m ON m.edition_id = eb.edition_id
+                  GROUP BY eb.fmt
+                ),
+                sales AS (
+                  SELECT
+                    eb.fmt,
+                    COALESCE(SUM(r.units_sold - r.units_returned), 0) AS lifetime_sold,
+                    COALESCE(SUM(CASE WHEN rp.period_code LIKE %s THEN r.units_sold - r.units_returned ELSE 0 END), 0) AS ytd_sold
+                  FROM edition_base eb
+                  LEFT JOIN public.royalty_sales_lines r ON r.edition_id = eb.edition_id
+                  LEFT JOIN public.royalty_periods rp ON rp.id = r.period_id
+                  GROUP BY eb.fmt
+                ),
+                fraser AS (
+                  SELECT
+                    eb.fmt,
+                    COALESCE(SUM(f.units_sold), 0) AS lifetime_fraser_sold,
+                    COALESCE(SUM(CASE WHEN rp.period_code LIKE %s THEN f.units_sold ELSE 0 END), 0) AS ytd_fraser_sold
+                  FROM edition_base eb
+                  LEFT JOIN public.fraser_ca_sales_lines f ON f.edition_id = eb.edition_id
+                  LEFT JOIN public.royalty_periods rp ON rp.id = f.period_id
+                  GROUP BY eb.fmt
+                )
+                SELECT
+                  eb.fmt,
+                  MIN(eb.product_form) AS product_form,
+                  COALESCE(inv.total_printed, 0) AS total_printed,
+                  COALESCE(sales.lifetime_sold, 0) AS lifetime_sold,
+                  COALESCE(sales.ytd_sold, 0) AS ytd_sold,
+                  COALESCE(inv.fraser_shipped, 0) + COALESCE(fraser.lifetime_fraser_sold, 0) AS lifetime_fraser_shipments,
+                  COALESCE(fraser.ytd_fraser_sold, 0) AS ytd_fraser_shipments,
+                  (
+                    COALESCE(inv.total_printed, 0)
+                    - COALESCE(inv.free_copies, 0)
+                    - COALESCE(inv.fraser_shipped, 0)
+                    - COALESCE(sales.lifetime_sold, 0)
+                  ) AS inventory_end
+                FROM edition_base eb
+                LEFT JOIN inv ON inv.fmt = eb.fmt
+                LEFT JOIN sales ON sales.fmt = eb.fmt
+                LEFT JOIN fraser ON fraser.fmt = eb.fmt
+                GROUP BY
+                  eb.fmt,
+                  inv.total_printed,
+                  inv.free_copies,
+                  inv.fraser_shipped,
+                  sales.lifetime_sold,
+                  sales.ytd_sold,
+                  fraser.lifetime_fraser_sold,
+                  fraser.ytd_fraser_sold
+                ORDER BY eb.fmt
+                """,
+                (tenant_id, bookUid, bookUid, f"{year}-%", f"{year}-%"),
+            )
+            rows = cur.fetchall() or []
 
-    per_fmt: Dict[str, Dict[str, Any]] = {}
-    latest_period_with_data: Optional[str] = None
-
-    for pk in period_keys:
-        period = financials.get(pk) or {}
-        by_book = period.get("byBook") or {}
-        if not isinstance(by_book, dict):
-            continue
-
-        py = period_year(pk)
-        if py is None:
-            continue
-
-        book_entry = None
-        for bk in candidate_keys:
-            be = by_book.get(bk)
-            if isinstance(be, dict) and isinstance(be.get("formats"), dict):
-                book_entry = be
-                break
-        if not book_entry:
-            continue
-
-        if latest_period_with_data is None or pk > latest_period_with_data:
-            latest_period_with_data = pk
-
-        formats = book_entry.get("formats") or {}
-        if not isinstance(formats, dict):
-            continue
-
-        for fmt_code_raw, row in formats.items():
-            if not isinstance(row, dict):
-                continue
-            fmt = (fmt_code_raw or "").upper()
-            if not fmt:
-                continue
-
-            if fmt not in per_fmt:
-                per_fmt[fmt] = {
-                    "label": friendly_format_label(fmt),
-                    "totalPrinted": 0,
-                    "lifetimeSold": 0,
-                    "ytdSold": 0,
-                    "lifetimeFraserShipments": 0,
-                    "ytdFraserShipments": 0,
-                    "inventoryEnd": 0,
-                    "_lastInvPk": "",
+            formats: Dict[str, Dict[str, Any]] = {}
+            for r in rows:
+                fmt = str(r.get("fmt") or "").upper()
+                if not fmt:
+                    continue
+                formats[fmt] = {
+                    "label": _friendly_label(fmt),
+                    "totalPrinted": float(r.get("total_printed") or 0),
+                    "lifetimeSold": float(r.get("lifetime_sold") or 0),
+                    "ytdSold": float(r.get("ytd_sold") or 0),
+                    "lifetimeFraserShipments": float(r.get("lifetime_fraser_shipments") or 0),
+                    "ytdFraserShipments": float(r.get("ytd_fraser_shipments") or 0),
+                    "inventoryEnd": float(r.get("inventory_end") or 0),
                 }
 
-            agg = per_fmt[fmt]
-
-            inv = row.get("inventory")
-            if isinstance(inv, dict):
-                agg["totalPrinted"] += sum(to_int(v) for v in inv.values())
-
-            units_fallback = to_int(row.get("unitsSold"))
-            sales = row.get("sales") if isinstance(row.get("sales"), dict) else {}
-            us = sales.get("us") if isinstance(sales.get("us"), dict) else {}
-            units_net = to_int(us.get("unitsNet")) if us.get("unitsNet") is not None else units_fallback
-
-            agg["lifetimeSold"] += units_net
-            if py == year:
-                agg["ytdSold"] += units_net
-
-            fr = sales.get("fraser") if isinstance(sales.get("fraser"), dict) else {}
-            fraser_units = to_int(fr.get("unitsNet")) if fr.get("unitsNet") is not None else to_int(row.get("fraserShipments"))
-
-            agg["lifetimeFraserShipments"] += fraser_units
-            if py == year:
-                agg["ytdFraserShipments"] += fraser_units
-
-            inv_end = row.get("inventoryEnd")
-            if (not agg["_lastInvPk"] or pk > agg["_lastInvPk"]) and has_inventory(inv_end):
-                agg["_lastInvPk"] = pk
-                agg["inventoryEnd"] = to_int(inv_end)
-
-    formats_out: Dict[str, Any] = {}
-    for fmt, agg in per_fmt.items():
-        agg2 = dict(agg)
-        agg2.pop("_lastInvPk", None)
-        formats_out[fmt] = agg2
-
-    return {
-        "bookUid": bookUid,
-        "year": year,
-        "asOf": latest_period_with_data,
-        "formats": formats_out,
-        "_source": {"financials": fin_src, "books": books_src},
-    }
+            return {
+                "bookUid": bookUid,
+                "year": year,
+                "asOf": None,
+                "formats": formats,
+                "_source": {"financials": "sql", "books": "sql"},
+            }

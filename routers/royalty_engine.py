@@ -869,6 +869,11 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
             <td class="summary-value">{_money(header.get("earned_this_period"))}</td>
         </tr>
         <tr>
+            <td class="summary-label">Adjustment this period</td>
+            <td class="summary-value">{_money(header.get("adjustments_this_period"))}</td>
+        </tr>
+
+        <tr>
             <td class="summary-label">Earned to date</td>
             <td class="summary-value">{_money(header.get("earned_to_date"))}</td>
         </tr>

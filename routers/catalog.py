@@ -7,7 +7,7 @@ import ast
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from psycopg.rows import dict_row
 
 from app.core.db import db_conn
@@ -23,7 +23,12 @@ from .catalog_shared import (
 from .catalog_royalties import (
     _fetch_royalties_graph,
 )
-from .catalog_write import _upsert_work_from_payload
+from .catalog_write import (
+    _upsert_work_from_payload,
+    add_work_contributor,
+    unlink_work_contributor,
+    delete_contributor_party,
+)
 # catalog.py
 from .catalog_dealmemo import (_upsert_work_from_deal_memo,)
 
@@ -166,9 +171,23 @@ def _fetch_party_summary(cur, tenant_id: str, party_id: str) -> Dict[str, Any]:
             short_bio,
             long_bio,
             birth_date,
+            death_date,
             birth_city,
             birth_country,
-            citizenship
+            citizenship,
+
+            titles_before_names,
+            names_before_key,
+            prefix_to_key,
+            key_names,
+            suffix_to_key,
+            letters_after_names,
+            person_name_inverted,
+            pen_name,
+            corporate_name,
+            language_code,
+            country_code,
+            region_code
         FROM parties
         WHERE tenant_id = %s
           AND id = %s
@@ -188,9 +207,23 @@ def _fetch_party_summary(cur, tenant_id: str, party_id: str) -> Dict[str, Any]:
         "short_bio": _safe_str(r.get("short_bio")),
         "long_bio": _safe_str(r.get("long_bio")),
         "birth_date": _jsonable(r.get("birth_date")),
+        "death_date": _jsonable(r.get("death_date")),
         "birth_city": _safe_str(r.get("birth_city")),
         "birth_country": _safe_str(r.get("birth_country")),
         "citizenship": _safe_str(r.get("citizenship")),
+
+        "titles_before_names": _safe_str(r.get("titles_before_names")),
+        "names_before_key": _safe_str(r.get("names_before_key")),
+        "prefix_to_key": _safe_str(r.get("prefix_to_key")),
+        "key_names": _safe_str(r.get("key_names")),
+        "suffix_to_key": _safe_str(r.get("suffix_to_key")),
+        "letters_after_names": _safe_str(r.get("letters_after_names")),
+        "person_name_inverted": _safe_str(r.get("person_name_inverted")),
+        "pen_name": _safe_str(r.get("pen_name")),
+        "corporate_name": _safe_str(r.get("corporate_name")),
+        "language_code": _safe_str(r.get("language_code")),
+        "country_code": _safe_str(r.get("country_code")),
+        "region_code": _safe_str(r.get("region_code")),
     }
 
 
@@ -469,293 +502,25 @@ def _fetch_contributor_contact_categories(
             continue
 
         normalized_category = _normalize_contact_category_name(raw_category, scope)
-        category_lc = raw_category.lower()
-
-        name = _safe_str(r.get("name"))
-        company = _safe_str(r.get("company_or_outlet"))
-        website = _safe_str(r.get("website"))
-        phone = _safe_str(r.get("phone"))
-        email = _safe_str(r.get("email"))
-        notes = _safe_str(r.get("notes"))
-        rel_note = _safe_str(r.get("relationship_note"))
-
-        if category_lc.endswith("_marketing_bloggers"):
-            item = {
-                "name": name,
-                "url": website,
-                "contact": rel_note,
-                "notes": notes,
-                "relationship": rel_note,
-                "connection": rel_note,
-                "phone": phone,
-                "email": email,
-                "outlet": company,
-                "company": company,
-                "position": _safe_str(r.get("position")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("zip")),
-                "country": _safe_str(r.get("country")),
-                "social_handle": _safe_str(r.get("social_handle")),
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-
-        elif category_lc.endswith("_marketing_endorsers"):
-            item = {
-                "name": name,
-                "contact": company or phone or email or website or rel_note,
-                "notes": notes,
-                "relationship": rel_note,
-                "connection": rel_note,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "outlet": company,
-                "company": company,
-                "position": _safe_str(r.get("position")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("zip")),
-                "country": _safe_str(r.get("country")),
-                "social_handle": _safe_str(r.get("social_handle")),
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-
-        elif category_lc.endswith("_marketing_review_copy_wishlist"):
-            item = {
-                "outlet": company,
-                "company": company,
-                "contact": name,
-                "name": name,
-                "connection": rel_note,
-                "relationship": rel_note,
-                "notes": notes,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "position": _safe_str(r.get("position")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("zip")),
-                "country": _safe_str(r.get("country")),
-                "social_handle": _safe_str(r.get("social_handle")),
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-
-        elif category_lc.endswith("_marketing_local_media"):
-            item = {
-                "outlet": company,
-                "company": company,
-                "contact": name,
-                "name": name,
-                "notes": notes,
-                "relationship": rel_note,
-                "connection": rel_note,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "position": _safe_str(r.get("position")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("zip")),
-                "country": _safe_str(r.get("country")),
-                "social_handle": _safe_str(r.get("social_handle")),
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-
-        elif category_lc.endswith("_marketing_alumni_org_publications"):
-            item = {
-                "outlet": company,
-                "company": company,
-                "contact": name,
-                "name": name,
-                "notes": notes,
-                "relationship": rel_note,
-                "connection": rel_note,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "position": _safe_str(r.get("position")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("zip")),
-                "country": _safe_str(r.get("country")),
-                "social_handle": _safe_str(r.get("social_handle")),
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-
-        elif category_lc.endswith("_marketing_big_mouth_list"):
-            item = {
-                "name": name,
-                "contact": phone or email or website or rel_note,
-                "relationship": rel_note,
-                "connection": rel_note,
-                "notes": notes,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "outlet": company,
-                "company": company,
-                "position": _safe_str(r.get("position")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("zip")),
-                "country": _safe_str(r.get("country")),
-                "social_handle": _safe_str(r.get("social_handle")),
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-
-        elif category_lc.endswith("_marketing_endorsers"):
-            item = {
-                "name": name,
-                "contact": phone or email or website or rel_note,
-                "notes": notes,
-                "relationship": rel_note,
-                "connection": rel_note,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "outlet": company,
-                "company": company,
-                "position": _safe_str(r.get("position")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("zip")),
-                "country": _safe_str(r.get("country")),
-                "social_handle": _safe_str(r.get("social_handle")),
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-        
-        elif category_lc.endswith("_sales_local_bookstores"):
-            item = {
-                "name": name,
-                "kind": _safe_str(r.get("position")),
-                "chain_name": company,
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "contact": rel_note,
-                "notes": notes,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "outlet": company,
-                "company": company,
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-        
-        elif category_lc.endswith("_sales_schools_libraries"):
-            item = {
-                "name": name,
-                "kind": _safe_str(r.get("position") or r.get("company_or_outlet")),
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "contact": rel_note,
-                "notes": notes,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "outlet": company,
-                "company": company,
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-        
-        elif category_lc.endswith("_sales_societies_orgs_conf"):
-            item = {
-                "name": name,
-                "kind": _safe_str(r.get("position")),
-                "contact": rel_note,
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "notes": notes,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "outlet": company,
-                "company": company,
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-        
-        elif category_lc.endswith("_sales_nontrade_outlets"):
-            item = {
-                "name": name,
-                "category": _safe_str(r.get("position")),
-                "contact": rel_note,
-                "notes": notes,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "outlet": company,
-                "company": company,
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-
-        elif category_lc.endswith("_sales_museums_parks"):
-            item = {
-                "name": name,
-                "kind": _safe_str(r.get("position")),
-                "connection": company,
-                "contact": rel_note,
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "notes": notes,
-                "url": website,
-                "phone": phone,
-                "email": email,
-                "outlet": company,
-                "company": company,
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
-    
-
-        else:
-            label = name or company
-            item = {
-                "name": label,
-                "outlet": company,
-                "company": company,
-                "contact": name,
-                "position": _safe_str(r.get("position")),
-                "email": email,
-                "phone": phone,
-                "url": website,
-                "city": _safe_str(r.get("city")),
-                "state": _safe_str(r.get("state")),
-                "zip": _safe_str(r.get("zip")),
-                "country": _safe_str(r.get("country")),
-                "social_handle": _safe_str(r.get("social_handle")),
-                "personal_contact": bool(r.get("personal_contact") or False),
-                "relationship": rel_note,
-                "connection": rel_note,
-                "notes": notes,
-                "link_type": _safe_str(r.get("link_type")),
-                "contact_type": _safe_str(r.get("contact_type")),
-            }
+        item = {
+            "company_or_outlet": _safe_str(r.get("company_or_outlet")),
+            "name": _safe_str(r.get("name")),
+            "position": _safe_str(r.get("position")),
+            "phone": _safe_str(r.get("phone")),
+            "email": _safe_str(r.get("email")),
+            "website": _safe_str(r.get("website")),
+            "street": _safe_str(r.get("street")),
+            "city": _safe_str(r.get("city")),
+            "state": _safe_str(r.get("state")),
+            "zip": _safe_str(r.get("zip")),
+            "country": _safe_str(r.get("country")),
+            "relationship_note": _safe_str(r.get("relationship_note")),
+            "personal_contact": bool(r.get("personal_contact") or False),
+            "notes": _safe_str(r.get("notes")),
+            "social_handle": _safe_str(r.get("social_handle")),
+            "link_type": _safe_str(r.get("link_type")),
+            "contact_type": _safe_str(r.get("contact_type")),
+        }
 
         out.setdefault(raw_category, []).append(item)
         if normalized_category and normalized_category != raw_category:
@@ -868,6 +633,219 @@ def _fetch_party_extras_block(
         ]
     except Exception:
         socials = []
+    
+    # Awards may live in one of several schema-compatible tables. Detect the
+    # actual table and columns before querying so a missing table does not abort
+    # the surrounding PostgreSQL transaction.
+    awards: List[Dict[str, Any]] = []
+    try:
+        award_table = ""
+        award_columns: set[str] = set()
+
+        for candidate in ("party_awards", "party_honors", "contributor_awards"):
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = %s
+                """,
+                (candidate,),
+            )
+            candidate_columns = {
+                str(row["column_name"]) for row in (cur.fetchall() or [])
+            }
+            if {"tenant_id", "party_id"}.issubset(candidate_columns):
+                award_table = candidate
+                award_columns = candidate_columns
+                break
+
+        if award_table:
+            name_column = next(
+                (
+                    column
+                    for column in ("award_name", "honor_name", "name", "title")
+                    if column in award_columns
+                ),
+                "",
+            )
+            year_column = next(
+                (
+                    column
+                    for column in ("award_year", "year_text", "year", "date_text")
+                    if column in award_columns
+                ),
+                "",
+            )
+            result_column = next(
+                (
+                    column
+                    for column in ("award_result", "result", "status")
+                    if column in award_columns
+                ),
+                "",
+            )
+            organization_column = next(
+                (
+                    column
+                    for column in ("organization", "awarding_body")
+                    if column in award_columns
+                ),
+                "",
+            )
+            notes_column = "notes" if "notes" in award_columns else ""
+            order_column = next(
+                (
+                    column
+                    for column in ("item_order", "sequence_number")
+                    if column in award_columns
+                ),
+                "",
+            )
+
+            if name_column:
+                selected_columns = ["id"] if "id" in award_columns else []
+                for column in (
+                    name_column,
+                    year_column,
+                    result_column,
+                    organization_column,
+                    notes_column,
+                    order_column,
+                ):
+                    if column and column not in selected_columns:
+                        selected_columns.append(column)
+
+                order_parts = []
+                if order_column:
+                    order_parts.append(f"{order_column} ASC")
+                if "id" in award_columns:
+                    order_parts.append("id ASC")
+                order_sql = ", ".join(order_parts) or f"{name_column} ASC"
+
+                cur.execute(
+                    f"""
+                    SELECT {", ".join(selected_columns)}
+                    FROM {award_table}
+                    WHERE tenant_id = %s
+                      AND party_id = %s
+                    ORDER BY {order_sql}
+                    """,
+                    (tenant_id, party_id),
+                )
+
+                for row in (cur.fetchall() or []):
+                    awards.append(
+                        {
+                            "id": str(row.get("id")) if row.get("id") else "",
+                            "name": _safe_str(row.get(name_column)),
+                            "award": _safe_str(row.get(name_column)),
+                            "honor": _safe_str(row.get(name_column)),
+                            "year": _safe_str(row.get(year_column)) if year_column else "",
+                            "result": _safe_str(row.get(result_column)) if result_column else "",
+                            "organization": (
+                                _safe_str(row.get(organization_column))
+                                if organization_column
+                                else ""
+                            ),
+                            "notes": _safe_str(row.get(notes_column)) if notes_column else "",
+                        }
+                    )
+    except Exception:
+        awards = []
+
+    # Contributor identifiers may live in either party_identifiers or
+    # contributor_identifiers. Detect the actual deployed table and columns,
+    # matching both the normal Book Management writer and Deal Memo generation.
+    identifiers: List[Dict[str, Any]] = []
+    try:
+        identifier_table = ""
+        identifier_columns: set[str] = set()
+
+        for candidate in ("party_identifiers", "contributor_identifiers"):
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = %s
+                """,
+                (candidate,),
+            )
+            candidate_columns = {
+                str(row["column_name"]) for row in (cur.fetchall() or [])
+            }
+            if {"tenant_id", "party_id"}.issubset(candidate_columns):
+                identifier_table = candidate
+                identifier_columns = candidate_columns
+                break
+
+        if identifier_table:
+            type_column = next(
+                (
+                    column
+                    for column in ("identifier_type", "identifier_type_code", "type")
+                    if column in identifier_columns
+                ),
+                "",
+            )
+            value_column = next(
+                (
+                    column
+                    for column in ("identifier_value", "identifier", "value")
+                    if column in identifier_columns
+                ),
+                "",
+            )
+            order_column = next(
+                (
+                    column
+                    for column in ("item_order", "sequence_number")
+                    if column in identifier_columns
+                ),
+                "",
+            )
+
+            if type_column and value_column:
+                selected_columns = ["id"] if "id" in identifier_columns else []
+                for column in (type_column, value_column, order_column):
+                    if column and column not in selected_columns:
+                        selected_columns.append(column)
+
+                order_parts = []
+                if order_column:
+                    order_parts.append(f"{order_column} ASC")
+                if "id" in identifier_columns:
+                    order_parts.append("id ASC")
+                order_sql = ", ".join(order_parts) or f"{type_column} ASC"
+
+                cur.execute(
+                    f"""
+                    SELECT {", ".join(selected_columns)}
+                    FROM {identifier_table}
+                    WHERE tenant_id = %s
+                      AND party_id = %s
+                    ORDER BY {order_sql}
+                    """,
+                    (tenant_id, party_id),
+                )
+
+                for row in (cur.fetchall() or []):
+                    identifier_type = _safe_str(row.get(type_column))
+                    identifier_value = _safe_str(row.get(value_column))
+                    identifiers.append(
+                        {
+                            "id": str(row.get("id")) if row.get("id") else "",
+                            "type": identifier_type,
+                            "identifier_type": identifier_type,
+                            "identifierType": identifier_type,
+                            "value": identifier_value,
+                            "identifier_value": identifier_value,
+                            "identifierValue": identifier_value,
+                        }
+                    )
+    except Exception:
+        identifiers = []
 
     try:
         cur.execute(
@@ -1046,6 +1024,8 @@ def _fetch_party_extras_block(
         "preferences": pref,
         "profile": profile,
         "socials": socials,
+        "awards": awards,
+        "identifiers": identifiers,
         "published_books": pubs,
         "media_appearances": media,
         "other_publications": other_pubs,
@@ -1653,6 +1633,10 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
             "website_bio": long_bio,
             "social": social_obj,
             "socials": block.get("socials") or [],
+            "awards": block.get("awards") or [],
+            "honors": block.get("awards") or [],
+            "identifiers": block.get("identifiers") or [],
+            "contributor_identifiers": block.get("identifiers") or [],
             "address": address,
             "addressLines": address_lines,
             "photo": "",
@@ -1681,6 +1665,23 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
             "sales_local_bookstores": [],
             "sales_nontrade_outlets": [],
             "sales_museums_parks": [],
+            "party_id": party_id,
+
+            "titles_before_names": party_summary.get("titles_before_names") or "",
+            "names_before_key": party_summary.get("names_before_key") or "",
+            "prefix_to_key": party_summary.get("prefix_to_key") or "",
+            "key_names": party_summary.get("key_names") or "",
+            "suffix_to_key": party_summary.get("suffix_to_key") or "",
+            "letters_after_names": party_summary.get("letters_after_names") or "",
+            "person_name_inverted": party_summary.get("person_name_inverted") or "",
+            "pen_name": party_summary.get("pen_name") or "",
+            "corporate_name": party_summary.get("corporate_name") or "",
+            "language_code": party_summary.get("language_code") or "",
+            "country_code": party_summary.get("country_code") or "",
+            "region_code": party_summary.get("region_code") or "",
+
+            "birth_date": party_summary.get("birth_date") or "",
+            "death_date": party_summary.get("death_date") or "",
         }
 
         doc[f"{scope}_name"] = clean_name
@@ -1746,6 +1747,49 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
         doc[f"{scope}_agent_phone"] = _safe_str(agency_card.get("phone"))
         doc[f"{scope}_agency_website"] = _safe_str(agency_card.get("website"))
         doc[f"{scope}_has_agency"] = bool(agency_card)
+        doc[f"{scope}_titles_before_names"] = (
+            party_summary.get("titles_before_names") or ""
+        )
+        doc[f"{scope}_names_before_key"] = (
+            party_summary.get("names_before_key") or ""
+        )
+        doc[f"{scope}_prefix_to_key"] = (
+            party_summary.get("prefix_to_key") or ""
+        )
+        doc[f"{scope}_key_names"] = (
+            party_summary.get("key_names") or ""
+        )
+        doc[f"{scope}_suffix_to_key"] = (
+            party_summary.get("suffix_to_key") or ""
+        )
+        doc[f"{scope}_letters_after_names"] = (
+            party_summary.get("letters_after_names") or ""
+        )
+        doc[f"{scope}_person_name_inverted"] = (
+            party_summary.get("person_name_inverted") or ""
+        )
+        doc[f"{scope}_pen_name"] = party_summary.get("pen_name") or ""
+        doc[f"{scope}_corporate_name"] = (
+            party_summary.get("corporate_name") or ""
+        )
+        doc[f"{scope}_language_code"] = (
+            party_summary.get("language_code") or ""
+        )
+        doc[f"{scope}_country_code"] = (
+            party_summary.get("country_code") or ""
+        )
+        doc[f"{scope}_region_code"] = (
+            party_summary.get("region_code") or ""
+        )
+        doc[scope]["socials"] = block.get("socials") or []
+        doc[scope]["awards"] = block.get("awards") or []
+        doc[scope]["identifiers"] = block.get("identifiers") or []
+
+        doc[f"{scope}_socials"] = block.get("socials") or []
+        doc[f"{scope}_awards"] = block.get("awards") or []
+        doc[f"{scope}_honors"] = block.get("awards") or []
+        doc[f"{scope}_identifiers"] = block.get("identifiers") or []
+        doc[f"{scope}_contributor_identifiers"] = block.get("identifiers") or []
 
         if scope == "author":
             doc["author_agency"] = agency_card
@@ -2190,3 +2234,203 @@ def create_work_from_dealmemo(
                 "work_id": work_id,
                 "work": payload,
             }
+@router.post("/works/{work_id}/contributors")
+def create_work_contributor(
+    work_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(
+                cur,
+                tenant_slug,
+            )
+
+            try:
+                result = add_work_contributor(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+
+                if message == "Existing work not found":
+                    raise HTTPException(
+                        status_code=404,
+                        detail=message,
+                    )
+
+                raise HTTPException(
+                    status_code=400,
+                    detail=message,
+                )
+
+        conn.commit()
+
+    return result
+
+@router.delete("/works/{work_id}/contributors/{party_id}")
+def unlink_contributor_from_work(
+    work_id: str,
+    party_id: str,
+    role_code: str = Query(""),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            try:
+                result = unlink_work_contributor(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    party_id,
+                    role_code=role_code,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                status_code = (
+                    404
+                    if message in (
+                        "Contributor assignment not found",
+                        "Contributor not found",
+                    )
+                    else 409
+                    if "cannot be unlinked" in message.lower()
+                    else 400
+                )
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=message,
+                )
+
+        conn.commit()
+
+    return result
+
+
+@router.delete("/contributors/{party_id}")
+def delete_contributor(
+    party_id: str,
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            try:
+                result = delete_contributor_party(
+                    cur,
+                    tenant_id,
+                    party_id,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                status_code = (
+                    404
+                    if message == "Contributor not found"
+                    else 409
+                    if "cannot be deleted" in message.lower()
+                    else 400
+                )
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=message,
+                )
+
+        conn.commit()
+
+    return result
+@router.get("/contributors/search")
+def search_contributors(
+    query: str = Query(..., min_length=2),
+    limit: int = Query(10, ge=1, le=25),
+    tenant_slug: str = Query("marble-press"),
+):
+    search = _safe_str(query)
+
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            cur.execute(
+                """
+                SELECT
+                    p.id::text AS party_id,
+                    p.display_name,
+                    p.email,
+                    p.website,
+                    p.phone_country_code,
+                    p.phone_number
+                FROM parties p
+                WHERE p.tenant_id = %s
+                  AND (
+                      p.display_name ILIKE %s
+                      OR coalesce(p.email, '') ILIKE %s
+                  )
+                  AND coalesce(trim(p.display_name), '') <> ''
+                ORDER BY
+                    CASE
+                        WHEN lower(p.display_name) = lower(%s) THEN 0
+                        WHEN lower(p.display_name) LIKE lower(%s) THEN 1
+                        ELSE 2
+                    END,
+                    p.display_name
+                LIMIT %s
+                """,
+                (
+                    tenant_id,
+                    f"%{search}%",
+                    f"%{search}%",
+                    search,
+                    f"{search}%",
+                    limit,
+                ),
+            )
+
+            rows = cur.fetchall() or []
+            items = []
+
+            for row in rows:
+                address = _fetch_party_address(
+                    cur,
+                    tenant_id,
+                    str(row.get("party_id") or ""),
+                )
+
+                phone_country_code = _safe_str(
+                    row.get("phone_country_code")
+                )
+                phone_number = _safe_str(row.get("phone_number"))
+                phone = " ".join(
+                    value
+                    for value in (phone_country_code, phone_number)
+                    if value
+                ).strip()
+
+                items.append(
+                    {
+                        "party_id": _safe_str(row.get("party_id")),
+                        "display_name": _safe_str(row.get("display_name")),
+                        "email": _safe_str(row.get("email")),
+                        "website": _safe_str(row.get("website")),
+                        "phone_country_code": phone_country_code,
+                        "phone_number": phone_number,
+                        "phone": phone,
+                        "street": _safe_str(address.get("street")),
+                        "city": _safe_str(address.get("city")),
+                        "state": _safe_str(address.get("state")),
+                        "zip": _safe_str(address.get("zip")),
+                        "country": _safe_str(address.get("country")),
+                    }
+                )
+
+    return {
+        "ok": True,
+        "query": search,
+        "items": items,
+    }
