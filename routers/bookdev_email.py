@@ -354,11 +354,12 @@ def _validate_party(
         return value.upper()
 
     # Legacy author/illustrator workflows remain restricted.
-    normalized = value.lower()
-    if normalized not in {"author", "illustrator"}:
+    normalized = (value or "").strip().lower()
+
+    if not normalized:
         raise HTTPException(
             status_code=400,
-            detail="party must be author or illustrator",
+            detail="party is required",
         )
 
     return normalized
