@@ -1230,33 +1230,134 @@ def _fetch_agent_for_party(
 
 
 def _fetch_contributors(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
+    """Return every work contributor with the current master-party details.
+
+    This payload must not be limited to author/illustrator records. Book
+    Information, Book Management, and Project Management all use the catalog
+    read payload, so ONIX roles such as B01 (Edited by) need the same current
+    party information as A01 and A12.
+    """
     cur.execute(
         """
         SELECT
+            wc.id AS work_contributor_id,
             wc.party_id,
             wc.contributor_role,
             wc.sequence_number,
-            p.display_name
+            p.party_type,
+            p.display_name,
+            p.email,
+            p.website,
+            p.phone_country_code,
+            p.phone_number,
+            p.short_bio,
+            p.long_bio,
+            p.birth_date,
+            p.death_date,
+            p.birth_city,
+            p.birth_country,
+            p.citizenship,
+            p.titles_before_names,
+            p.names_before_key,
+            p.prefix_to_key,
+            p.key_names,
+            p.suffix_to_key,
+            p.letters_after_names,
+            p.person_name_inverted,
+            p.pen_name,
+            p.corporate_name,
+            p.language_code,
+            p.country_code,
+            p.region_code
         FROM work_contributors wc
-        JOIN parties p ON p.id = wc.party_id
+        JOIN parties p
+          ON p.id = wc.party_id
+         AND p.tenant_id = wc.tenant_id
         WHERE wc.tenant_id = %s
           AND wc.work_id = %s
-          AND p.tenant_id = %s
-        ORDER BY wc.sequence_number ASC, wc.id ASC
+        ORDER BY wc.sequence_number ASC NULLS LAST, wc.id ASC
         """,
-        (tenant_id, work_id, tenant_id),
+        (tenant_id, work_id),
     )
     rows = cur.fetchall() or []
-    return [
-        {
-            "party_id": str(r["party_id"]),
-            "role": _safe_str(r.get("contributor_role")),
-            "scope": _role_to_scope(_safe_str(r.get("contributor_role"))),
-            "sequence_number": r.get("sequence_number") or 0,
-            "display_name": _clean_display_name(r.get("display_name")),
-        }
-        for r in rows
-    ]
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        role = _safe_str(r.get("contributor_role"))
+        party_id = str(r["party_id"])
+        address = _fetch_party_address(cur, tenant_id, party_id)
+
+        try:
+            cur.execute(
+                """
+                SELECT platform, url
+                FROM party_socials
+                WHERE tenant_id = %s
+                  AND party_id = %s
+                ORDER BY platform ASC, id ASC
+                """,
+                (tenant_id, party_id),
+            )
+            socials = [
+                {
+                    "platform": _safe_str(s.get("platform")),
+                    "url": _safe_str(s.get("url")),
+                }
+                for s in (cur.fetchall() or [])
+            ]
+        except Exception:
+            socials = []
+
+        out.append(
+            {
+                "work_contributor_id": str(r.get("work_contributor_id") or ""),
+                "party_id": party_id,
+                "role": role,
+                "contributor_role": role,
+                "role_code": role,
+                "scope": _role_to_scope(role),
+                "sequence_number": r.get("sequence_number") or 0,
+                "party_type": _safe_str(r.get("party_type")),
+                "display_name": _clean_display_name(r.get("display_name")),
+                "name": _clean_display_name(r.get("display_name")),
+                "email": _safe_str(r.get("email")),
+                "website": _safe_str(r.get("website")),
+                "phone_country_code": _safe_str(r.get("phone_country_code")),
+                "phone_number": _safe_str(r.get("phone_number")),
+                "phone": _format_phone(
+                    r.get("phone_country_code"), r.get("phone_number")
+                ),
+                "short_bio": _safe_str(r.get("short_bio")),
+                "bio": _safe_str(r.get("short_bio")),
+                "long_bio": _safe_str(r.get("long_bio")),
+                "birth_date": _jsonable(r.get("birth_date")) or "",
+                "death_date": _jsonable(r.get("death_date")) or "",
+                "birth_city": _safe_str(r.get("birth_city")),
+                "birth_country": _safe_str(r.get("birth_country")),
+                "citizenship": _safe_str(r.get("citizenship")),
+                "titles_before_names": _safe_str(r.get("titles_before_names")),
+                "names_before_key": _safe_str(r.get("names_before_key")),
+                "prefix_to_key": _safe_str(r.get("prefix_to_key")),
+                "key_names": _safe_str(r.get("key_names")),
+                "suffix_to_key": _safe_str(r.get("suffix_to_key")),
+                "letters_after_names": _safe_str(r.get("letters_after_names")),
+                "person_name_inverted": _safe_str(r.get("person_name_inverted")),
+                "pen_name": _safe_str(r.get("pen_name")),
+                "corporate_name": _safe_str(r.get("corporate_name")),
+                "language_code": _safe_str(r.get("language_code")),
+                "country_code": _safe_str(r.get("country_code")),
+                "region_code": _safe_str(r.get("region_code")),
+                "address": address,
+                "address_street": _safe_str(address.get("street")),
+                "address_city": _safe_str(address.get("city")),
+                "address_state": _safe_str(address.get("state")),
+                "address_zip": _safe_str(address.get("zip")),
+                "address_country": _safe_str(address.get("country")),
+                "socials": socials,
+            }
+        )
+
+    return out
 
 
 def _fetch_onix_raw_by_isbns(
@@ -1537,15 +1638,22 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
                 illustrator_party_id = party_id
                 illustrator_name = display_name
 
-        work_contributors.append(
+        # Preserve the legacy author/illustrator role aliases, but include the
+        # complete current party payload for every ONIX contributor role.
+        contributor_payload = dict(c)
+        contributor_payload.update(
             {
                 "party_id": party_id,
                 "contributor_role": normalized_role or role,
+                "role": role,
+                "role_code": role,
                 "sequence_number": c.get("sequence_number"),
                 "display_name": display_name,
+                "name": display_name,
                 "email": email,
             }
         )
+        work_contributors.append(contributor_payload)
 
     doc["work_contributors"] = work_contributors
     doc["author_party_id"] = author_party_id
