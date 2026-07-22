@@ -96,6 +96,18 @@ class BookDevRequestIn(BaseModel):
     requester_email: Optional[EmailStr] = None
     message: str = ""
 
+    # Exact contributor identity for CONTRIBUTOR_INFO requests.
+    contributor_party_id: Optional[str] = None
+    contributor_role_code: Optional[str] = None
+    contributor_role_label: Optional[str] = None
+    contributor_sequence_number: Optional[int] = None
+
+    # The frontend also sends the same values in a nested contributor object.
+    contributor: Optional[Dict[str, Any]] = None
+
+    class Config:
+        extra = "ignore"
+
 
 class BookDevPhotoSubmitIn(BaseModel):
     kind: str = ""
@@ -370,6 +382,53 @@ def _validate_request_type(request_type: str) -> str:
     if rt not in SUPPORTED_REQUEST_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported request_type: {request_type}")
     return rt
+
+
+def _optional_uuid(value: Any, field_name: str) -> str:
+    raw = _safe(value)
+    if not raw:
+        return ""
+    try:
+        return str(uuid.UUID(raw))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a valid UUID")
+
+
+def _request_contributor_metadata(payload: BookDevRequestIn) -> Dict[str, Any]:
+    nested = payload.contributor if isinstance(payload.contributor, dict) else {}
+
+    party_id = _optional_uuid(
+        payload.contributor_party_id or nested.get("partyId") or nested.get("party_id"),
+        "contributor_party_id",
+    )
+    role_code = _safe(
+        payload.contributor_role_code
+        or nested.get("roleCode")
+        or nested.get("role_code")
+        or payload.party
+    ).upper()
+    role_label = _safe(
+        payload.contributor_role_label
+        or nested.get("roleLabel")
+        or nested.get("role_label")
+    )
+
+    sequence_raw = (
+        payload.contributor_sequence_number
+        if payload.contributor_sequence_number is not None
+        else nested.get("sequenceNumber", nested.get("sequence_number"))
+    )
+    try:
+        sequence_number = int(sequence_raw) if sequence_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="contributor_sequence_number must be an integer")
+
+    return {
+        "contributor_party_id": party_id,
+        "contributor_role_code": role_code,
+        "contributor_role_label": role_label,
+        "contributor_sequence_number": sequence_number,
+    }
 
 
 def _work_title(row: Dict[str, Any]) -> str:
@@ -842,16 +901,19 @@ def _load_contributor_prefill(
     *,
     tenant_id: str,
     work_id: str,
-    party: str,
+    contributor_party_id: str,
+    contributor_role_code: str = "",
 ) -> Dict[str, Any]:
-    _, allowed_roles = _role_match_sql(party)
-
     empty = {
         "contributor": {},
         "agency": {},
         "agent": {},
         "representation": {},
     }
+
+    contributor_party_id = _optional_uuid(contributor_party_id, "contributor_party_id")
+    if not contributor_party_id:
+        return empty
 
     with db_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
@@ -878,18 +940,24 @@ def _load_contributor_prefill(
                  AND p.tenant_id = wc.tenant_id
                 WHERE wc.tenant_id = %s::uuid
                   AND wc.work_id = %s::uuid
-                  AND upper(COALESCE(wc.contributor_role, '')) = ANY(%s)
-                ORDER BY wc.sequence_number NULLS LAST, p.created_at NULLS LAST, p.display_name
+                  AND wc.party_id = %s::uuid
                 LIMIT 1
                 """,
-                (tenant_id, work_id, list(allowed_roles)),
+                (tenant_id, work_id, contributor_party_id),
             )
             contributor = cur.fetchone()
 
             if not contributor:
                 return empty
 
-            contributor_party_id = str(contributor["party_id"])
+            stored_role = _safe(contributor.get("contributor_role")).upper()
+            expected_role = _safe(contributor_role_code).upper()
+            if expected_role and stored_role and expected_role != stored_role:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Contributor role no longer matches this request",
+                )
+
             contributor_address = _fetch_party_address(cur, tenant_id, contributor_party_id) or {}
             socials = _fetch_socials(cur, tenant_id, contributor_party_id)
             rep_data = _fetch_agency_agent_prefill(
@@ -910,7 +978,7 @@ def _load_contributor_prefill(
             "address_street": contributor_address.get("street") or "",
             "address_city": contributor_address.get("city") or "",
             "address_state": contributor_address.get("state") or "",
-            "address_zip": contributor_address.get("zip") or "",
+            "address_zip": contributor_address.get("zip") or contributor_address.get("postal_code") or "",
             "address_country": contributor_address.get("country") or "",
             "citizenship": contributor.get("citizenship") or "",
             "birth_date": contributor.get("birth_date") or "",
@@ -919,6 +987,8 @@ def _load_contributor_prefill(
             "short_bio": contributor.get("short_bio") or "",
             "long_bio": contributor.get("long_bio") or "",
             "social_media": socials,
+            "role_code": stored_role,
+            "sequence_number": contributor.get("sequence_number"),
         },
         "agency": rep_data.get("agency") or {},
         "agent": rep_data.get("agent") or {},
@@ -978,13 +1048,16 @@ def _ensure_work_contributor(
     tenant_id: str,
     work_id: str,
     party_id: str,
-    party: str,
+    contributor_role: str,
+    sequence_number: Optional[int] = None,
 ) -> None:
-    contributor_role = "AUTHOR" if party == "author" else "ILLUSTRATOR"
+    contributor_role = _safe(contributor_role).upper()
+    if not contributor_role:
+        raise HTTPException(status_code=400, detail="Contributor role code is required")
 
     cur.execute(
         """
-        SELECT id
+        SELECT id, contributor_role, sequence_number
         FROM work_contributors
         WHERE tenant_id = %s::uuid
           AND work_id = %s::uuid
@@ -999,11 +1072,12 @@ def _ensure_work_contributor(
         cur.execute(
             """
             UPDATE work_contributors
-            SET contributor_role = %s
+            SET contributor_role = %s,
+                sequence_number = COALESCE(%s, sequence_number)
             WHERE tenant_id = %s::uuid
-            AND id = %s
+              AND id = %s
             """,
-            (contributor_role, tenant_id, existing["id"]),
+            (contributor_role, sequence_number, tenant_id, existing["id"]),
         )
         return
 
@@ -1012,9 +1086,9 @@ def _ensure_work_contributor(
         INSERT INTO work_contributors
           (tenant_id, work_id, party_id, contributor_role, sequence_number)
         VALUES
-          (%s::uuid, %s::uuid, %s::uuid, %s, 1)
+          (%s::uuid, %s::uuid, %s::uuid, %s, COALESCE(%s, 1))
         """,
-        (tenant_id, work_id, party_id, contributor_role),
+        (tenant_id, work_id, party_id, contributor_role, sequence_number),
     )
 
 
@@ -1789,7 +1863,11 @@ def send_bookdev_request(
     ctx=Depends(_ctx_from_bearer),
 ) -> Dict[str, Any]:
     request_type = _validate_request_type(payload.request_type)
-    party = _validate_party(payload.party)
+    contributor_meta = _request_contributor_metadata(payload)
+    party = _validate_party(
+        contributor_meta["contributor_role_code"] or payload.party,
+        request_type=request_type,
+    )
     mctx = _load_user_and_membership_or_403(tenant_slug=tenant_slug, ctx=ctx)
 
     with db_conn() as conn:
@@ -1819,6 +1897,7 @@ def send_bookdev_request(
         payload_json={
             "message": payload.message,
             "form_url": form_url,
+            **contributor_meta,
         },
     )
 
@@ -1892,14 +1971,16 @@ def resolve_bookdev_request_token(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=410, detail=f"Book development request {status}")
 
     request_type = _validate_request_type(row["request_type"])
-    party = _validate_party(row["party"])
+    party = _validate_party(row["party"], request_type=request_type)
+    request_payload = row.get("payload_json") or {}
 
     prefill = {}
     if request_type == "CONTRIBUTOR_INFO":
         prefill = _load_contributor_prefill(
             tenant_id=row["tenant_id"],
             work_id=row["work_id"],
-            party=party,
+            contributor_party_id=_safe(request_payload.get("contributor_party_id")),
+            contributor_role_code=_safe(request_payload.get("contributor_role_code") or party),
         )
     elif request_type in {"MEDIA_QUESTIONNAIRE", "MARKETING_PROFILE", "SALES_INFORMATION"}:
         prefill = _load_public_form_prefill(
@@ -1915,6 +1996,10 @@ def resolve_bookdev_request_token(token: str) -> Dict[str, Any]:
         "tenant_slug": row["tenant_slug"],
         "work_id": row["work_id"],
         "party": party,
+        "contributor_party_id": _safe(request_payload.get("contributor_party_id")),
+        "contributor_role_code": _safe(request_payload.get("contributor_role_code") or party),
+        "contributor_role_label": _safe(request_payload.get("contributor_role_label")),
+        "contributor_sequence_number": request_payload.get("contributor_sequence_number"),
         "recipient_name": row["recipient_name"],
         "recipient_email": row["recipient_email"],
         "requester_email": row.get("requester_email") or "",
@@ -2149,7 +2234,24 @@ def submit_contributor_info(
     if request_type != "CONTRIBUTOR_INFO":
         raise HTTPException(status_code=400, detail="This endpoint only accepts CONTRIBUTOR_INFO requests")
 
-    party = _validate_party(row["party"])
+    party = _validate_party(row["party"], request_type=request_type)
+    request_payload = row.get("payload_json") or {}
+    contributor_party_id = _optional_uuid(
+        request_payload.get("contributor_party_id"),
+        "contributor_party_id",
+    )
+    contributor_role_code = _safe(
+        request_payload.get("contributor_role_code") or party
+    ).upper()
+    contributor_role_label = _safe(request_payload.get("contributor_role_label"))
+    contributor_sequence_number = request_payload.get("contributor_sequence_number")
+
+    if not contributor_party_id:
+        raise HTTPException(
+            status_code=409,
+            detail="This contributor request does not contain a contributor_party_id; send a new request.",
+        )
+
     tenant_id = row["tenant_id"]
     work_id = row["work_id"]
 
@@ -2162,6 +2264,12 @@ def submit_contributor_info(
         raise HTTPException(status_code=400, detail="Contributor email is required")
 
     response_body = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload.dict()
+    response_body.update({
+        "contributor_party_id": contributor_party_id,
+        "contributor_role_code": contributor_role_code,
+        "contributor_role_label": contributor_role_label,
+        "contributor_sequence_number": contributor_sequence_number,
+    })
 
     with db_conn() as conn:
         prev_ac = conn.autocommit
@@ -2169,18 +2277,29 @@ def submit_contributor_info(
 
         try:
             with conn.cursor(row_factory=dict_row) as cur:
-                contributor_party_id = _get_or_create_party(
-                    cur,
-                    tenant_id,
-                    contributor_name,
-                    contributor_email,
-                    "person",
+                cur.execute(
+                    """
+                    SELECT p.id::text AS party_id
+                    FROM parties p
+                    JOIN work_contributors wc
+                      ON wc.party_id = p.id
+                     AND wc.tenant_id = p.tenant_id
+                    WHERE p.tenant_id = %s::uuid
+                      AND p.id = %s::uuid
+                      AND wc.work_id = %s::uuid
+                    LIMIT 1
+                    """,
+                    (tenant_id, contributor_party_id, work_id),
                 )
+                targeted_contributor = cur.fetchone()
+                if not targeted_contributor:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="The contributor attached to this request is no longer linked to this work",
+                    )
 
-                if not contributor_party_id:
-                    raise HTTPException(status_code=500, detail="Could not create contributor party")
-
-                # Required contributor write only. This avoids catalog helper calls
+                # Update the exact contributor selected when the request was sent.
+                # Never locate or create a different party by name or email here.
                 # that can swallow SQL errors and leave this transaction aborted.
                 _bookdev_update_contributor_core(
                     cur,
@@ -2196,7 +2315,8 @@ def submit_contributor_info(
                     tenant_id,
                     work_id,
                     contributor_party_id,
-                    party,
+                    contributor_role_code,
+                    contributor_sequence_number,
                 )
 
                 # If the public form includes agent/agency information, write the
@@ -2242,7 +2362,7 @@ def submit_contributor_info(
 
             subject, body_text = _render_completion_email(
                 title=_work_title(row),
-                party=party,
+                party=contributor_role_label or contributor_role_code or party,
                 contributor_name=contributor_name,
                 signature=settings["from_name"],
             )
