@@ -335,11 +335,33 @@ def _load_user_and_membership_or_403(*, tenant_slug: str, ctx: Any) -> Dict[str,
     }
 
 
-def _validate_party(party: str) -> str:
-    p = (party or "").strip().lower()
-    if p not in {"author", "illustrator"}:
-        raise HTTPException(status_code=400, detail="party must be author or illustrator")
-    return p
+def _validate_party(
+    party: str,
+    *,
+    request_type: Optional[str] = None,
+) -> str:
+    value = _safe(party)
+
+    if not value:
+        raise HTTPException(
+            status_code=400,
+            detail="Contributor role is required",
+        )
+
+    # Contributor Information requests support every ONIX contributor role,
+    # including A01, A12, B01, B06, etc.
+    if _safe(request_type).upper() == "CONTRIBUTOR_INFO":
+        return value.upper()
+
+    # Legacy author/illustrator workflows remain restricted.
+    normalized = value.lower()
+    if normalized not in {"author", "illustrator"}:
+        raise HTTPException(
+            status_code=400,
+            detail="party must be author or illustrator",
+        )
+
+    return normalized
 
 
 def _validate_request_type(request_type: str) -> str:
