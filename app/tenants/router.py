@@ -202,13 +202,15 @@ def invite_user(payload: InviteCreate, ctx: dict = Depends(require_role([TENANT_
     if link:
         try:
             # SES Sandbox only delivers to VERIFIED recipient emails
-            send_invite_email(
+            email_result = send_invite_email(
                 to_email=invite["email"],
                 invite_link=link,
                 tenant_slug=tenant["slug"],
                 role=invite.get("role", ""),
                 invited_by_email=user.get("email", ""),
             )
+            if not email_result.ok:
+                email_error = email_result.error or "Invitation email could not be sent"
         except Exception as e:
             email_error = str(e)
 
@@ -233,7 +235,6 @@ def list_pending_invites(ctx: dict = Depends(require_role([TENANT_ADMIN]))):
                 SELECT
                     i.id::text,
                     i.email,
-                    u.full_name,
                     i.role,
                     i.expires_at,
                     i.created_at,
@@ -248,12 +249,12 @@ def list_pending_invites(ctx: dict = Depends(require_role([TENANT_ADMIN]))):
             )
             rows = cur.fetchall()
         except Exception:
+            conn.rollback()
             cur.execute(
                 """
                 SELECT
                     i.id::text,
                     i.email,
-                    u.full_name,
                     i.role,
                     i.expires_at,
                     i.created_at
@@ -280,6 +281,7 @@ def list_pending_invites(ctx: dict = Depends(require_role([TENANT_ADMIN]))):
         )
 
     return {"ok": True, "tenant": tenant["slug"], "invites": invites_list}
+
 
 
 # -------------------------------------------------
