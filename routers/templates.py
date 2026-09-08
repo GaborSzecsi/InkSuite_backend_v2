@@ -927,6 +927,8 @@ def collabora_config_for_template(tid: str):
             "editorUrl": editor_url,
             "wopiSrc": wopi_src,
             "accessToken": token,
+            # WOPI requires an absolute Unix timestamp in milliseconds, not a duration.
+            "accessTokenTtl": int(verify_wopi_token(token, settings.wopi_access_token_secret)["exp"]) * 1000,
             "readOnly": False,
         }
     )

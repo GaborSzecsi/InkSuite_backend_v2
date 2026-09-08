@@ -1,5 +1,4 @@
 # app/onix/models.py
-# Pydantic request/response models for ONIX Feed API.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -14,6 +13,8 @@ class ProductListQuery(BaseModel):
     contributor: Optional[str] = None
     format: Optional[str] = None
     status: Optional[str] = None
+    publication_from: Optional[str] = None
+    publication_to: Optional[str] = None
     validation_status: Optional[str] = None
     page: int = Field(1, ge=1)
     page_size: int = Field(50, ge=1, le=200)
@@ -24,6 +25,7 @@ class ExportRequest(BaseModel):
     edition_ids: Optional[List[str]] = None
     isbns: Optional[List[str]] = None
     export_mode: str = Field(..., pattern="^(preview|download|transfer)$")
+    onix_release: str = Field("3.0", pattern=r"^(3\.0|3\.1)$")
     recipient_id: Optional[str] = None
     file_mode: str = Field("combined", pattern="^(combined|separate)$")
     filters_json: Optional[Dict[str, Any]] = None

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import uuid
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 
 from app.core.db import db_conn
-from app.onix import assembly, validation, xml_serializer, aws_helpers
+from app.onix import assembly, validation, xml_serializer, aws_helpers, importer
 from app.onix.models import ExportRequest, RecipientCreate, RecipientUpdate
 from psycopg.rows import dict_row
 
@@ -39,6 +40,431 @@ def _user_id_from_request(request: Request) -> Optional[str]:
     return str(sub) if sub else None
 
 
+def _clean_header_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _serialize_onix_header_settings(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    row = row or {}
+
+    sender_name = _clean_header_value(row.get("sender_name"))
+    contact_name = _clean_header_value(row.get("contact_name"))
+    email_address = _clean_header_value(row.get("email_address"))
+
+    return {
+        "sender_name": sender_name,
+        "contact_name": contact_name,
+        "email_address": email_address,
+        "sender_identifier_type": _clean_header_value(
+            row.get("sender_identifier_type")
+        ),
+        "sender_identifier_value": _clean_header_value(
+            row.get("sender_identifier_value")
+        ),
+        "complete": bool(
+            sender_name
+            and contact_name
+            and email_address
+        ),
+    }
+
+
+def _load_onix_header_settings(cur, tenant_id: str) -> Dict[str, Any]:
+    cur.execute(
+        """
+        SELECT
+            sender_name,
+            contact_name,
+            email_address,
+            sender_identifier_type,
+            sender_identifier_value
+        FROM tenant_onix_headers
+        WHERE tenant_id = %s
+        LIMIT 1
+        """,
+        (tenant_id,),
+    )
+    return _serialize_onix_header_settings(cur.fetchone())
+
+
+def _require_complete_onix_header(cur, tenant_id: str) -> Dict[str, Any]:
+    settings = _load_onix_header_settings(cur, tenant_id)
+    if not settings["complete"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "ONIX header setup is required before preview, download, "
+                "or transfer. SenderName, ContactName, and EmailAddress "
+                "must all be saved."
+            ),
+        )
+    return settings
+
+
+@router.get("/header-settings")
+def get_onix_header_settings(
+    request: Request,
+    tenant_slug: str = Query(""),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _tenant_id_from_request(cur, request)
+            return _load_onix_header_settings(cur, tenant_id)
+
+
+@router.post("/header-settings")
+async def save_onix_header_settings(
+    request: Request,
+    tenant_slug: str = Query(""),
+):
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid JSON body.",
+        )
+
+    sender_name = _clean_header_value(payload.get("sender_name"))
+    contact_name = _clean_header_value(payload.get("contact_name"))
+    email_address = _clean_header_value(payload.get("email_address"))
+    sender_identifier_type = _clean_header_value(
+        payload.get("sender_identifier_type")
+    )
+    sender_identifier_value = _clean_header_value(
+        payload.get("sender_identifier_value")
+    )
+
+    missing = []
+    if not sender_name:
+        missing.append("SenderName")
+    if not contact_name:
+        missing.append("ContactName")
+    if not email_address:
+        missing.append("EmailAddress")
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing required ONIX header field(s): "
+                + ", ".join(missing)
+            ),
+        )
+
+    if (
+        "@" not in email_address
+        or email_address.startswith("@")
+        or email_address.endswith("@")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="EmailAddress must be a valid email address.",
+        )
+
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _tenant_id_from_request(cur, request)
+
+            cur.execute(
+                """
+                INSERT INTO tenant_onix_headers (
+                    tenant_id,
+                    sender_name,
+                    contact_name,
+                    email_address,
+                    sender_identifier_type,
+                    sender_identifier_value
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (tenant_id)
+                DO UPDATE SET
+                    sender_name = EXCLUDED.sender_name,
+                    contact_name = EXCLUDED.contact_name,
+                    email_address = EXCLUDED.email_address,
+                    sender_identifier_type = EXCLUDED.sender_identifier_type,
+                    sender_identifier_value = EXCLUDED.sender_identifier_value,
+                    updated_at = now()
+                RETURNING
+                    sender_name,
+                    contact_name,
+                    email_address,
+                    sender_identifier_type,
+                    sender_identifier_value
+                """,
+                (
+                    tenant_id,
+                    sender_name,
+                    contact_name,
+                    email_address,
+                    sender_identifier_type,
+                    sender_identifier_value,
+                ),
+            )
+            row = cur.fetchone()
+
+        conn.commit()
+
+    return _serialize_onix_header_settings(row)
+
+
+
+@router.post("/import/preview")
+async def preview_onix_import(
+    file: UploadFile = File(...),
+    tenant_slug: str = Query(""),
+):
+    """
+    Parse an ONIX XML or ZIP without writing metadata.
+    Returns one selectable summary per <Product>.
+    """
+    try:
+        raw = await file.read()
+        slug = tenant_slug.strip() or "marble-press"
+        return importer.preview_onix_file(
+            raw,
+            file.filename or "",
+            slug,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+
+@router.post("/import/apply-batch")
+async def apply_onix_import_batch(
+    file: UploadFile = File(...),
+    tenant_slug: str = Query(""),
+    plans_json: str = Form(...),
+):
+    """
+    Execute the user-confirmed import plan for all selected ONIX Products.
+    """
+    slug = tenant_slug.strip() or "marble-press"
+
+    try:
+        plans = json.loads(plans_json)
+        if not isinstance(plans, list):
+            raise ValueError("plans_json must contain a list.")
+
+        raw = await file.read()
+        return importer.apply_onix_import_batch(
+            raw=raw,
+            filename=file.filename or "",
+            tenant_slug=slug,
+            plans=plans,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"ONIX import failed: {exc}",
+        )
+
+
+@router.post("/import/apply")
+async def apply_onix_import(
+    file: UploadFile = File(...),
+    tenant_slug: str = Query(""),
+    source_record_reference: str = Form(""),
+    source_isbn13: str = Form(""),
+    target_work_id: str = Form(...),
+    target_edition_id: str = Form(...),
+    preserve_existing_title: bool = Form(True),
+):
+    """
+    Import one selected ONIX Product into one existing InkSuite edition.
+    This endpoint never creates another edition.
+    """
+    slug = tenant_slug.strip() or "marble-press"
+
+    try:
+        raw = await file.read()
+        return importer.apply_onix_import(
+            raw=raw,
+            filename=file.filename or "",
+            tenant_slug=slug,
+            source_record_reference=
+                source_record_reference.strip(),
+            source_isbn13=source_isbn13.strip(),
+            target_work_id=target_work_id.strip(),
+            target_edition_id=
+                target_edition_id.strip(),
+            preserve_existing_title=
+                preserve_existing_title,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"ONIX import failed: {exc}",
+        )
+
+
+
+def _normalize_search_text(value: Any) -> str:
+    text = str(value or "").lower()
+    text = " ".join(text.split())
+    return "".join(
+        ch
+        for ch in text
+        if ch.isalnum() or ch.isspace()
+    )
+
+
+def _fuzzy_product_score(query: str, item: Dict[str, Any]) -> float:
+    q = _normalize_search_text(query)
+    if not q:
+        return 0.0
+
+    title = _normalize_search_text(item.get("title"))
+    subtitle = _normalize_search_text(item.get("subtitle"))
+    contributors = _normalize_search_text(
+        item.get("contributors_summary")
+    )
+    isbn = _normalize_search_text(item.get("isbn13"))
+
+    full_title = " ".join(
+        part for part in (title, subtitle) if part
+    ).strip()
+
+    candidates = [
+        full_title,
+        title,
+        subtitle,
+        contributors,
+        isbn,
+    ]
+
+    # Exact substring remains strongest.
+    if any(q in candidate for candidate in candidates if candidate):
+        return 1.0
+
+    best = 0.0
+    for candidate in candidates:
+        if not candidate:
+            continue
+        best = max(
+            best,
+            SequenceMatcher(
+                None,
+                q,
+                candidate,
+            ).ratio(),
+        )
+
+    # Token-aware comparison helps long book titles where one word is misspelled.
+    q_tokens = [token for token in q.split() if token]
+    title_tokens = [
+        token
+        for token in full_title.split()
+        if token
+    ]
+
+    if q_tokens and title_tokens:
+        token_scores = []
+        for q_token in q_tokens:
+            token_scores.append(
+                max(
+                    SequenceMatcher(
+                        None,
+                        q_token,
+                        title_token,
+                    ).ratio()
+                    for title_token in title_tokens
+                )
+            )
+
+        if token_scores:
+            token_score = sum(token_scores) / len(token_scores)
+            best = max(
+                best,
+                (best * 0.55) + (token_score * 0.45),
+            )
+
+    return best
+
+
+def _fuzzy_fallback_products(
+    *,
+    tenant_slug: str,
+    query: str,
+    format_filter: str,
+    status_filter: str,
+    publication_from: str,
+    publication_to: str,
+    page: int,
+    page_size: int,
+) -> Optional[Dict[str, Any]]:
+    """
+    Fuzzy fallback only runs when the normal database search returns no rows.
+    It keeps all active filters, then ranks candidate titles in Python.
+    """
+    # Pull enough filtered candidates to cover the current Marble catalog.
+    # If the catalog grows beyond this, this can be replaced by pg_trgm ranking.
+    candidate_result = assembly.list_exportable_products(
+        tenant_slug=tenant_slug,
+        q=None,
+        isbn=None,
+        title=None,
+        contributor=None,
+        format_filter=format_filter or None,
+        status_filter=status_filter or None,
+        publication_from=publication_from or None,
+        publication_to=publication_to or None,
+        page=1,
+        page_size=200,
+        sort="title",
+    )
+
+    candidates = candidate_result.get("items") or []
+    ranked = []
+
+    for item in candidates:
+        score = _fuzzy_product_score(query, item)
+        if score >= 0.62:
+            ranked.append((score, item))
+
+    if not ranked:
+        return None
+
+    ranked.sort(
+        key=lambda pair: (
+            -pair[0],
+            _normalize_search_text(
+                pair[1].get("title")
+            ),
+        )
+    )
+
+    start = max(page - 1, 0) * page_size
+    end = start + page_size
+    items = [item for _, item in ranked[start:end]]
+
+    for score, item in ranked[start:end]:
+        item["search_match_type"] = "fuzzy"
+        item["search_match_score"] = round(score, 4)
+
+    return {
+        "items": items,
+        "total": len(ranked),
+        "page": page,
+        "page_size": page_size,
+        "search_mode": "fuzzy",
+        "query": query,
+    }
+
+
 @router.get("/products")
 def list_products(
     request: Request,
@@ -49,6 +475,8 @@ def list_products(
     contributor: str = Query(""),
     format: str = Query(""),
     status: str = Query(""),
+    publication_from: str = Query(""),
+    publication_to: str = Query(""),
     validation_status: str = Query(""),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -63,29 +491,43 @@ def list_products(
         contributor=contributor.strip() or None,
         format_filter=format.strip() or None,
         status_filter=status.strip() or None,
+        publication_from=publication_from.strip() or None,
+        publication_to=publication_to.strip() or None,
         page=page,
         page_size=page_size,
         sort=sort.strip() or "title",
     )
     items = result.get("items") or []
-    tenant_id = _tenant_id_cur(slug)
+
+    if q.strip() and not items:
+        fuzzy_result = _fuzzy_fallback_products(
+            tenant_slug=slug,
+            query=q.strip(),
+            format_filter=format.strip(),
+            status_filter=status.strip(),
+            publication_from=publication_from.strip(),
+            publication_to=publication_to.strip(),
+            page=page,
+            page_size=page_size,
+        )
+        if fuzzy_result:
+            result = fuzzy_result
+            items = result.get("items") or []
+
+    # IMPORTANT:
+    # The catalogue list must stay lightweight. Do not build/validate the full
+    # canonical ONIX record for every row here. Full assembly is intentionally
+    # deferred to:
+    #   GET /products/{isbn}
+    #   preview
+    #   download
+    #   transfer
+    #
+    # `validation_status` remains accepted for backwards-compatible URLs, but
+    # the listing no longer performs an N x full-export validation pass.
     if validation_status.strip():
-        filtered = []
-        for it in items:
-            pid = assembly.get_exportable_product_by_isbn(slug, it.get("isbn13") or "")
-            if not pid:
-                continue
-            val = validation.validate_product(pid)
-            if (val.get("status") or "").lower() == validation_status.strip().lower():
-                it["validation_status"] = val.get("status")
-                filtered.append(it)
-        result["items"] = filtered
-        result["total"] = len(filtered)
-    else:
-        for it in items:
-            pid = assembly.build_onix_product_payload(tenant_id, it.get("edition_id") or "") if it.get("edition_id") else {}
-            if pid:
-                it["validation_status"] = validation.validate_product(pid).get("status", "")
+        result["validation_filter_ignored"] = True
+
     return result
 
 
@@ -149,12 +591,29 @@ def preview_product_xml(
     tenant_slug: str = Query(""),
     raw: bool = Query(False),
     pretty: bool = Query(True),
+    release: str = Query("3.0", pattern=r"^(3\.0|3\.1)$"),
 ):
     slug = tenant_slug.strip() or "marble-press"
     product = assembly.get_exportable_product_by_isbn(slug, isbn)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    xml_str = xml_serializer.message_to_xml({"release": "3.0", "products": [product]}, pretty=pretty)
+
+    tenant_id = _tenant_id_cur(slug)
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            _require_complete_onix_header(cur, tenant_id)
+            message = assembly.build_onix_message_payload(
+                tenant_id,
+                [],
+                cur=cur,
+            )
+            message["release"] = release
+            message["products"] = [product]
+
+    xml_str = xml_serializer.message_to_xml(
+        message,
+        pretty=pretty,
+    )
     return Response(content=xml_str, media_type="application/xml; charset=utf-8")
 
 
@@ -164,6 +623,10 @@ def create_export(request: Request, body: ExportRequest):
         with conn.cursor(row_factory=dict_row) as cur:
             tenant_id = _tenant_id_from_request(cur, request)
             user_id = _user_id_from_request(request)
+
+            # Header is message-level metadata and is mandatory for every
+            # preview, download, and transfer generated by this endpoint.
+            _require_complete_onix_header(cur, tenant_id)
 
             edition_ids: List[str] = list(body.edition_ids or [])
             if body.isbns and not edition_ids:
@@ -214,7 +677,12 @@ def create_export(request: Request, body: ExportRequest):
                 ),
             )
 
-            message = assembly.build_onix_message_payload(tenant_id, edition_ids, cur=cur)
+            message = assembly.build_onix_message_payload(
+                tenant_id,
+                edition_ids,
+                cur=cur,
+            )
+            message["release"] = body.onix_release
             xml_str = xml_serializer.message_to_xml(message, pretty=True)
             checksum = aws_helpers.xml_checksum_sha256(xml_str)
 

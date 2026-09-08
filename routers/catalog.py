@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +26,20 @@ from .catalog_royalties import (
 )
 from .catalog_write import (
     _upsert_work_from_payload,
+    create_first_work_edition,
+    update_edition_product_identity,
+    update_work_titles_collections,
+    update_edition_descriptive_content,
+    update_edition_subjects_audience,
+    update_edition_publishing_dates,
+    update_edition_product_details,
+    update_edition_supply_pricing,
+    update_edition_rights_restrictions,
+    update_edition_related_products,
+    update_edition_awards,
+    update_edition_cited_content,
+    upsert_bookdev_task_assignment,
+    update_metadata_assistant_question_state,
     add_work_contributor,
     unlink_work_contributor,
     delete_contributor_party,
@@ -85,6 +100,12 @@ def tenant_id_from_slug(conn, tenant_slug: str) -> str:
 
 
 def _work_row_to_list_item(row: Dict[str, Any]) -> Dict[str, Any]:
+    normalized_pub_date = _safe_str(row.get("normalized_publication_date"))
+    normalized_year = row.get("normalized_publishing_year")
+    if normalized_year is None:
+        digits = re.sub(r"[^0-9]", "", normalized_pub_date)
+        normalized_year = int(digits[:4]) if len(digits) >= 4 else None
+
     return {
         "id": str(row["id"]),
         "uid": str(row["uid"]) if row.get("uid") else str(row["id"]),
@@ -92,12 +113,14 @@ def _work_row_to_list_item(row: Dict[str, Any]) -> Dict[str, Any]:
         "subtitle": row.get("subtitle") or "",
         "author": "",
         "series": row.get("series_title") or "",
-        "publishing_year": row.get("publishing_year"),
-        "publication_date": _jsonable(row.get("publication_date")),
+        # Compatibility fields derived from edition_publishing_dates role 01.
+        "publishing_year": normalized_year,
+        "publication_date": normalized_pub_date or None,
+        "publisher_name": row.get("normalized_publisher_name") or "",
+        "publisher": row.get("normalized_publisher_name") or "",
         "publisher_or_imprint": (
-            row.get("publisher_or_imprint")
+            row.get("normalized_publisher_name")
             or row.get("imprint_name")
-            or row.get("publisher_name")
             or ""
         ),
         "language": row.get("language") or "",
@@ -298,6 +321,1802 @@ def _fetch_party_address_lines(cur, tenant_id: str, party_id: str) -> List[str]:
     return [x for x in (line1, line2) if x]
 
 
+
+
+def _fetch_edition_texts(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT id, text_type, text_value, source_corporate, source_title, source_title_type,
+                   source_url, author, audience, content_audience, text_format,
+                   language_code, item_order, created_at, updated_at
+            FROM edition_texts
+            WHERE tenant_id = %s AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    result: List[Dict[str, Any]] = []
+
+    for row in rows:
+        text_id = str(row.get("id") or "")
+
+        try:
+            cur.execute(
+                """
+                SELECT id, content_date_role, date_format, date_text, item_order
+                FROM edition_text_content_dates
+                WHERE tenant_id = %s AND edition_id = %s AND edition_text_id = %s
+                ORDER BY item_order ASC, created_at ASC, id ASC
+                """,
+                (tenant_id, edition_id, text_id),
+            )
+            date_rows = cur.fetchall() or []
+        except Exception:
+            date_rows = []
+
+        content_dates = [
+            {
+                "id": str(d.get("id") or ""),
+                "content_date_role": _safe_str(d.get("content_date_role")),
+                "contentDateRole": _safe_str(d.get("content_date_role")),
+                "date_role": _safe_str(d.get("content_date_role")),
+                "dateRole": _safe_str(d.get("content_date_role")),
+                "date_format": _safe_str(d.get("date_format")) or "00",
+                "dateFormat": _safe_str(d.get("date_format")) or "00",
+                "date_text": _safe_str(d.get("date_text")),
+                "dateText": _safe_str(d.get("date_text")),
+                "date_value": _safe_str(d.get("date_text")),
+                "dateValue": _safe_str(d.get("date_text")),
+                "date": _safe_str(d.get("date_text")),
+                "item_order": int(d.get("item_order") or 0),
+                "sequence_number": int(d.get("item_order") or 0),
+                "sequenceNumber": int(d.get("item_order") or 0),
+            }
+            for d in date_rows
+        ]
+
+        result.append(
+            {
+                "id": text_id,
+                "text_type": _safe_str(row.get("text_type")),
+                "textType": _safe_str(row.get("text_type")),
+                "text": _safe_str(row.get("text_value")),
+                "text_value": _safe_str(row.get("text_value")),
+                "textValue": _safe_str(row.get("text_value")),
+                "text_content": _safe_str(row.get("text_value")),
+                "textContent": _safe_str(row.get("text_value")),
+                "source_corporate": _safe_str(row.get("source_corporate")),
+                "sourceCorporate": _safe_str(row.get("source_corporate")),
+                "source_name": _safe_str(row.get("source_corporate")),
+                "sourceName": _safe_str(row.get("source_corporate")),
+                "source_title": _safe_str(row.get("source_title")),
+                "sourceTitle": _safe_str(row.get("source_title")),
+                "source_title_type": _safe_str(row.get("source_title_type")),
+                "sourceTitleType": _safe_str(row.get("source_title_type")),
+                "source_url": _safe_str(row.get("source_url")),
+                "sourceUrl": _safe_str(row.get("source_url")),
+                "author": _safe_str(row.get("author")),
+                "text_author": _safe_str(row.get("author")),
+                "textAuthor": _safe_str(row.get("author")),
+                "audience": _safe_str(row.get("audience")),
+                "content_audience": _safe_str(row.get("content_audience")),
+                "contentAudience": _safe_str(row.get("content_audience")),
+                "text_format": _safe_str(row.get("text_format")) or "06",
+                "textFormat": _safe_str(row.get("text_format")) or "06",
+                "language_code": _safe_str(row.get("language_code")),
+                "languageCode": _safe_str(row.get("language_code")),
+                "content_dates": content_dates,
+                "contentDates": content_dates,
+                "item_order": int(row.get("item_order") or 0),
+                "sequence_number": int(row.get("item_order") or 0),
+                "sequenceNumber": int(row.get("item_order") or 0),
+            }
+        )
+
+    return result
+
+def _row_value(
+    row: Dict[str, Any],
+    *keys: str,
+) -> Any:
+    for key in keys:
+        if key in row and row.get(key) is not None:
+            return row.get(key)
+    return None
+
+
+def _fetch_edition_subjects(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT
+                id,
+                scheme_id,
+                scheme_name,
+                subject_code,
+                heading_text,
+                region_code,
+                scheme_version,
+                keywords,
+                is_main,
+                item_order
+            FROM edition_subjects
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    result: List[Dict[str, Any]] = []
+
+    for index, row in enumerate(rows):
+        scheme_id = _safe_str(row.get("scheme_id"))
+        keywords = _safe_str(row.get("keywords"))
+
+        # The current card uses Subject Heading Text as its internal keyword
+        # editor value. Expose keywords there only for scheme 20 so reload
+        # renders the Keywords UI rather than the generic subject UI.
+        heading_text = (
+            keywords
+            if scheme_id == "20"
+            else _safe_str(row.get("heading_text"))
+        )
+
+        item_order = int(row.get("item_order") or index + 1)
+
+        result.append(
+            {
+                "id": str(row.get("id") or ""),
+                "scheme_id": scheme_id,
+                "scheme_name": _safe_str(row.get("scheme_name")),
+                "subject_scheme_name": _safe_str(row.get("scheme_name")),
+                "subjectSchemeName": _safe_str(row.get("scheme_name")),
+                "schemeName": _safe_str(row.get("scheme_name")),
+                "subject_scheme_identifier": scheme_id,
+                "subjectSchemeIdentifier": scheme_id,
+                "schemeIdentifier": scheme_id,
+
+                "scheme_version": _safe_str(row.get("scheme_version")),
+                "subject_scheme_version": _safe_str(row.get("scheme_version")),
+                "subjectSchemeVersion": _safe_str(row.get("scheme_version")),
+                "schemeVersion": _safe_str(row.get("scheme_version")),
+
+                "subject_code": _safe_str(row.get("subject_code")),
+                "subjectCode": _safe_str(row.get("subject_code")),
+
+                "heading_text": heading_text,
+                "subject_heading_text": heading_text,
+                "subjectHeadingText": heading_text,
+
+                "keywords": keywords,
+                "region_code": _safe_str(row.get("region_code")),
+
+                "is_main": bool(row.get("is_main")),
+                "main_subject": bool(row.get("is_main")),
+                "mainSubject": bool(row.get("is_main")),
+
+                "item_order": item_order,
+                "sequence_number": item_order,
+                "sequenceNumber": item_order,
+            }
+        )
+
+    return result
+
+
+
+def _fetch_edition_audience(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "audience_codes": [],
+        "audience_ranges": [],
+    }
+
+    try:
+        cur.execute(
+            """
+            SELECT
+                id,
+                onix_audience_code,
+                audience_range_qualifier,
+                range_precision_1,
+                range_value_1,
+                range_precision_2,
+                range_value_2,
+                complexity_scheme_identifier,
+                complexity_code,
+                item_order
+            FROM edition_audience
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return result
+
+    codes: List[Dict[str, Any]] = []
+    ranges: List[Dict[str, Any]] = []
+
+    for row in rows:
+        code = _safe_str(row.get("onix_audience_code"))
+        qualifier = _safe_str(row.get("audience_range_qualifier"))
+
+        if code:
+            codes.append(
+                {
+                    "id": str(row.get("id") or ""),
+                    "onix_audience_code": code,
+                    "audience_code_type": _safe_str(row.get("audience_code_type")) or "01",
+                    "audienceCodeType": _safe_str(row.get("audience_code_type")) or "01",
+                    "audience_code_type_name": _safe_str(row.get("audience_code_type_name")),
+                    "audienceCodeTypeName": _safe_str(row.get("audience_code_type_name")),
+                    "audience_code": code,
+                    "audienceCode": code,
+                    "code": code,
+                    "item_order": int(row.get("item_order") or 0),
+                }
+            )
+
+        if qualifier:
+            precision1 = _safe_str(row.get("range_precision_1"))
+            value1 = _safe_str(row.get("range_value_1"))
+            precision2 = _safe_str(row.get("range_precision_2"))
+            value2 = _safe_str(row.get("range_value_2"))
+
+            ranges.append(
+                {
+                    "id": str(row.get("id") or ""),
+                    "audience_range_qualifier": qualifier,
+                    "audienceRangeQualifier": qualifier,
+                    "qualifier": qualifier,
+
+                    "range_precision_1": precision1,
+                    "audience_range_precision": precision1,
+                    "audienceRangePrecision": precision1,
+                    "precision": precision1,
+
+                    "range_value_1": value1,
+                    "audience_range_value": value1,
+                    "audienceRangeValue": value1,
+                    "value": value1,
+
+                    "range_precision_2": precision2,
+                    "audience_range_precision_2": precision2,
+                    "audienceRangePrecision2": precision2,
+                    "precision2": precision2,
+
+                    "range_value_2": value2,
+                    "audience_range_value_2": value2,
+                    "audienceRangeValue2": value2,
+                    "value2": value2,
+
+                    "item_order": int(row.get("item_order") or 0),
+                }
+            )
+
+    result["audience_codes"] = codes
+    result["audience_ranges"] = ranges
+    return result
+
+
+
+
+
+def _fetch_edition_publishing_dates(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT id, date_role, date_value, date_text, date_format, note,
+                   item_order, created_at, updated_at
+            FROM edition_publishing_dates
+            WHERE tenant_id = %s AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    result: List[Dict[str, Any]] = []
+
+    for row in rows:
+        lexical = _safe_str(row.get("date_text"))
+        if not lexical and row.get("date_value") is not None:
+            lexical = (_jsonable(row.get("date_value")) or "").replace("-", "")
+
+        result.append(
+            {
+                "id": str(row.get("id") or ""),
+                "date_role": _safe_str(row.get("date_role")),
+                "dateRole": _safe_str(row.get("date_role")),
+                "publishing_date_role": _safe_str(row.get("date_role")),
+                "publishingDateRole": _safe_str(row.get("date_role")),
+                "date_text": lexical,
+                "dateText": lexical,
+                "date_value": lexical,
+                "dateValue": lexical,
+                "date": lexical,
+                "display_date": lexical,
+                "displayDate": lexical,
+                "date_format": _safe_str(row.get("date_format")) or "00",
+                "dateFormat": _safe_str(row.get("date_format")) or "00",
+                "note": _safe_str(row.get("note")),
+                "date_note": _safe_str(row.get("note")),
+                "dateNote": _safe_str(row.get("note")),
+                "item_order": int(row.get("item_order") or 0),
+                "sequence_number": int(row.get("item_order") or 0),
+                "sequenceNumber": int(row.get("item_order") or 0),
+            }
+        )
+
+    return result
+
+def _fetch_edition_form_details(cur, tenant_id: str, edition_id: str) -> List[str]:
+    try:
+        cur.execute(
+            """
+            SELECT form_detail_code
+            FROM edition_form_details
+            WHERE tenant_id = %s AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        return [_safe_str(r.get("form_detail_code")) for r in (cur.fetchall() or []) if _safe_str(r.get("form_detail_code"))]
+    except Exception:
+        return []
+
+
+def _fetch_edition_content_types(cur, tenant_id: str, edition_id: str) -> List[str]:
+    try:
+        cur.execute(
+            """
+            SELECT content_type_code
+            FROM edition_content_types
+            WHERE tenant_id = %s AND edition_id = %s
+            ORDER BY is_primary DESC, item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        return [_safe_str(r.get("content_type_code")) for r in (cur.fetchall() or []) if _safe_str(r.get("content_type_code"))]
+    except Exception:
+        return []
+
+
+def _fetch_edition_measurements(cur, tenant_id: str, edition_id: str) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT id, measure_type, measurement, measure_unit_code, item_order
+            FROM edition_measurements
+            WHERE tenant_id = %s AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    return [
+        {
+            "id": str(r.get("id") or ""),
+            "measure_type": _safe_str(r.get("measure_type")),
+            "measureType": _safe_str(r.get("measure_type")),
+            "measurement_type": _safe_str(r.get("measure_type")),
+            "measurementType": _safe_str(r.get("measure_type")),
+            "measurement": _jsonable(r.get("measurement")),
+            "measurement_value": _jsonable(r.get("measurement")),
+            "measurementValue": _jsonable(r.get("measurement")),
+            "value": _jsonable(r.get("measurement")),
+            "measure_unit_code": _safe_str(r.get("measure_unit_code")),
+            "measureUnitCode": _safe_str(r.get("measure_unit_code")),
+            "unit_code": _safe_str(r.get("measure_unit_code")),
+            "unitCode": _safe_str(r.get("measure_unit_code")),
+            "unit": _safe_str(r.get("measure_unit_code")),
+            "item_order": int(r.get("item_order") or 0),
+        }
+        for r in rows
+    ]
+
+
+def _fetch_edition_extents(cur, tenant_id: str, edition_id: str) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT id, extent_type, extent_value, extent_unit, item_order
+            FROM edition_extents
+            WHERE tenant_id = %s AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    return [
+        {
+            "id": str(r.get("id") or ""),
+            "extent_type": _safe_str(r.get("extent_type")),
+            "extentType": _safe_str(r.get("extent_type")),
+            "extent_value": _jsonable(r.get("extent_value")),
+            "extentValue": _jsonable(r.get("extent_value")),
+            "value": _jsonable(r.get("extent_value")),
+            "extent_unit": _safe_str(r.get("extent_unit")),
+            "extentUnit": _safe_str(r.get("extent_unit")),
+            "unit_code": _safe_str(r.get("extent_unit")),
+            "unitCode": _safe_str(r.get("extent_unit")),
+            "unit": _safe_str(r.get("extent_unit")),
+            "item_order": int(r.get("item_order") or 0),
+        }
+        for r in rows
+    ]
+
+
+
+def _fetch_edition_supply_pricing(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    """
+    Read the EXISTING edition_supply_details and
+    edition_prices rows. This deliberately uses SELECT *
+    so legacy prices remain visible even before optional
+    ONIX extension columns are added.
+    """
+
+    try:
+        cur.execute(
+            """
+            SELECT *
+            FROM edition_supply_details
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        supplies = cur.fetchall() or []
+    except Exception:
+        return []
+
+    # Check optional supplier identifier table once.
+    try:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name =
+                  'edition_supplier_identifiers'
+            LIMIT 1
+            """
+        )
+        has_supplier_identifier_table = (
+            cur.fetchone() is not None
+        )
+    except Exception:
+        has_supplier_identifier_table = False
+
+    out: List[Dict[str, Any]] = []
+
+    for supply in supplies:
+        supply_id = str(
+            supply.get("id") or ""
+        )
+
+        identifiers: List[
+            Dict[str, Any]
+        ] = []
+
+        if has_supplier_identifier_table:
+            try:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM edition_supplier_identifiers
+                    WHERE tenant_id = %s
+                      AND supply_detail_id = %s
+                    ORDER BY id ASC
+                    """,
+                    (
+                        tenant_id,
+                        supply_id,
+                    ),
+                )
+                identifiers = [
+                    {
+                        "id": str(
+                            row.get("id")
+                            or ""
+                        ),
+                        "supplier_id_type":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type"
+                                )
+                            ),
+                        "supplierIdType":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type"
+                                )
+                            ),
+                        "identifier_type":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type"
+                                )
+                            ),
+                        "identifierType":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type"
+                                )
+                            ),
+                        "supplier_id_type_name":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type_name"
+                                )
+                            ),
+                        "supplierIdTypeName":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type_name"
+                                )
+                            ),
+                        "id_type_name":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type_name"
+                                )
+                            ),
+                        "idTypeName":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type_name"
+                                )
+                            ),
+                        "identifier_type_name":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type_name"
+                                )
+                            ),
+                        "identifierTypeName":
+                            _safe_str(
+                                row.get(
+                                    "supplier_id_type_name"
+                                )
+                            ),
+                        "id_value":
+                            _safe_str(
+                                row.get(
+                                    "id_value"
+                                )
+                            ),
+                        "idValue":
+                            _safe_str(
+                                row.get(
+                                    "id_value"
+                                )
+                            ),
+                        "identifier_value":
+                            _safe_str(
+                                row.get(
+                                    "id_value"
+                                )
+                            ),
+                        "identifierValue":
+                            _safe_str(
+                                row.get(
+                                    "id_value"
+                                )
+                            ),
+                    }
+                    for row
+                    in (cur.fetchall() or [])
+                ]
+            except Exception:
+                identifiers = []
+
+        # Existing prices: no new table, no copy.
+        try:
+            cur.execute(
+                """
+                SELECT *
+                FROM edition_prices
+                WHERE tenant_id = %s
+                  AND supply_detail_id = %s
+                ORDER BY id ASC
+                """,
+                (
+                    tenant_id,
+                    supply_id,
+                ),
+            )
+            price_rows = (
+                cur.fetchall()
+                or []
+            )
+        except Exception:
+            price_rows = []
+
+        prices: List[
+            Dict[str, Any]
+        ] = []
+
+        for row in price_rows:
+            price_type = _safe_str(
+                row.get("price_type_code")
+                or row.get("price_type")
+            )
+            amount = _jsonable(
+                row.get("price_amount")
+            )
+            currency = _safe_str(
+                row.get("currency_code")
+            )
+            tax_code = _safe_str(
+                row.get("tax_rate_code")
+            )
+            tax_rate_percent = _jsonable(
+                row.get("tax_rate_percent")
+            )
+            taxable_amount = _jsonable(
+                row.get("taxable_amount")
+            )
+            tax_amount = _jsonable(
+                row.get("tax_amount")
+            )
+            country = _safe_str(
+                row.get(
+                    "territory_country_included"
+                )
+                or row.get(
+                    "country_included"
+                )
+            )
+            region = _safe_str(
+                row.get(
+                    "territory_region_included"
+                )
+                or row.get(
+                    "region_included"
+                )
+            )
+            status = _safe_str(
+                row.get("price_status")
+            )
+            effective_from = (
+                _jsonable(
+                    row.get(
+                        "price_effective_from"
+                    )
+                )
+                or ""
+            )
+            effective_until = (
+                _jsonable(
+                    row.get(
+                        "price_effective_until"
+                    )
+                )
+                or ""
+            )
+            discount_code = _safe_str(
+                row.get("discount_code")
+            )
+            minimum_order_quantity = (
+                row.get(
+                    "minimum_order_quantity"
+                )
+            )
+            note = _safe_str(
+                row.get("price_note")
+            )
+
+            prices.append(
+                {
+                    "id": str(
+                        row.get("id")
+                        or ""
+                    ),
+
+                    "price_type":
+                        price_type,
+                    "priceType":
+                        price_type,
+                    "type":
+                        price_type,
+
+                    "price_amount":
+                        amount,
+                    "priceAmount":
+                        amount,
+                    "amount":
+                        amount,
+                    "price":
+                        amount,
+
+                    "currency_code":
+                        currency,
+                    "currencyCode":
+                        currency,
+                    "currency":
+                        currency,
+
+                    "tax_type":
+                        tax_code,
+                    "taxType":
+                        tax_code,
+                    "tax_rate_code":
+                        tax_code,
+                    "taxRateCode":
+                        tax_code,
+                    "tax_rate_percent":
+                        tax_rate_percent,
+                    "taxRatePercent":
+                        tax_rate_percent,
+                    "taxable_amount":
+                        taxable_amount,
+                    "taxableAmount":
+                        taxable_amount,
+                    "tax_amount":
+                        tax_amount,
+                    "taxAmount":
+                        tax_amount,
+
+                    "country_code":
+                        country,
+                    "countryCode":
+                        country,
+                    "country":
+                        country,
+
+                    "territory":
+                        region,
+                    "region_code":
+                        region,
+                    "regionCode":
+                        region,
+
+                    "price_status":
+                        status,
+                    "priceStatus":
+                        status,
+                    "status":
+                        status,
+
+                    "price_effective_from":
+                        effective_from,
+                    "priceEffectiveFrom":
+                        effective_from,
+
+                    "price_effective_until":
+                        effective_until,
+                    "priceEffectiveUntil":
+                        effective_until,
+
+                    "discount_code":
+                        discount_code,
+                    "discountCode":
+                        discount_code,
+
+                    "minimum_order_quantity":
+                        minimum_order_quantity,
+                    "minimumOrderQuantity":
+                        minimum_order_quantity,
+
+                    "price_note":
+                        note,
+                    "priceNote":
+                        note,
+                    "note":
+                        note,
+                }
+            )
+
+        supplier_name = _safe_str(
+            supply.get("supplier_name")
+        )
+        supplier_role = _safe_str(
+            supply.get("supplier_role")
+        )
+        supplier_email = _safe_str(
+            supply.get("supplier_email")
+        )
+        supplier_telephone = _safe_str(supply.get("supplier_telephone"))
+        supplier_fax = _safe_str(supply.get("supplier_fax"))
+        availability = _safe_str(
+            supply.get(
+                "product_availability"
+            )
+        )
+        order_time_days = supply.get(
+            "order_time_days"
+        )
+        returns_code_type = _safe_str(
+            supply.get("returns_code_type")
+        )
+        returns_code = _safe_str(
+            supply.get("returns_code")
+        )
+        returns_note = _safe_str(
+            supply.get("returns_note")
+        )
+        pack_quantity = supply.get(
+            "pack_quantity"
+        )
+        carton_quantity = supply.get(
+            "carton_quantity"
+        )
+        stock_quantity = supply.get(
+            "stock_on_hand"
+        )
+        expected_ship_date = (
+            _jsonable(
+                supply.get(
+                    "expected_ship_date"
+                )
+            )
+            or ""
+        )
+        supply_note = _safe_str(
+            supply.get("supply_note")
+        )
+
+        item = {
+            "id": supply_id,
+
+            "supplier_name":
+                supplier_name,
+            "supplierName":
+                supplier_name,
+
+            "supplier_role":
+                supplier_role,
+            "supplierRole":
+                supplier_role,
+
+            "supplier_email": supplier_email, "supplierEmail": supplier_email,
+            "supplier_telephone": supplier_telephone, "supplierTelephone": supplier_telephone,
+            "supplier_fax": supplier_fax, "supplierFax": supplier_fax,
+
+            "product_availability":
+                availability,
+            "productAvailability":
+                availability,
+            "availability_code":
+                availability,
+            "availabilityCode":
+                availability,
+
+            "order_time_days":
+                order_time_days,
+            "orderTimeDays":
+                order_time_days,
+
+            "returns_code_type":
+                returns_code_type,
+            "returnsCodeType":
+                returns_code_type,
+
+            "returns_code":
+                returns_code,
+            "returnsCode":
+                returns_code,
+
+            "returns_note":
+                returns_note,
+            "returnsNote":
+                returns_note,
+
+            "pack_quantity":
+                pack_quantity,
+            "packQuantity":
+                pack_quantity,
+
+            "carton_quantity":
+                carton_quantity,
+            "cartonQuantity":
+                carton_quantity,
+
+            "stock_quantity":
+                stock_quantity,
+            "stockQuantity":
+                stock_quantity,
+
+            "expected_ship_date":
+                expected_ship_date,
+            "expectedShipDate":
+                expected_ship_date,
+
+            "supplier_identifiers":
+                identifiers,
+            "supplierIdentifiers":
+                identifiers,
+
+            "prices":
+                prices,
+            "product_prices":
+                prices,
+            "productPrices":
+                prices,
+
+            "supply_note":
+                supply_note,
+            "supplyNote":
+                supply_note,
+            "note":
+                supply_note,
+        }
+
+        item["supplier"] = {
+            "supplier_name":
+                supplier_name,
+            "supplierName":
+                supplier_name,
+            "name":
+                supplier_name,
+            "supplier_role":
+                supplier_role,
+            "supplierRole":
+                supplier_role,
+            "email_address":
+                supplier_email,
+            "emailAddress":
+                supplier_email,
+            "email":
+                supplier_email,
+            "supplier_identifiers":
+                identifiers,
+            "supplierIdentifiers":
+                identifiers,
+        }
+
+        out.append(item)
+
+    return out
+
+
+
+
+def _fetch_edition_rights_restrictions(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> Dict[str, Any]:
+    def _split_codes(value: Any) -> List[str]:
+        raw = _safe_str(value)
+        if not raw:
+            return []
+        return [
+            item
+            for item in re.split(r"[\s,;]+", raw)
+            if item
+        ]
+
+    out: Dict[str, Any] = {}
+
+    try:
+        cur.execute(
+            """
+            SELECT *
+            FROM edition_rights
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY item_order ASC NULLS LAST, id ASC
+            LIMIT 1
+            """,
+            (tenant_id, edition_id),
+        )
+        row = cur.fetchone()
+    except Exception:
+        row = None
+
+    if row:
+        countries_included = _split_codes(
+            row.get("countries_included")
+            or row.get("exclusive_rights_country")
+        )
+        countries_excluded = _split_codes(
+            row.get("countries_excluded")
+        )
+
+        stored_regions_included = _safe_str(
+            row.get("regions_included")
+            or row.get("exclusive_rights_territory")
+        )
+        worldwide = stored_regions_included.upper() == "WORLD"
+
+        regions_included = (
+            ""
+            if worldwide
+            else stored_regions_included
+        )
+        regions_excluded = _safe_str(
+            row.get("regions_excluded")
+        )
+
+        territory = {
+            "worldwide": worldwide,
+            "countries_included": countries_included,
+            "countriesIncluded": countries_included,
+            "countries_excluded": countries_excluded,
+            "countriesExcluded": countries_excluded,
+            "regions_included": regions_included,
+            "regionsIncluded": regions_included,
+            "regions_excluded": regions_excluded,
+            "regionsExcluded": regions_excluded,
+        }
+
+        copyright_type = _safe_str(
+            row.get("copyright_type")
+        ) or "C"
+        holder = _safe_str(
+            row.get("copyright_holder")
+        )
+        notice = _safe_str(
+            row.get("copyright_notice")
+        )
+        public_domain = bool(
+            row.get("public_domain")
+        )
+        notes = _safe_str(
+            row.get("notes")
+        )
+
+        out.update(
+            {
+                "sales_rights_type": _safe_str(
+                    row.get("sales_rights_type")
+                ),
+                "salesRightsType": _safe_str(
+                    row.get("sales_rights_type")
+                ),
+                "sales_rights_territory": territory,
+                "salesRightsTerritory": territory,
+                "sales_worldwide": worldwide,
+                "salesWorldwide": worldwide,
+                "sales_countries_included": countries_included,
+                "salesCountriesIncluded": countries_included,
+                "sales_countries_excluded": countries_excluded,
+                "salesCountriesExcluded": countries_excluded,
+                "sales_regions_included": regions_included,
+                "salesRegionsIncluded": regions_included,
+                "sales_regions_excluded": regions_excluded,
+                "salesRegionsExcluded": regions_excluded,
+                "copyright_type": copyright_type,
+                "copyrightType": copyright_type,
+                "copyright_owner": holder,
+                "copyrightOwner": holder,
+                "copyright_holder": holder,
+                "copyrightHolder": holder,
+                "copyright_notice": notice,
+                "copyrightNotice": notice,
+                "public_domain": public_domain,
+                "publicDomain": public_domain,
+                "rights_note": notes,
+                "rightsNote": notes,
+                "notes": notes,
+            }
+        )
+
+    restrictions: List[Dict[str, Any]] = []
+    try:
+        cur.execute(
+            """
+            SELECT *
+            FROM edition_sales_restrictions
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        rows = []
+
+    for row in rows:
+        stored_regions_included = _safe_str(
+            row.get("regions_included")
+        )
+        worldwide = stored_regions_included.upper() == "WORLD"
+
+        territory = {
+            "worldwide": worldwide,
+            "countries_included": _split_codes(
+                row.get("countries_included")
+            ),
+            "countries_excluded": _split_codes(
+                row.get("countries_excluded")
+            ),
+            "regions_included": (
+                ""
+                if worldwide
+                else stored_regions_included
+            ),
+            "regions_excluded": _safe_str(
+                row.get("regions_excluded")
+            ),
+        }
+
+        restrictions.append(
+            {
+                "id": str(row.get("id") or ""),
+                "restriction_type": _safe_str(
+                    row.get("restriction_type")
+                ),
+                "restrictionType": _safe_str(
+                    row.get("restriction_type")
+                ),
+                "sales_restriction_type": _safe_str(
+                    row.get("restriction_type")
+                ),
+                "salesRestrictionType": _safe_str(
+                    row.get("restriction_type")
+                ),
+                "restriction_detail": _safe_str(
+                    row.get("restriction_detail")
+                ),
+                "restrictionDetail": _safe_str(
+                    row.get("restriction_detail")
+                ),
+                "territory": territory,
+                **territory,
+                "start_date": _jsonable(
+                    row.get("start_date")
+                ) or "",
+                "startDate": _jsonable(
+                    row.get("start_date")
+                ) or "",
+                "end_date": _jsonable(
+                    row.get("end_date")
+                ) or "",
+                "endDate": _jsonable(
+                    row.get("end_date")
+                ) or "",
+                "restriction_note": _safe_str(
+                    row.get("note")
+                ),
+                "restrictionNote": _safe_str(
+                    row.get("note")
+                ),
+                "note": _safe_str(
+                    row.get("note")
+                ),
+            }
+        )
+
+    constraints: List[Dict[str, Any]] = []
+    try:
+        cur.execute(
+            """
+            SELECT *
+            FROM edition_usage_constraints
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        rows = []
+
+    for row in rows:
+        constraints.append(
+            {
+                "id": str(row.get("id") or ""),
+                "usage_type": _safe_str(row.get("usage_type")),
+                "usageType": _safe_str(row.get("usage_type")),
+                "constraint_type": _safe_str(row.get("usage_type")),
+                "constraintType": _safe_str(row.get("usage_type")),
+                "usage_status": _safe_str(row.get("usage_status")),
+                "usageStatus": _safe_str(row.get("usage_status")),
+                "status": _safe_str(row.get("usage_status")),
+                "quantity": _jsonable(row.get("quantity")),
+                "unit_code": _safe_str(row.get("unit_code")),
+                "unitCode": _safe_str(row.get("unit_code")),
+                "usage_unit": _safe_str(row.get("unit_code")),
+                "usageUnit": _safe_str(row.get("unit_code")),
+                "usage_note": _safe_str(row.get("usage_note")),
+                "usageNote": _safe_str(row.get("usage_note")),
+                "note": _safe_str(row.get("usage_note")),
+            }
+        )
+
+    out["sales_restrictions"] = restrictions
+    out["salesRestrictions"] = restrictions
+    out["usage_constraints"] = constraints
+    out["usageConstraints"] = constraints
+    out["epub_usage_constraints"] = constraints
+    out["epubUsageConstraints"] = constraints
+
+    return out
+
+
+
+
+
+def _fetch_edition_awards(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT
+                id,
+                prize_name,
+                prize_year,
+                prize_country,
+                prize_code,
+                prize_jury,
+                award_type,
+                award_status,
+                award_date,
+                award_category,
+                award_level,
+                language_code,
+                recipient_name,
+                recipient_role,
+                award_position,
+                sequence_number,
+                award_website,
+                award_note
+            FROM edition_prizes
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY sequence_number ASC NULLS LAST, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    awards: List[Dict[str, Any]] = []
+
+    for index, row in enumerate(rows):
+        award_name = _safe_str(row.get("prize_name"))
+        award_year = _safe_str(row.get("prize_year"))
+        country_code = _safe_str(row.get("prize_country"))
+        award_code = _safe_str(row.get("prize_code"))
+        awarding_body = _safe_str(row.get("prize_jury"))
+
+        award_type = _safe_str(row.get("award_type"))
+        award_status = _safe_str(row.get("award_status"))
+        award_date = _jsonable(row.get("award_date")) or ""
+        category = _safe_str(row.get("award_category"))
+        level = _safe_str(row.get("award_level"))
+        language_code = _safe_str(row.get("language_code"))
+        recipient_name = _safe_str(row.get("recipient_name"))
+        recipient_role = _safe_str(row.get("recipient_role"))
+        position = _safe_str(row.get("award_position"))
+
+        sequence_number = _safe_str(
+            row.get("sequence_number") or index + 1
+        )
+
+        website = _safe_str(row.get("award_website"))
+        note = _safe_str(row.get("award_note"))
+
+        awards.append(
+            {
+                "id": str(row["id"]),
+
+                "award_name": award_name,
+                "awardName": award_name,
+                "prize_name": award_name,
+                "prizeName": award_name,
+                "name": award_name,
+
+                "award_code": award_code,
+                "awardCode": award_code,
+                "prize_code": award_code,
+                "prizeCode": award_code,
+                "code": award_code,
+
+                "award_type": award_type,
+                "awardType": award_type,
+                "type": award_type,
+
+                "award_status": award_status,
+                "awardStatus": award_status,
+                "status": award_status,
+
+                "award_year": award_year,
+                "awardYear": award_year,
+                "prize_year": award_year,
+                "prizeYear": award_year,
+                "year": award_year,
+
+                "award_date": award_date,
+                "awardDate": award_date,
+                "date": award_date,
+
+                "award_category": category,
+                "awardCategory": category,
+                "category": category,
+
+                "award_level": level,
+                "awardLevel": level,
+                "level": level,
+
+                "country_code": country_code,
+                "countryCode": country_code,
+                "prize_country": country_code,
+                "prizeCountry": country_code,
+                "country": country_code,
+
+                "language_code": language_code,
+                "languageCode": language_code,
+                "language": language_code,
+
+                "awarding_body": awarding_body,
+                "awardingBody": awarding_body,
+                "award_organization": awarding_body,
+                "awardOrganization": awarding_body,
+                "organization": awarding_body,
+                "prize_jury": awarding_body,
+                "prizeJury": awarding_body,
+
+                "recipient_name": recipient_name,
+                "recipientName": recipient_name,
+                "recipient": recipient_name,
+
+                "recipient_role": recipient_role,
+                "recipientRole": recipient_role,
+
+                "award_position": position,
+                "awardPosition": position,
+                "position": position,
+
+                "sequence_number": sequence_number,
+                "sequenceNumber": sequence_number,
+                "sequence": sequence_number,
+
+                "award_website": website,
+                "awardWebsite": website,
+                "website": website,
+                "url": website,
+
+                "award_note": note,
+                "awardNote": note,
+                "note": note,
+            }
+        )
+
+    return awards
+
+def _fetch_edition_product_contacts(cur, tenant_id: str, edition_id: str) -> List[Dict[str, Any]]:
+    try:
+        cur.execute("SELECT id, product_contact_role, product_contact_name, contact_name, email_address, item_order FROM edition_product_contacts WHERE tenant_id=%s AND edition_id=%s ORDER BY item_order,id",(tenant_id,edition_id))
+        rows=cur.fetchall() or []
+    except Exception: return []
+    return [{"id":str(r.get("id") or ""),"product_contact_role":_safe_str(r.get("product_contact_role")),"productContactRole":_safe_str(r.get("product_contact_role")),"product_contact_name":_safe_str(r.get("product_contact_name")),"productContactName":_safe_str(r.get("product_contact_name")),"contact_name":_safe_str(r.get("contact_name")),"contactName":_safe_str(r.get("contact_name")),"email_address":_safe_str(r.get("email_address")),"emailAddress":_safe_str(r.get("email_address")),"item_order":int(r.get("item_order") or 0)} for r in rows]
+
+def _fetch_edition_cited_content(cur, tenant_id: str, edition_id: str) -> List[Dict[str, Any]]:
+    try:
+        cur.execute("SELECT id,cited_content_type,content_audience,source_type,source_title,citation_note,citation_note_text_format,resource_link,list_name,position_on_list,item_order FROM edition_cited_content WHERE tenant_id=%s AND edition_id=%s ORDER BY item_order,id",(tenant_id,edition_id)); rows=cur.fetchall() or []
+    except Exception: return []
+    out=[]
+    for r in rows:
+        cid=r.get("id")
+        try:
+            cur.execute("SELECT id,content_date_role,date_format,date_text,item_order FROM edition_cited_content_dates WHERE tenant_id=%s AND edition_id=%s AND cited_content_id=%s ORDER BY item_order,id",(tenant_id,edition_id,cid)); ds=cur.fetchall() or []
+        except Exception: ds=[]
+        dates=[{"id":str(d.get("id") or ""),"content_date_role":_safe_str(d.get("content_date_role")),"contentDateRole":_safe_str(d.get("content_date_role")),"date_format":_safe_str(d.get("date_format")) or "00","dateFormat":_safe_str(d.get("date_format")) or "00","date_text":_safe_str(d.get("date_text")),"dateText":_safe_str(d.get("date_text")),"item_order":int(d.get("item_order") or 0)} for d in ds]
+        out.append({"id":str(cid),"cited_content_type":_safe_str(r.get("cited_content_type")),"citedContentType":_safe_str(r.get("cited_content_type")),"content_audience":_safe_str(r.get("content_audience")),"contentAudience":_safe_str(r.get("content_audience")),"source_type":_safe_str(r.get("source_type")),"sourceType":_safe_str(r.get("source_type")),"source_title":_safe_str(r.get("source_title")),"sourceTitle":_safe_str(r.get("source_title")),"citation_note":_safe_str(r.get("citation_note")),"citationNote":_safe_str(r.get("citation_note")),"citation_note_text_format":_safe_str(r.get("citation_note_text_format")) or "05","citationNoteTextFormat":_safe_str(r.get("citation_note_text_format")) or "05","resource_link":_safe_str(r.get("resource_link")),"resourceLink":_safe_str(r.get("resource_link")),"list_name":_safe_str(r.get("list_name")),"listName":_safe_str(r.get("list_name")),"position_on_list":_safe_str(r.get("position_on_list")),"positionOnList":_safe_str(r.get("position_on_list")),"content_dates":dates,"contentDates":dates,"item_order":int(r.get("item_order") or 0)})
+    return out
+
+def _fetch_edition_related_works(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT id, work_relation_code, work_id_type,
+                   id_type_name, id_value, note, item_order
+            FROM edition_related_works
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    return [
+        {
+            "id": str(row.get("id") or ""),
+            "work_relation_code": _safe_str(row.get("work_relation_code")),
+            "workRelationCode": _safe_str(row.get("work_relation_code")),
+            "relation_code": _safe_str(row.get("work_relation_code")),
+            "relationCode": _safe_str(row.get("work_relation_code")),
+            "work_id_type": _safe_str(row.get("work_id_type")),
+            "workIdType": _safe_str(row.get("work_id_type")),
+            "identifier_type": _safe_str(row.get("work_id_type")),
+            "identifierType": _safe_str(row.get("work_id_type")),
+            "id_type_name": _safe_str(row.get("id_type_name")),
+            "idTypeName": _safe_str(row.get("id_type_name")),
+            "id_value": _safe_str(row.get("id_value")),
+            "idValue": _safe_str(row.get("id_value")),
+            "identifier_value": _safe_str(row.get("id_value")),
+            "identifierValue": _safe_str(row.get("id_value")),
+            "note": _safe_str(row.get("note")),
+            "item_order": int(row.get("item_order") or 0),
+        }
+        for row in rows
+    ]
+
+
+def _fetch_edition_related_products(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT
+                id,
+                relation_code,
+                related_isbn13,
+                related_product_form,
+                related_product_form_detail,
+                title,
+                subtitle,
+                proprietary_id,
+                publisher_name,
+                publication_date,
+                product_url,
+                identifiers,
+                note,
+                item_order
+            FROM edition_related_products
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY item_order ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    out: List[Dict[str, Any]] = []
+
+    for row in rows:
+        raw_identifiers = row.get("identifiers") or []
+        if isinstance(raw_identifiers, str):
+            try:
+                raw_identifiers = ast.literal_eval(raw_identifiers)
+            except Exception:
+                raw_identifiers = []
+        if not isinstance(raw_identifiers, list):
+            raw_identifiers = []
+
+        identifiers: List[Dict[str, Any]] = []
+        for index, identifier in enumerate(raw_identifiers):
+            if not isinstance(identifier, dict):
+                continue
+            id_type = _safe_str(
+                identifier.get("product_id_type")
+                or identifier.get("productIdType")
+                or identifier.get("identifier_type")
+                or identifier.get("identifierType")
+                or identifier.get("type")
+            )
+            id_value = _safe_str(
+                identifier.get("id_value")
+                or identifier.get("idValue")
+                or identifier.get("identifier_value")
+                or identifier.get("identifierValue")
+                or identifier.get("value")
+            )
+            identifiers.append(
+                {
+                    "id": f"{row['id']}-identifier-{index + 1}",
+                    "product_id_type": id_type,
+                    "productIdType": id_type,
+                    "identifier_type": id_type,
+                    "identifierType": id_type,
+                    "id_value": id_value,
+                    "idValue": id_value,
+                    "identifier_value": id_value,
+                    "identifierValue": id_value,
+                    "value": id_value,
+                }
+            )
+
+        isbn = _safe_str(row.get("related_isbn13"))
+        proprietary_id = _safe_str(row.get("proprietary_id"))
+
+        if isbn and not any(
+            _safe_str(item.get("product_id_type")) == "15"
+            for item in identifiers
+        ):
+            identifiers.insert(
+                0,
+                {
+                    "id": f"{row['id']}-isbn13",
+                    "product_id_type": "15",
+                    "productIdType": "15",
+                    "identifier_type": "15",
+                    "identifierType": "15",
+                    "id_value": isbn,
+                    "idValue": isbn,
+                    "identifier_value": isbn,
+                    "identifierValue": isbn,
+                    "value": isbn,
+                },
+            )
+
+        if proprietary_id and not any(
+            _safe_str(item.get("product_id_type")) == "01"
+            for item in identifiers
+        ):
+            identifiers.insert(
+                0,
+                {
+                    "id": f"{row['id']}-proprietary",
+                    "product_id_type": "01",
+                    "productIdType": "01",
+                    "identifier_type": "01",
+                    "identifierType": "01",
+                    "id_value": proprietary_id,
+                    "idValue": proprietary_id,
+                    "identifier_value": proprietary_id,
+                    "identifierValue": proprietary_id,
+                    "value": proprietary_id,
+                },
+            )
+
+        relation_code = _safe_str(row.get("relation_code"))
+        product_form = _safe_str(row.get("related_product_form"))
+        product_form_detail = _safe_str(
+            row.get("related_product_form_detail")
+        )
+        publication_date = _jsonable(row.get("publication_date")) or ""
+
+        out.append(
+            {
+                "id": str(row["id"]),
+                "product_relation_code": relation_code,
+                "productRelationCode": relation_code,
+                "relation_code": relation_code,
+                "relationCode": relation_code,
+                "relationship_type": relation_code,
+                "relationshipType": relation_code,
+
+                "title": _safe_str(row.get("title")),
+                "product_title": _safe_str(row.get("title")),
+                "productTitle": _safe_str(row.get("title")),
+
+                "subtitle": _safe_str(row.get("subtitle")),
+                "product_subtitle": _safe_str(row.get("subtitle")),
+                "productSubtitle": _safe_str(row.get("subtitle")),
+
+                "related_product_form": product_form,
+                "product_form": product_form,
+                "productForm": product_form,
+                "format_code": product_form,
+                "formatCode": product_form,
+
+                "related_product_form_detail": product_form_detail,
+                "product_form_detail": product_form_detail,
+                "productFormDetail": product_form_detail,
+
+                "related_isbn13": isbn,
+                "isbn13": isbn,
+                "isbn_13": isbn,
+                "isbn": isbn,
+
+                "proprietary_id": proprietary_id,
+                "proprietaryId": proprietary_id,
+
+                "publisher_name": _safe_str(row.get("publisher_name")),
+                "publisherName": _safe_str(row.get("publisher_name")),
+                "publisher": _safe_str(row.get("publisher_name")),
+
+                "publication_date": publication_date,
+                "publicationDate": publication_date,
+
+                "product_url": _safe_str(row.get("product_url")),
+                "productUrl": _safe_str(row.get("product_url")),
+                "url": _safe_str(row.get("product_url")),
+                "link": _safe_str(row.get("product_url")),
+
+                "product_identifiers": identifiers,
+                "productIdentifiers": identifiers,
+                "identifiers": identifiers,
+
+                "relationship_note": _safe_str(row.get("note")),
+                "relationshipNote": _safe_str(row.get("note")),
+                "note": _safe_str(row.get("note")),
+
+                "item_order": int(row.get("item_order") or 0),
+            }
+        )
+
+    return out
+
+def _fetch_bookdev_task_assignments(
+    cur,
+    tenant_id: str,
+    work_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT
+                id,
+                task_key,
+                responsible_person,
+                deadline,
+                created_at,
+                updated_at
+            FROM bookdev_task_assignments
+            WHERE tenant_id = %s
+              AND work_id = %s
+              AND edition_id = %s
+            ORDER BY task_key ASC, id ASC
+            """,
+            (tenant_id, work_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    return [
+        {
+            "id": str(row.get("id") or ""),
+            "task_key": _safe_str(row.get("task_key")),
+            "taskKey": _safe_str(row.get("task_key")),
+            "responsible_person": _safe_str(row.get("responsible_person")),
+            "responsiblePerson": _safe_str(row.get("responsible_person")),
+            "deadline": _jsonable(row.get("deadline")) or "",
+            "created_at": _jsonable(row.get("created_at")) or "",
+            "updated_at": _jsonable(row.get("updated_at")) or "",
+        }
+        for row in rows
+    ]
+
+
+def _fetch_edition_product_form_features(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT
+                id,
+                feature_type,
+                feature_value,
+                feature_description,
+                item_order
+            FROM edition_product_form_features
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    return [
+        {
+            "id": str(row.get("id") or ""),
+            "feature_type": _safe_str(row.get("feature_type")),
+            "featureType": _safe_str(row.get("feature_type")),
+            "product_form_feature_type": _safe_str(row.get("feature_type")),
+            "productFormFeatureType": _safe_str(row.get("feature_type")),
+            "feature_value": _safe_str(row.get("feature_value")),
+            "featureValue": _safe_str(row.get("feature_value")),
+            "product_form_feature_value": _safe_str(row.get("feature_value")),
+            "productFormFeatureValue": _safe_str(row.get("feature_value")),
+            "feature_description": _safe_str(row.get("feature_description")),
+            "featureDescription": _safe_str(row.get("feature_description")),
+            "product_form_feature_description": _safe_str(row.get("feature_description")),
+            "productFormFeatureDescription": _safe_str(row.get("feature_description")),
+            "item_order": int(row.get("item_order") or index + 1),
+        }
+        for index, row in enumerate(rows)
+    ]
+
+
+def _fetch_edition_ancillary_content(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT
+                id,
+                ancillary_content_type,
+                description,
+                description_text_format,
+                number,
+                item_order
+            FROM edition_ancillary_content
+            WHERE tenant_id = %s
+              AND edition_id = %s
+            ORDER BY item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    return [
+        {
+            "id": str(row.get("id") or ""),
+            "ancillary_content_type": _safe_str(row.get("ancillary_content_type")),
+            "ancillaryContentType": _safe_str(row.get("ancillary_content_type")),
+            "content_type": _safe_str(row.get("ancillary_content_type")),
+            "contentType": _safe_str(row.get("ancillary_content_type")),
+            "description": _safe_str(row.get("description")),
+            "ancillary_content_description": _safe_str(row.get("description")),
+            "ancillaryContentDescription": _safe_str(row.get("description")),
+            "description_text_format": _safe_str(row.get("description_text_format")) or "05",
+            "descriptionTextFormat": _safe_str(row.get("description_text_format")) or "05",
+            "number": row.get("number"),
+            "ancillary_content_number": row.get("number"),
+            "ancillaryContentNumber": row.get("number"),
+            "item_order": int(row.get("item_order") or index + 1),
+        }
+        for index, row in enumerate(rows)
+    ]
+
+
 def _fetch_editions(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
     try:
         cur.execute(
@@ -305,17 +2124,80 @@ def _fetch_editions(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
             SELECT
                 e.id,
                 e.isbn13,
-                e.status,
                 e.product_form,
                 e.product_form_detail,
-                e.publication_date,
-                e.number_of_pages,
-                e.height,
-                e.width,
-                e.thickness,
-                e.unit_weight,
+                e.onix_product_form,
+                e.onix_product_form_detail,
+                e.notification_type,
+                e.product_composition,
+                e.primary_content_type,
+                e.barcode_type,
+                e.barcode_position_on_product,
+                e.product_packaging,
+                e.record_reference,
+                e.record_source_type,
+                e.publishing_status,
+                e.copyright_year,
+                e.market_publishing_status,
+                e.market_date_role,
+                e.market_date_format,
+                e.market_date_text,
+                e.promotion_contact,
+                e.promotion_contact_text_format,
+                e.initial_print_run, e.initial_print_run_text_format,
+                e.promotion_campaign, e.promotion_campaign_text_format,
+                e.audience_description,
+                e.duration,
+                e.duration_unit,
+                e.file_size,
+                e.file_size_unit,
+                e.edition_number,
+                e.edition_statement,
+                e.illustrations_number,
+                e.illustrations_desc,
+                e.color_content,
+                e.color_pages,
+                e.number_of_pieces,
+                e.trade_category,
+                e.country_of_manufacture,
+                e.product_form_description,
+                e.technical_protection,
+                e.epub_version,
+                e.file_format,
+                e.product_details_note,
+                COALESCE(
+                    NULLIF(BTRIM(e.cover_image_link), ''),
+                    (
+                        SELECT erv.resource_link
+                        FROM edition_supporting_resources esr
+                        JOIN edition_supporting_resource_versions erv
+                          ON erv.resource_id = esr.id
+                         AND erv.tenant_id = esr.tenant_id
+                        WHERE esr.tenant_id = e.tenant_id
+                          AND esr.edition_id = e.id
+                          AND esr.resource_content_type = '01'
+                          AND NULLIF(BTRIM(erv.resource_link), '') IS NOT NULL
+                        ORDER BY
+                            CASE WHEN esr.is_primary THEN 0 ELSE 1 END,
+                            esr.item_order,
+                            erv.item_order,
+                            erv.created_at
+                        LIMIT 1
+                    )
+                ) AS cover_image_link,
+                e.cover_image_format,
+                e.cover_image_caption,
                 e.created_at,
                 e.updated_at,
+                (
+                    SELECT p.publisher_name
+                    FROM edition_publishers p
+                    WHERE p.tenant_id = e.tenant_id
+                      AND p.edition_id = e.id
+                      AND p.publishing_role = '01'
+                    ORDER BY p.item_order ASC, p.created_at ASC, p.id ASC
+                    LIMIT 1
+                ) AS publisher_name,
                 (
                     SELECT ep.price_amount
                     FROM edition_supply_details sd
@@ -345,47 +2227,599 @@ def _fetch_editions(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
         )
         rows = cur.fetchall() or []
     except Exception:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        format_label = r.get("product_form_detail") or r.get("product_form") or ""
+
+        identifiers: List[Dict[str, Any]] = []
         try:
             cur.execute(
                 """
                 SELECT
-                    id, isbn13, status, product_form, product_form_detail,
-                    publication_date, number_of_pages, height, width, thickness,
-                    unit_weight, created_at, updated_at
-                FROM editions
+                    id,
+                    id_type,
+                    id_type_name,
+                    id_value,
+                    item_order
+                FROM edition_identifiers
                 WHERE tenant_id = %s
-                  AND work_id = %s
-                ORDER BY created_at ASC, id ASC
+                  AND edition_id = %s
+                  AND id_type <> '15'
+                ORDER BY item_order ASC, id ASC
                 """,
-                (tenant_id, work_id),
+                (tenant_id, r["id"]),
             )
-            rows = cur.fetchall() or []
+            identifiers = [
+                {
+                    "id": str(row["id"]),
+                    "id_type": _safe_str(row.get("id_type")),
+                    "id_type_name": _safe_str(row.get("id_type_name")),
+                    "id_value": _safe_str(row.get("id_value")),
+                    "identifier_type": _safe_str(row.get("id_type")),
+                    "identifier_type_name": _safe_str(row.get("id_type_name")),
+                    "identifier_value": _safe_str(row.get("id_value")),
+                    "value": _safe_str(row.get("id_value")),
+                    "item_order": int(row.get("item_order") or 0),
+                }
+                for row in (cur.fetchall() or [])
+            ]
         except Exception:
-            return []
+            identifiers = []
 
-    out: List[Dict[str, Any]] = []
-    for r in rows:
+        descriptive_texts = _fetch_edition_texts(
+            cur,
+            tenant_id,
+            str(r["id"]),
+        )
+
+        subjects = _fetch_edition_subjects(
+            cur,
+            tenant_id,
+            str(r["id"]),
+        )
+
+        audience = _fetch_edition_audience(
+            cur,
+            tenant_id,
+            str(r["id"]),
+        )
+
+        publishing_dates = _fetch_edition_publishing_dates(
+            cur,
+            tenant_id,
+            str(r["id"]),
+        )
+
+        # Canonical publication date is ONIX PublishingDateRole 01.
+        primary_publication_date = next(
+            (
+                _safe_str(row.get("date_text") or row.get("date_value"))
+                for row in publishing_dates
+                if _safe_str(row.get("date_role")) == "01"
+                and _safe_str(row.get("date_text") or row.get("date_value"))
+            ),
+            "",
+        )
+
+        form_details = _fetch_edition_form_details(cur, tenant_id, str(r["id"]))
+        content_types = _fetch_edition_content_types(cur, tenant_id, str(r["id"]))
+        measurements = _fetch_edition_measurements(cur, tenant_id, str(r["id"]))
+        extents = _fetch_edition_extents(cur, tenant_id, str(r["id"]))
+
+        # Legacy-compatible display fields are derived from normalized ONIX data.
+        # MeasureType: 01 height, 02 width, 03 thickness, 08 unit weight.
+        measurement_by_type = {
+            _safe_str(row.get("measure_type")): row
+            for row in measurements
+            if _safe_str(row.get("measure_type"))
+        }
+        height_measure = measurement_by_type.get("01", {})
+        width_measure = measurement_by_type.get("02", {})
+        thickness_measure = measurement_by_type.get("03", {})
+        weight_measure = measurement_by_type.get("08", {})
+
+        page_extent = next(
+            (
+                row for row in extents
+                if _safe_str(row.get("extent_type")) == "00"
+                and _safe_str(row.get("extent_unit")) == "03"
+            ),
+            {},
+        )
+        normalized_pages = int(float(page_extent.get("extent_value") or 0))
+
+        def _measurement_value(row: Dict[str, Any]) -> float:
+            try:
+                return float(row.get("measurement") or 0)
+            except (TypeError, ValueError):
+                return 0
+        product_form_features = _fetch_edition_product_form_features(
+            cur, tenant_id, str(r["id"])
+        )
+        ancillary_content = _fetch_edition_ancillary_content(
+            cur, tenant_id, str(r["id"])
+        )
+
+        supply_details = _fetch_edition_supply_pricing(
+            cur,
+            tenant_id,
+            str(r["id"]),
+        )
+
+        rights_restrictions = _fetch_edition_rights_restrictions(
+            cur,
+            tenant_id,
+            str(r["id"]),
+        )
+
+        product_contacts = _fetch_edition_product_contacts(cur, tenant_id, str(r["id"]))
+        cited_content = _fetch_edition_cited_content(cur, tenant_id, str(r["id"]))
+
+        related_works = _fetch_edition_related_works(
+            cur,
+            tenant_id,
+            str(r["id"]),
+        )
+
+        related_products = _fetch_edition_related_products(
+            cur,
+            tenant_id,
+            str(r["id"]),
+        )
+
+        awards = _fetch_edition_awards(
+            cur,
+            tenant_id,
+            str(r["id"]),
+        )
+
+        task_assignments = _fetch_bookdev_task_assignments(
+            cur,
+            tenant_id,
+            work_id,
+            str(r["id"]),
+        )
+
         out.append(
             {
                 "id": str(r["id"]),
+                "edition_id": str(r["id"]),
                 "isbn": r.get("isbn13") or "",
                 "isbn13": r.get("isbn13") or "",
-                "status": r.get("status") or "",
-                "format": r.get("product_form_detail") or r.get("product_form") or "",
-                "pub_date": _jsonable(r.get("publication_date")) or "",
+                "format": format_label,
+                "format_label": format_label,
+                "product_form": r.get("product_form") or "",
+                "product_form_detail": r.get("product_form_detail") or "",
+                "onix_product_form": r.get("onix_product_form") or "",
+                "onix_product_form_detail": r.get("onix_product_form_detail") or "",
+                "notification_type": r.get("notification_type") or "",
+                "product_composition": r.get("product_composition") or "",
+                "primary_content_type": r.get("primary_content_type") or "",
+                "barcode_type": r.get("barcode_type") or "",
+                "barcode_position_on_product": r.get("barcode_position_on_product") or "",
+                "barcodePositionOnProduct": r.get("barcode_position_on_product") or "",
+                "position_on_product": r.get("barcode_position_on_product") or "",
+                "positionOnProduct": r.get("barcode_position_on_product") or "",
+                "product_packaging": r.get("product_packaging") or "",
+                "productPackaging": r.get("product_packaging") or "",
+                "record_reference": r.get("record_reference") or "",
+                "recordReference": r.get("record_reference") or "",
+                "record_source_type": r.get("record_source_type") or "",
+                "recordSourceType": r.get("record_source_type") or "",
+                "publishing_status": r.get("publishing_status") or "",
+                "publishingStatus": r.get("publishing_status") or "",
+
+                "copyright_year": (
+                    int(r.get("copyright_year"))
+                    if r.get("copyright_year") is not None
+                    else None
+                ),
+                "copyrightYear": (
+                    int(r.get("copyright_year"))
+                    if r.get("copyright_year") is not None
+                    else None
+                ),
+
+                "market_publishing_status":
+                    r.get("market_publishing_status") or "",
+                "marketPublishingStatus":
+                    r.get("market_publishing_status") or "",
+                "market_date_role":
+                    r.get("market_date_role") or "",
+                "marketDateRole":
+                    r.get("market_date_role") or "",
+                "market_date_format":
+                    r.get("market_date_format") or "00",
+                "marketDateFormat":
+                    r.get("market_date_format") or "00",
+                "market_date":
+                    r.get("market_date_text") or "",
+                "marketDate":
+                    r.get("market_date_text") or "",
+                "market_date_text":
+                    r.get("market_date_text") or "",
+                "marketDateText":
+                    r.get("market_date_text") or "",
+                "promotion_contact":
+                    r.get("promotion_contact") or "",
+                "promotionContact":
+                    r.get("promotion_contact") or "",
+                "promotion_contact_text_format":
+                    r.get("promotion_contact_text_format") or "05",
+                "promotionContactTextFormat":
+                    r.get("promotion_contact_text_format") or "05",
+                "initial_print_run": r.get("initial_print_run") or "", "initialPrintRun": r.get("initial_print_run") or "",
+                "initial_print_run_text_format": r.get("initial_print_run_text_format") or "05", "initialPrintRunTextFormat": r.get("initial_print_run_text_format") or "05",
+                "promotion_campaign": r.get("promotion_campaign") or "", "promotionCampaign": r.get("promotion_campaign") or "",
+                "promotion_campaign_text_format": r.get("promotion_campaign_text_format") or "05", "promotionCampaignTextFormat": r.get("promotion_campaign_text_format") or "05",
+                "product_contacts": product_contacts, "productContacts": product_contacts,
+
+                "audience_description": (
+                    r.get("audience_description")
+                    or r.get("target_audience")
+                    or ""
+                ),
+                "audienceDescription": (
+                    r.get("audience_description")
+                    or r.get("target_audience")
+                    or ""
+                ),
+                "notificationType": r.get("notification_type") or "",
+                "productComposition": r.get("product_composition") or "",
+                "productForm": r.get("onix_product_form") or "",
+                "productFormCode": r.get("onix_product_form") or "",
+                "productFormDetail": r.get("onix_product_form_detail") or "",
+                "productFormDetailCode": r.get("onix_product_form_detail") or "",
+                "productContentType": r.get("primary_content_type") or "",
+                "barcodeType": r.get("barcode_type") or "",
+                "barcodePositionOnProduct": r.get("barcode_position_on_product") or "",
+                "productPackaging": r.get("product_packaging") or "",
+                "recordReference": r.get("record_reference") or "",
+                "recordSourceType": r.get("record_source_type") or "",
+
+                # Canonical Publisher for this edition comes from
+                # edition_publishers (PublishingRole 01), selected above.
+                "publisher_name": r.get("publisher_name") or "",
+                "publisherName": r.get("publisher_name") or "",
+                "publisher": r.get("publisher_name") or "",
+
+                "product_identifiers": identifiers,
+                "productIdentifiers": identifiers,
+
+                "descriptive_texts": descriptive_texts,
+                "descriptiveTexts": descriptive_texts,
+                "text_contents": descriptive_texts,
+                "textContents": descriptive_texts,
+                "descriptions": descriptive_texts,
+
+                "subjects": subjects,
+                "book_subjects": subjects,
+                "bookSubjects": subjects,
+                "onix_subjects": subjects,
+                "onixSubjects": subjects,
+
+                "audience_codes": audience.get("audience_codes") or [],
+                "audienceCodes": audience.get("audience_codes") or [],
+                "audiences": audience.get("audience_codes") or [],
+
+                "audience_ranges": audience.get("audience_ranges") or [],
+                "audienceRanges": audience.get("audience_ranges") or [],
+
+                "publishing_dates": publishing_dates,
+                "publishingDates": publishing_dates,
+                "publication_dates": publishing_dates,
+                "publicationDates": publishing_dates,
+
+                "short_description": next(
+                    (
+                        _safe_str(row.get("text"))
+                        for row in descriptive_texts
+                        if _safe_str(row.get("text_type")) == "02"
+                        and _safe_str(row.get("text"))
+                    ),
+                    "",
+                ),
+                "long_description": next(
+                    (
+                        _safe_str(row.get("text"))
+                        for row in descriptive_texts
+                        if _safe_str(row.get("text_type")) == "03"
+                        and _safe_str(row.get("text"))
+                    ),
+                    "",
+                ),
+                "table_of_contents": next(
+                    (
+                        _safe_str(row.get("text"))
+                        for row in descriptive_texts
+                        if _safe_str(row.get("text_type")) == "04"
+                        and _safe_str(row.get("text"))
+                    ),
+                    "",
+                ),
+                "promotional_headline": next(
+                    (
+                        _safe_str(row.get("text"))
+                        for row in descriptive_texts
+                        if _safe_str(row.get("text_type")) == "10"
+                        and _safe_str(row.get("text"))
+                    ),
+                    "",
+                ),
+                "excerpt": next(
+                    (
+                        _safe_str(row.get("text"))
+                        for row in descriptive_texts
+                        if _safe_str(row.get("text_type")) == "14"
+                        and _safe_str(row.get("text"))
+                    ),
+                    "",
+                ),
+
+                "pub_date": primary_publication_date,
+                "publication_date": primary_publication_date,
                 "price_us": float(r["price_us"]) if r.get("price_us") is not None else 0,
                 "price_can": float(r["price_can"]) if r.get("price_can") is not None else 0,
-                "pages": r.get("number_of_pages") or 0,
-                "tall": float(r["height"]) if r.get("height") is not None else 0,
-                "wide": float(r["width"]) if r.get("width") is not None else 0,
-                "spine": float(r["thickness"]) if r.get("thickness") is not None else 0,
-                "weight": float(r["unit_weight"]) if r.get("unit_weight") is not None else 0,
+                "pages": normalized_pages,
+                "number_of_pages": normalized_pages,
+
+                "tall": _measurement_value(height_measure),
+                "height": _measurement_value(height_measure),
+                "height_unit": _safe_str(height_measure.get("measure_unit_code")),
+
+                "wide": _measurement_value(width_measure),
+                "width": _measurement_value(width_measure),
+                "width_unit": _safe_str(width_measure.get("measure_unit_code")),
+
+                "spine": _measurement_value(thickness_measure),
+                "thickness": _measurement_value(thickness_measure),
+                "thickness_unit": _safe_str(thickness_measure.get("measure_unit_code")),
+
+                "weight": _measurement_value(weight_measure),
+                "unit_weight": _measurement_value(weight_measure),
+                "unit_weight_unit": _safe_str(weight_measure.get("measure_unit_code")),
+
+                "duration": _jsonable(r.get("duration")),
+                "duration_unit": r.get("duration_unit") or "",
+                "file_size": _jsonable(r.get("file_size")),
+                "file_size_unit": r.get("file_size_unit") or "",
+
+                "edition_number": r.get("edition_number") or "",
+                "editionNumber": r.get("edition_number") or "",
+                "edition_statement": r.get("edition_statement") or "",
+                "editionStatement": r.get("edition_statement") or "",
+
+                "illustrations_number": r.get("illustrations_number"),
+                "illustration_count": r.get("illustrations_number"),
+                "illustrationCount": r.get("illustrations_number"),
+                "illustrations_desc": r.get("illustrations_desc") or "",
+                "illustration_note": r.get("illustrations_desc") or "",
+                "illustrationNote": r.get("illustrations_desc") or "",
+
+                "color_content": r.get("color_content") or "",
+                "colorContent": r.get("color_content") or "",
+                "color_pages": r.get("color_pages"),
+                "colorPages": r.get("color_pages"),
+
+                "number_of_pieces": r.get("number_of_pieces"),
+                "numberOfPieces": r.get("number_of_pieces"),
+                "trade_category": r.get("trade_category") or "",
+                "tradeCategory": r.get("trade_category") or "",
+                "country_of_manufacture": r.get("country_of_manufacture") or "",
+                "countryOfManufacture": r.get("country_of_manufacture") or "",
+                "product_form_description": r.get("product_form_description") or "",
+                "productFormDescription": r.get("product_form_description") or "",
+
+                "technical_protection": r.get("technical_protection") or "",
+                "technicalProtection": r.get("technical_protection") or "",
+                "epub_version": r.get("epub_version") or "",
+                "epubVersion": r.get("epub_version") or "",
+                "file_format": r.get("file_format") or "",
+                "fileFormat": r.get("file_format") or "",
+
+                "product_details_note": r.get("product_details_note") or "",
+                "productDetailsNote": r.get("product_details_note") or "",
+
+                "product_form_details": form_details,
+                "productFormDetails": form_details,
+                "form_details": form_details,
+                "formDetails": form_details,
+
+                "product_content_types": content_types,
+                "productContentTypes": content_types,
+                "content_types": content_types,
+                "contentTypes": content_types,
+
+                "measurements": measurements,
+                "product_measurements": measurements,
+                "productMeasurements": measurements,
+
+                "extents": extents,
+                "product_extents": extents,
+                "productExtents": extents,
+
+                "product_form_features": product_form_features,
+                "productFormFeatures": product_form_features,
+
+                "ancillary_content": ancillary_content,
+                "ancillaryContent": ancillary_content,
+
+                "supply_details": supply_details,
+                "supplyDetails": supply_details,
+                "supplies": supply_details,
+                "prices": [
+                    price
+                    for supply in supply_details
+                    for price in (supply.get("prices") or [])
+                ],
+                "product_prices": [
+                    price
+                    for supply in supply_details
+                    for price in (supply.get("prices") or [])
+                ],
+                "productPrices": [
+                    price
+                    for supply in supply_details
+                    for price in (supply.get("prices") or [])
+                ],
+
+                "cited_content": cited_content,
+                "citedContent": cited_content,
+
+                "related_works": related_works,
+                "relatedWorks": related_works,
+
+                "related_products": related_products,
+                "relatedProducts": related_products,
+                "related_items": related_products,
+                "relatedItems": related_products,
+
+                "awards": awards,
+                "prizes": awards,
+                "award_records": awards,
+                "awardRecords": awards,
+
+                "task_assignments": task_assignments,
+                "taskAssignments": task_assignments,
+                "workflow_assignments": task_assignments,
+                "workflowAssignments": task_assignments,
+
+                **rights_restrictions,
+
                 "created_at": _jsonable(r.get("created_at")),
                 "updated_at": _jsonable(r.get("updated_at")),
             }
         )
     return out
 
+
+
+def _fetch_work_titles(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "title_prefix": "",
+        "title_without_prefix": "",
+        "title_element_level": "01",
+        "no_prefix": False,
+        "title_part_number": "",
+        "alternative_titles": [],
+    }
+
+    try:
+        cur.execute(
+            """
+            SELECT id, title_type, title_element_level, title_prefix,
+                   title_without_prefix, subtitle, part_number, no_prefix,
+                   year_of_annual, language_code, is_primary, item_order
+            FROM work_titles
+            WHERE tenant_id = %s AND work_id = %s
+            ORDER BY is_primary DESC, item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, work_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return result
+
+    primary = next((row for row in rows if bool(row.get("is_primary"))), None)
+    if primary:
+        result["title_prefix"] = _safe_str(primary.get("title_prefix"))
+        result["title_without_prefix"] = _safe_str(primary.get("title_without_prefix"))
+        result["title_element_level"] = _safe_str(primary.get("title_element_level")) or "01"
+        result["titleElementLevel"] = result["title_element_level"]
+        result["no_prefix"] = bool(primary.get("no_prefix"))
+        result["noPrefix"] = result["no_prefix"]
+        result["title_part_number"] = _safe_str(primary.get("part_number"))
+        result["titlePartNumber"] = result["title_part_number"]
+
+    alternatives: List[Dict[str, Any]] = []
+    for row in rows:
+        if bool(row.get("is_primary")):
+            continue
+
+        prefix = _safe_str(row.get("title_prefix"))
+        body = _safe_str(row.get("title_without_prefix"))
+        title_text = " ".join([part for part in [prefix, body] if part]).strip()
+
+        alternatives.append(
+            {
+                "id": str(row["id"]),
+                "title_type": _safe_str(row.get("title_type")),
+                "titleType": _safe_str(row.get("title_type")),
+                "title_element_level": _safe_str(row.get("title_element_level")) or "01",
+                "titleElementLevel": _safe_str(row.get("title_element_level")) or "01",
+                "title_prefix": prefix,
+                "titlePrefix": prefix,
+                "title_without_prefix": body,
+                "titleWithoutPrefix": body,
+                "no_prefix": bool(row.get("no_prefix")),
+                "noPrefix": bool(row.get("no_prefix")),
+                "part_number": _safe_str(row.get("part_number")),
+                "partNumber": _safe_str(row.get("part_number")),
+                "title": title_text,
+                "subtitle": _safe_str(row.get("subtitle")),
+                "language_code": _safe_str(row.get("language_code")),
+                "languageCode": _safe_str(row.get("language_code")),
+                "item_order": int(row.get("item_order") or 0),
+            }
+        )
+
+    result["alternative_titles"] = alternatives
+    result["alternativeTitles"] = alternatives
+    return result
+
+
+def _fetch_work_collections(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT id, parent_collection_id, collection_type, title_type,
+                   title_element_level, no_prefix, collection_title,
+                   collection_subtitle, collection_number, volume_number,
+                   part_number, sequence_type, sequence_number, is_primary,
+                   item_order
+            FROM work_collections
+            WHERE tenant_id = %s AND work_id = %s
+            ORDER BY is_primary DESC, item_order ASC, created_at ASC, id ASC
+            """,
+            (tenant_id, work_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    return [
+        {
+            "id": str(row["id"]),
+            "parent_collection_id": str(row["parent_collection_id"]) if row.get("parent_collection_id") else None,
+            "collection_type": _safe_str(row.get("collection_type")),
+            "collectionType": _safe_str(row.get("collection_type")),
+            "title_type": _safe_str(row.get("title_type")) or "01",
+            "titleType": _safe_str(row.get("title_type")) or "01",
+            "title_element_level": _safe_str(row.get("title_element_level")) or "02",
+            "titleElementLevel": _safe_str(row.get("title_element_level")) or "02",
+            "no_prefix": bool(row.get("no_prefix")),
+            "noPrefix": bool(row.get("no_prefix")),
+            "title": _safe_str(row.get("collection_title")),
+            "collection_title": _safe_str(row.get("collection_title")),
+            "collectionTitle": _safe_str(row.get("collection_title")),
+            "subtitle": _safe_str(row.get("collection_subtitle")),
+            "collection_subtitle": _safe_str(row.get("collection_subtitle")),
+            "collectionSubtitle": _safe_str(row.get("collection_subtitle")),
+            "collection_number": _safe_str(row.get("collection_number")),
+            "collectionNumber": _safe_str(row.get("collection_number")),
+            "volume_number": _safe_str(row.get("volume_number")),
+            "volumeNumber": _safe_str(row.get("volume_number")),
+            "part_number": _safe_str(row.get("part_number")),
+            "partNumber": _safe_str(row.get("part_number")),
+            "sequence_type": _safe_str(row.get("sequence_type")),
+            "sequence_number": _safe_str(row.get("sequence_number")),
+            "is_primary": bool(row.get("is_primary")),
+            "item_order": int(row.get("item_order") or 0),
+        }
+        for row in rows
+    ]
 
 def _fetch_foreign_rights_sold(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
     try:
@@ -1205,14 +3639,90 @@ def _fetch_agent_for_party(
         return [], {}
 
 
-def _fetch_contributors(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
-    """Return every work contributor with the current master-party details.
+def _fetch_contributor_repeat_rows(
+    cur,
+    tenant_id: str,
+    party_id: str,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Fetch ONIX repeat composites for one reusable contributor profile."""
 
-    This payload must not be limited to author/illustrator records. Book
-    Information, Book Management, and Project Management all use the catalog
-    read payload, so ONIX roles such as B01 (Edited by) need the same current
-    party information as A01 and A12.
-    """
+    def q(sql: str, params: Tuple[Any, ...]) -> List[Dict[str, Any]]:
+        cur.execute(sql, params)
+        return [dict(row) for row in (cur.fetchall() or [])]
+
+    identifiers = q(
+        """
+        SELECT name_id_type, id_type_name, id_value, item_order
+        FROM party_name_identifiers
+        WHERE tenant_id = %s AND party_id = %s
+        ORDER BY item_order, id
+        """,
+        (tenant_id, party_id),
+    )
+    alternative_names = q(
+        """
+        SELECT name_type, display_name, person_name_inverted,
+               names_before_key, key_names, corporate_name, item_order
+        FROM party_alternative_names
+        WHERE tenant_id = %s AND party_id = %s
+        ORDER BY item_order, id
+        """,
+        (tenant_id, party_id),
+    )
+    websites = q(
+        """
+        SELECT website_role, website_description, website_link, item_order
+        FROM party_websites
+        WHERE tenant_id = %s AND party_id = %s
+        ORDER BY item_order, id
+        """,
+        (tenant_id, party_id),
+    )
+    places = q(
+        """
+        SELECT contributor_place_relator, country_code, region_code,
+               location_name, item_order
+        FROM party_contributor_places
+        WHERE tenant_id = %s AND party_id = %s
+        ORDER BY item_order, id
+        """,
+        (tenant_id, party_id),
+    )
+    dates = q(
+        """
+        SELECT contributor_date_role, date_value, item_order
+        FROM party_contributor_dates
+        WHERE tenant_id = %s AND party_id = %s
+        ORDER BY item_order, id
+        """,
+        (tenant_id, party_id),
+    )
+    for row in dates:
+        row["date_value"] = _jsonable(row.get("date_value")) or ""
+
+    affiliations = q(
+        """
+        SELECT professional_position, affiliation, affiliation_id_type,
+               affiliation_id_type_name, affiliation_id_value, item_order
+        FROM party_professional_affiliations
+        WHERE tenant_id = %s AND party_id = %s
+        ORDER BY item_order, id
+        """,
+        (tenant_id, party_id),
+    )
+
+    return {
+        "name_identifiers": identifiers,
+        "alternative_names": alternative_names,
+        "websites": websites,
+        "contributor_places": places,
+        "contributor_dates": dates,
+        "professional_affiliations": affiliations,
+    }
+
+
+def _fetch_contributors(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
+    """Return every work contributor with reusable party data and ONIX repeats."""
     cur.execute(
         """
         SELECT
@@ -1220,6 +3730,9 @@ def _fetch_contributors(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any
             wc.party_id,
             wc.contributor_role,
             wc.sequence_number,
+            wc.from_language_codes,
+            wc.to_language_codes,
+            wc.contributor_description,
             p.party_type,
             p.display_name,
             p.email,
@@ -1228,6 +3741,7 @@ def _fetch_contributors(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any
             p.phone_number,
             p.short_bio,
             p.long_bio,
+            p.notes,
             p.birth_date,
             p.death_date,
             p.birth_city,
@@ -1262,85 +3776,92 @@ def _fetch_contributors(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any
         role = _safe_str(r.get("contributor_role"))
         party_id = str(r["party_id"])
         address = _fetch_party_address(cur, tenant_id, party_id)
+        repeats = _fetch_contributor_repeat_rows(cur, tenant_id, party_id)
 
         try:
             cur.execute(
                 """
                 SELECT platform, url
                 FROM party_socials
-                WHERE tenant_id = %s
-                  AND party_id = %s
+                WHERE tenant_id = %s AND party_id = %s
                 ORDER BY platform ASC, id ASC
                 """,
                 (tenant_id, party_id),
             )
             socials = [
-                {
-                    "platform": _safe_str(s.get("platform")),
-                    "url": _safe_str(s.get("url")),
-                }
+                {"platform": _safe_str(s.get("platform")), "url": _safe_str(s.get("url"))}
                 for s in (cur.fetchall() or [])
             ]
         except Exception:
             socials = []
 
-        out.append(
-            {
-                "work_contributor_id": str(r.get("work_contributor_id") or ""),
-                "party_id": party_id,
-                "role": role,
-                "contributor_role": role,
-                "role_code": role,
-                "scope": _role_to_scope(role),
-                "sequence_number": r.get("sequence_number") or 0,
-                "party_type": _safe_str(r.get("party_type")),
-                "display_name": _clean_display_name(r.get("display_name")),
-                "name": _clean_display_name(r.get("display_name")),
-                "email": _safe_str(r.get("email")),
-                "website": _safe_str(r.get("website")),
-                "phone_country_code": _safe_str(r.get("phone_country_code")),
-                "phone_number": _safe_str(r.get("phone_number")),
-                "phone": _format_phone(
-                    r.get("phone_country_code"), r.get("phone_number")
-                ),
-                "short_bio": _safe_str(r.get("short_bio")),
-                "bio": _safe_str(r.get("short_bio")),
-                "long_bio": _safe_str(r.get("long_bio")),
-                "birth_date": _jsonable(r.get("birth_date")) or "",
-                "death_date": _jsonable(r.get("death_date")) or "",
-                "birth_city": _safe_str(r.get("birth_city")),
-                "birth_country": _safe_str(r.get("birth_country")),
-                "citizenship": _safe_str(r.get("citizenship")),
-                "titles_before_names": _safe_str(r.get("titles_before_names")),
-                "names_before_key": _safe_str(r.get("names_before_key")),
-                "prefix_to_key": _safe_str(r.get("prefix_to_key")),
-                "key_names": _safe_str(r.get("key_names")),
-                "suffix_to_key": _safe_str(r.get("suffix_to_key")),
-                "letters_after_names": _safe_str(r.get("letters_after_names")),
-                "person_name_inverted": _safe_str(r.get("person_name_inverted")),
-                "pen_name": _safe_str(r.get("pen_name")),
-                "corporate_name": _safe_str(r.get("corporate_name")),
-                "language_code": _safe_str(r.get("language_code")),
-                "country_code": _safe_str(r.get("country_code")),
-                "region_code": _safe_str(r.get("region_code")),
-                "address": address,
-                "address_street": _safe_str(address.get("street")),
-                "address_city": _safe_str(address.get("city")),
-                "address_state": _safe_str(address.get("state")),
-                "address_zip": _safe_str(address.get("zip")),
-                "address_country": _safe_str(address.get("country")),
-                # Generic aliases used by older Book Information and Book Management forms.
-                "street": _safe_str(address.get("street")),
-                "city": _safe_str(address.get("city")),
-                "state": _safe_str(address.get("state")),
-                "zip": _safe_str(address.get("zip")),
-                "postal_code": _safe_str(address.get("zip")),
-                "country": _safe_str(address.get("country")),
-                "socials": socials,
-            }
-        )
+        payload = {
+            "work_contributor_id": str(r.get("work_contributor_id") or ""),
+            "party_id": party_id,
+            "role": role,
+            "contributor_role": role,
+            "role_code": role,
+            "scope": _role_to_scope(role),
+            "sequence_number": r.get("sequence_number") or 0,
+            "from_languages": list(r.get("from_language_codes") or []),
+            "fromLanguages": list(r.get("from_language_codes") or []),
+            "to_languages": list(r.get("to_language_codes") or []),
+            "toLanguages": list(r.get("to_language_codes") or []),
+            "contributor_description": _safe_str(r.get("contributor_description")),
+            "contributorDescription": _safe_str(r.get("contributor_description")),
+            "party_type": _safe_str(r.get("party_type")),
+            "display_name": _clean_display_name(r.get("display_name")),
+            "name": _clean_display_name(r.get("display_name")),
+            "email": _safe_str(r.get("email")),
+            "website": _safe_str(r.get("website")),
+            "phone_country_code": _safe_str(r.get("phone_country_code")),
+            "phone_number": _safe_str(r.get("phone_number")),
+            "phone": _format_phone(r.get("phone_country_code"), r.get("phone_number")),
+            "short_bio": _safe_str(r.get("short_bio")),
+            "bio": _safe_str(r.get("short_bio")),
+            "long_bio": _safe_str(r.get("long_bio")),
+            "notes": _safe_str(r.get("notes")),
+            "birth_date": _jsonable(r.get("birth_date")) or "",
+            "death_date": _jsonable(r.get("death_date")) or "",
+            "birth_city": _safe_str(r.get("birth_city")),
+            "birth_country": _safe_str(r.get("birth_country")),
+            "citizenship": _safe_str(r.get("citizenship")),
+            "titles_before_names": _safe_str(r.get("titles_before_names")),
+            "names_before_key": _safe_str(r.get("names_before_key")),
+            "prefix_to_key": _safe_str(r.get("prefix_to_key")),
+            "key_names": _safe_str(r.get("key_names")),
+            "suffix_to_key": _safe_str(r.get("suffix_to_key")),
+            "letters_after_names": _safe_str(r.get("letters_after_names")),
+            "person_name_inverted": _safe_str(r.get("person_name_inverted")),
+            "pen_name": _safe_str(r.get("pen_name")),
+            "corporate_name": _safe_str(r.get("corporate_name")),
+            "language_code": _safe_str(r.get("language_code")),
+            "country_code": _safe_str(r.get("country_code")),
+            "region_code": _safe_str(r.get("region_code")),
+            "address": address,
+            "address_street": _safe_str(address.get("street")),
+            "address_city": _safe_str(address.get("city")),
+            "address_state": _safe_str(address.get("state")),
+            "address_zip": _safe_str(address.get("zip")),
+            "address_country": _safe_str(address.get("country")),
+            "street": _safe_str(address.get("street")),
+            "city": _safe_str(address.get("city")),
+            "state": _safe_str(address.get("state")),
+            "zip": _safe_str(address.get("zip")),
+            "postal_code": _safe_str(address.get("zip")),
+            "country": _safe_str(address.get("country")),
+            "socials": socials,
+        }
+        payload.update(repeats)
+        payload["nameIdentifiers"] = repeats["name_identifiers"]
+        payload["alternativeNames"] = repeats["alternative_names"]
+        payload["contributorPlaces"] = repeats["contributor_places"]
+        payload["contributorDates"] = repeats["contributor_dates"]
+        payload["professionalAffiliations"] = repeats["professional_affiliations"]
+        out.append(payload)
 
     return out
+
 
 
 def _fetch_onix_raw_by_isbns(
@@ -1526,23 +4047,42 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
         "ages": _safe_str(w.get("ages")),
         "us_grade": _safe_str(w.get("us_grade")),
         "language": _safe_str(w.get("language")),
+        "original_language": _safe_str(w.get("original_language")),
         "rights": _safe_str(w.get("rights")),
         "editor_name": _safe_str(w.get("editor_name")),
         "art_director_name": _safe_str(w.get("art_director_name")),
-        "publisher_or_imprint": _safe_str(w.get("publisher_or_imprint")),
-        "publishing_year": w.get("publishing_year"),
-        "publication_date": _jsonable(w.get("publication_date")),
+
+        # Product Identity / publishing identity.
+        # Publisher aliases are filled below from canonical edition_publishers.
+        # Imprint remains work-level temporarily until its separate migration.
+        "publisher_name": "",
+        "publisher": "",
+        "imprint_name": _safe_str(w.get("imprint_name")),
+        "imprint": _safe_str(w.get("imprint_name")),
+        "publisher_or_imprint": _safe_str(w.get("imprint_name")),
+
+        # Filled below from normalized edition publishing dates.
+        "publishing_year": None,
+        "publication_date": None,
         "publishing_status": _safe_str(w.get("publishing_status")),
+        "short_title": _safe_str(w.get("short_title")),
+        "shortTitle": _safe_str(w.get("short_title")),
         "city_of_publication": _safe_str(w.get("city_of_publication")),
         "country_of_publication": _safe_str(w.get("country_of_publication")),
+        "countryOfPublication": _safe_str(w.get("country_of_publication")),
+        "originalLanguage": _safe_str(w.get("original_language")),
         "copyright_year": int(w.get("copyright_year") or 0),
         "main_description": _safe_str(w.get("main_description")),
-        "table_of_contents": _safe_str(w.get("table_of_contents")),
+        # Compatibility alias is filled below from canonical edition_texts TextType 04.
+        "table_of_contents": "",
+        "tableOfContents": "",
         "back_cover_copy": _safe_str(w.get("back_cover_copy")),
         "biographical_note": _safe_str(w.get("biographical_note")),
-        "cover_image_link": _safe_str(w.get("cover_image_link")),
-        "cover_image_format": _safe_str(w.get("cover_image_format")),
-        "cover_image_caption": _safe_str(w.get("cover_image_caption")),
+
+        # Compatibility aliases filled below from edition-level cover metadata.
+        "cover_image_link": "",
+        "cover_image_format": "",
+        "cover_image_caption": "",
 
         "about_summary": _safe_str(w.get("about_summary")),
         "about_bookstore_shelf": _safe_str(w.get("about_bookstore_shelf")),
@@ -1573,22 +4113,101 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
     doc["about_diff_competitors"] = [x for x in doc["about_diff_competitors"] if x]
 
     editions = _fetch_editions(cur, tenant_id, work_id)
-    doc["formats"] = [
-        {
-            "format": e.get("format") or "",
-            "isbn": e.get("isbn") or "",
-            "pub_date": e.get("pub_date") or "",
-            "price_us": e.get("price_us") or 0,
-            "price_can": e.get("price_can") or 0,
-            "pages": e.get("pages") or 0,
-            "tall": e.get("tall") or 0,
-            "wide": e.get("wide") or 0,
-            "spine": e.get("spine") or 0,
-            "weight": e.get("weight") or 0,
-        }
-        for e in editions
-    ]
+
+    # Table of Contents is canonical edition-level ONIX TextContent (TextType 04).
+    # Keep the work-level aliases only as a compatibility view for Book Management.
+    canonical_table_of_contents = next(
+        (
+            _safe_str(edition.get("table_of_contents"))
+            for edition in editions
+            if _safe_str(edition.get("table_of_contents"))
+        ),
+        "",
+    )
+    doc["table_of_contents"] = canonical_table_of_contents
+    doc["tableOfContents"] = canonical_table_of_contents
+
+    # Existing modules may still consume a convenient work-level cover alias,
+    # but its source is now strictly edition-level metadata.
+    primary_cover_edition = next(
+        (
+            edition
+            for edition in editions
+            if _safe_str(edition.get("cover_image_link"))
+        ),
+        None,
+    )
+    if primary_cover_edition:
+        doc["cover_image_link"] = _safe_str(primary_cover_edition.get("cover_image_link"))
+        doc["cover_image_format"] = _safe_str(primary_cover_edition.get("cover_image_format"))
+        doc["cover_image_caption"] = _safe_str(primary_cover_edition.get("cover_image_caption"))
+
+    # Compatibility aliases are derived from normalized edition_publishers.
+    primary_publisher = next(
+        (_safe_str(e.get("publisher_name")) for e in editions if _safe_str(e.get("publisher_name"))),
+        "",
+    )
+    doc["publisher_name"] = primary_publisher
+    doc["publisher"] = primary_publisher
+    doc["publisher_or_imprint"] = primary_publisher or doc.get("imprint_name", "")
+
+    # Existing modules still expect these work-level API aliases. Derive them
+    # from the first edition with ONIX PublishingDateRole 01 rather than storing
+    # duplicate work-level publication metadata.
+    primary_work_publication_date = next(
+        (
+            _safe_str(edition.get("publication_date") or edition.get("pub_date"))
+            for edition in editions
+            if _safe_str(edition.get("publication_date") or edition.get("pub_date"))
+        ),
+        "",
+    )
+    doc["publication_date"] = primary_work_publication_date or None
+    _pub_digits = re.sub(r"[^0-9]", "", primary_work_publication_date)
+    doc["publishing_year"] = int(_pub_digits[:4]) if len(_pub_digits) >= 4 else None
+
+    # `formats` used to be reduced to a legacy summary and therefore discarded
+    # the persisted edition id, ONIX Product Classification fields, and
+    # edition_identifiers.  The rich edition rows already contain every legacy
+    # summary key (`format`, `isbn`, `pub_date`, prices, pages, dimensions) so
+    # returning them directly remains backward compatible while allowing
+    # Product Identity to round-trip all saved fields.
+    doc["formats"] = editions
+    doc["editions"] = editions
     doc["_editions"] = editions
+
+    title_rows = _fetch_work_titles(cur, tenant_id, work_id)
+    doc["title_prefix"] = title_rows.get("title_prefix") or ""
+    doc["titlePrefix"] = doc["title_prefix"]
+    doc["title_without_prefix"] = title_rows.get("title_without_prefix") or ""
+    doc["titleWithoutPrefix"] = doc["title_without_prefix"]
+    doc["title_element_level"] = title_rows.get("title_element_level") or "01"
+    doc["titleElementLevel"] = doc["title_element_level"]
+    doc["no_prefix"] = bool(title_rows.get("no_prefix"))
+    doc["noPrefix"] = doc["no_prefix"]
+    doc["title_part_number"] = title_rows.get("title_part_number") or ""
+    doc["titlePartNumber"] = doc["title_part_number"]
+    doc["alternative_titles"] = title_rows.get("alternative_titles") or []
+    doc["alternativeTitles"] = doc["alternative_titles"]
+
+    collections = _fetch_work_collections(cur, tenant_id, work_id)
+    doc["collections"] = collections
+    doc["collection_memberships"] = collections
+    doc["collectionMemberships"] = collections
+
+    primary_collection = next(
+        (row for row in collections if row.get("is_primary")),
+        collections[0] if collections else None,
+    )
+    if primary_collection:
+        doc["collection_title"] = primary_collection.get("collection_title") or ""
+        doc["collectionTitle"] = doc["collection_title"]
+        doc["collection_number"] = primary_collection.get("collection_number") or ""
+        doc["collectionNumber"] = doc["collection_number"]
+        doc["volume_number"] = primary_collection.get("volume_number") or ""
+        doc["volumeNumber"] = doc["volume_number"]
+        doc["part_number"] = primary_collection.get("part_number") or ""
+        doc["partNumber"] = doc["part_number"]
     doc["foreign_rights_sold"] = _fetch_foreign_rights_sold(cur, tenant_id, work_id)
 
     contributors = _fetch_contributors(cur, tenant_id, work_id)
@@ -2086,7 +4705,45 @@ def list_works(
             if q_like:
                 cur.execute(
                     """
-                    SELECT w.*
+                    SELECT
+                        w.*,
+                        (
+                            SELECT COALESCE(NULLIF(pd.date_text, ''), to_char(pd.date_value, 'YYYYMMDD'))
+                            FROM editions e2
+                            JOIN edition_publishing_dates pd
+                              ON pd.tenant_id = e2.tenant_id
+                             AND pd.edition_id = e2.id
+                            WHERE e2.tenant_id = w.tenant_id
+                              AND e2.work_id = w.id
+                              AND pd.date_role = '01'
+                            ORDER BY e2.created_at ASC, pd.item_order ASC, pd.created_at ASC, pd.id ASC
+                            LIMIT 1
+                        ) AS normalized_publication_date,
+                        (
+                            SELECT EXTRACT(YEAR FROM pd.date_value)::int
+                            FROM editions e2
+                            JOIN edition_publishing_dates pd
+                              ON pd.tenant_id = e2.tenant_id
+                             AND pd.edition_id = e2.id
+                            WHERE e2.tenant_id = w.tenant_id
+                              AND e2.work_id = w.id
+                              AND pd.date_role = '01'
+                              AND pd.date_value IS NOT NULL
+                            ORDER BY e2.created_at ASC, pd.item_order ASC, pd.created_at ASC, pd.id ASC
+                            LIMIT 1
+                        ) AS normalized_publishing_year,
+                        (
+                            SELECT ep.publisher_name
+                            FROM editions e2
+                            JOIN edition_publishers ep
+                              ON ep.tenant_id = e2.tenant_id
+                             AND ep.edition_id = e2.id
+                            WHERE e2.tenant_id = w.tenant_id
+                              AND e2.work_id = w.id
+                              AND ep.publishing_role = '01'
+                            ORDER BY e2.created_at ASC, ep.item_order ASC, ep.created_at ASC, ep.id ASC
+                            LIMIT 1
+                        ) AS normalized_publisher_name
                     FROM works w
                     WHERE w.tenant_id = %s
                       AND (
@@ -2114,7 +4771,45 @@ def list_works(
             else:
                 cur.execute(
                     """
-                    SELECT w.*
+                    SELECT
+                        w.*,
+                        (
+                            SELECT COALESCE(NULLIF(pd.date_text, ''), to_char(pd.date_value, 'YYYYMMDD'))
+                            FROM editions e2
+                            JOIN edition_publishing_dates pd
+                              ON pd.tenant_id = e2.tenant_id
+                             AND pd.edition_id = e2.id
+                            WHERE e2.tenant_id = w.tenant_id
+                              AND e2.work_id = w.id
+                              AND pd.date_role = '01'
+                            ORDER BY e2.created_at ASC, pd.item_order ASC, pd.created_at ASC, pd.id ASC
+                            LIMIT 1
+                        ) AS normalized_publication_date,
+                        (
+                            SELECT EXTRACT(YEAR FROM pd.date_value)::int
+                            FROM editions e2
+                            JOIN edition_publishing_dates pd
+                              ON pd.tenant_id = e2.tenant_id
+                             AND pd.edition_id = e2.id
+                            WHERE e2.tenant_id = w.tenant_id
+                              AND e2.work_id = w.id
+                              AND pd.date_role = '01'
+                              AND pd.date_value IS NOT NULL
+                            ORDER BY e2.created_at ASC, pd.item_order ASC, pd.created_at ASC, pd.id ASC
+                            LIMIT 1
+                        ) AS normalized_publishing_year,
+                        (
+                            SELECT ep.publisher_name
+                            FROM editions e2
+                            JOIN edition_publishers ep
+                              ON ep.tenant_id = e2.tenant_id
+                             AND ep.edition_id = e2.id
+                            WHERE e2.tenant_id = w.tenant_id
+                              AND e2.work_id = w.id
+                              AND ep.publishing_role = '01'
+                            ORDER BY e2.created_at ASC, ep.item_order ASC, ep.created_at ASC, ep.id ASC
+                            LIMIT 1
+                        ) AS normalized_publisher_name
                     FROM works w
                     WHERE w.tenant_id = %s
                     ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC
@@ -2325,6 +5020,665 @@ def create_work_from_dealmemo(
                 "work_id": work_id,
                 "work": payload,
             }
+
+
+
+
+
+
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/rights-restrictions")
+def save_edition_rights_restrictions(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(
+                cur,
+                tenant_slug,
+            )
+
+            try:
+                result = update_edition_rights_restrictions(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                raise HTTPException(
+                    status_code=404 if message == "Edition not found" else 400,
+                    detail=message,
+                )
+
+            editions = _fetch_editions(
+                cur,
+                tenant_id,
+                work_id,
+            )
+
+            edition = next(
+                (
+                    row
+                    for row in editions
+                    if str(row.get("id")) == str(edition_id)
+                ),
+                None,
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "edition": edition,
+    }
+
+
+@router.get("/works/{work_id}/editions/{edition_id}/task-assignments")
+def get_edition_task_assignments(
+    work_id: str,
+    edition_id: str,
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            cur.execute(
+                """
+                SELECT 1
+                FROM editions
+                WHERE tenant_id = %s
+                  AND work_id = %s
+                  AND id = %s
+                LIMIT 1
+                """,
+                (tenant_id, work_id, edition_id),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Edition not found")
+
+            items = _fetch_bookdev_task_assignments(
+                cur,
+                tenant_id,
+                work_id,
+                edition_id,
+            )
+
+    return {
+        "ok": True,
+        "tenant_slug": tenant_slug,
+        "work_id": work_id,
+        "edition_id": edition_id,
+        "items": items,
+        "assignments": items,
+    }
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/task-assignments")
+def save_edition_task_assignment(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            try:
+                result = upsert_bookdev_task_assignment(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                raise HTTPException(
+                    status_code=404 if message == "Edition not found" else 400,
+                    detail=message,
+                )
+
+            items = _fetch_bookdev_task_assignments(
+                cur,
+                tenant_id,
+                work_id,
+                edition_id,
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "items": items,
+        "assignments": items,
+    }
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/cited-content")
+def save_edition_cited_content(work_id: str, edition_id: str, payload: Dict[str, Any] = Body(...), tenant_slug: str = Query("marble-press")):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id=_get_tenant_id_from_slug(cur,tenant_slug)
+            try: result=update_edition_cited_content(cur,tenant_id,work_id,edition_id,payload)
+            except ValueError as exc:
+                message=str(exc); raise HTTPException(status_code=404 if message=="Edition not found" else 400, detail=message)
+            editions=_fetch_editions(cur,tenant_id,work_id); edition=next((row for row in editions if str(row.get("id"))==str(edition_id)),None)
+        conn.commit()
+    return {**result,"edition":edition}
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/awards")
+def save_edition_awards(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(
+                cur,
+                tenant_slug,
+            )
+
+            try:
+                result = update_edition_awards(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                raise HTTPException(
+                    status_code=404
+                    if message == "Edition not found"
+                    else 400,
+                    detail=message,
+                )
+
+            editions = _fetch_editions(
+                cur,
+                tenant_id,
+                work_id,
+            )
+
+            edition = next(
+                (
+                    row
+                    for row in editions
+                    if str(row.get("id"))
+                    == str(edition_id)
+                ),
+                None,
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "edition": edition,
+    }
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/related-products")
+def save_edition_related_products(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(
+                cur,
+                tenant_slug,
+            )
+
+            try:
+                result = update_edition_related_products(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                raise HTTPException(
+                    status_code=404
+                    if message == "Edition not found"
+                    else 400,
+                    detail=message,
+                )
+
+            editions = _fetch_editions(
+                cur,
+                tenant_id,
+                work_id,
+            )
+
+            edition = next(
+                (
+                    row
+                    for row in editions
+                    if str(row.get("id"))
+                    == str(edition_id)
+                ),
+                None,
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "edition": edition,
+    }
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/supply-pricing")
+def save_edition_supply_pricing(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(
+                cur,
+                tenant_slug,
+            )
+
+            try:
+                result = update_edition_supply_pricing(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                raise HTTPException(
+                    status_code=404 if message == "Edition not found" else 400,
+                    detail=message,
+                )
+
+            editions = _fetch_editions(
+                cur,
+                tenant_id,
+                work_id,
+            )
+
+            edition = next(
+                (
+                    row
+                    for row in editions
+                    if str(row.get("id")) == str(edition_id)
+                ),
+                None,
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "edition": edition,
+    }
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/product-details")
+def save_edition_product_details(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            try:
+                result = update_edition_product_details(
+                    cur, tenant_id, work_id, edition_id, payload
+                )
+            except ValueError as exc:
+                message = str(exc)
+                raise HTTPException(
+                    status_code=404 if message == "Edition not found" else 400,
+                    detail=message,
+                )
+
+            editions = _fetch_editions(cur, tenant_id, work_id)
+            edition = next(
+                (row for row in editions if str(row.get("id")) == str(edition_id)),
+                None,
+            )
+
+        conn.commit()
+
+    return {**result, "edition": edition}
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/publishing-dates")
+def save_edition_publishing_dates(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(
+                cur,
+                tenant_slug,
+            )
+
+            try:
+                result = update_edition_publishing_dates(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                status_code = (
+                    404
+                    if message == "Edition not found"
+                    else 400
+                )
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=message,
+                )
+
+            editions = _fetch_editions(
+                cur,
+                tenant_id,
+                work_id,
+            )
+
+            edition = next(
+                (
+                    row
+                    for row in editions
+                    if str(row.get("id"))
+                    == str(edition_id)
+                ),
+                None,
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "edition": edition,
+    }
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/subjects-audience")
+def save_edition_subjects_audience(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(
+                cur,
+                tenant_slug,
+            )
+
+            try:
+                result = update_edition_subjects_audience(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                status_code = (
+                    404
+                    if message == "Edition not found"
+                    else 400
+                )
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=message,
+                )
+
+            editions = _fetch_editions(
+                cur,
+                tenant_id,
+                work_id,
+            )
+
+            edition = next(
+                (
+                    row
+                    for row in editions
+                    if str(row.get("id"))
+                    == str(edition_id)
+                ),
+                None,
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "edition": edition,
+    }
+
+
+@router.get("/works/{work_id}/editions/{edition_id}/descriptive-content")
+def get_edition_descriptive_content(
+    work_id: str,
+    edition_id: str,
+    tenant_slug: str = Query("marble-press"),
+):
+    """
+    Return canonical edition-level descriptive content directly from edition_texts.
+
+    This endpoint intentionally bypasses work-level compatibility aliases and
+    frontend book mappers so every persisted ONIX field (including
+    source_title_type) round-trips exactly to the Descriptive Content card.
+    """
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            cur.execute(
+                """
+                SELECT 1
+                FROM editions
+                WHERE tenant_id = %s
+                  AND work_id = %s
+                  AND id = %s
+                LIMIT 1
+                """,
+                (tenant_id, work_id, edition_id),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Edition not found")
+
+            descriptive_texts = _fetch_edition_texts(
+                cur,
+                tenant_id,
+                edition_id,
+            )
+
+    return {
+        "work_id": work_id,
+        "edition_id": edition_id,
+        "descriptive_texts": descriptive_texts,
+        "descriptiveTexts": descriptive_texts,
+    }
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/descriptive-content")
+def save_edition_descriptive_content(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            try:
+                result = update_edition_descriptive_content(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                status_code = 404 if message == "Edition not found" else 400
+                raise HTTPException(status_code=status_code, detail=message)
+
+            editions = _fetch_editions(cur, tenant_id, work_id)
+            edition = next(
+                (
+                    row
+                    for row in editions
+                    if str(row.get("id")) == str(edition_id)
+                ),
+                None,
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "edition": edition,
+    }
+
+
+@router.post("/works/{work_id}/titles-collections")
+def save_titles_collections(
+    work_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            try:
+                result = update_work_titles_collections(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                status_code = 404 if message == "Existing work not found" else 400
+                raise HTTPException(status_code=status_code, detail=message)
+
+            work = _build_full_work_payload(cur, tenant_id, work_id)
+
+        conn.commit()
+
+    return {
+        **result,
+        "work": work,
+    }
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/product-identity")
+def save_product_identity(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            try:
+                result = update_edition_product_identity(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                status_code = 404 if message == "Edition not found" else 400
+                raise HTTPException(status_code=status_code, detail=message)
+
+            work = _build_full_work_payload(cur, tenant_id, work_id)
+            editions = _fetch_editions(cur, tenant_id, work_id)
+            edition = next(
+                (row for row in editions if str(row.get("id")) == str(edition_id)),
+                None,
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "edition": edition,
+        "work": work,
+    }
+
+
+@router.post("/works/{work_id}/first-edition")
+def create_first_edition(
+    work_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+
+            try:
+                result = create_first_work_edition(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    payload,
+                )
+            except ValueError as exc:
+                message = str(exc)
+                status_code = (
+                    404
+                    if message == "Existing work not found"
+                    else 409
+                    if "already has an edition" in message
+                    else 400
+                )
+                raise HTTPException(status_code=status_code, detail=message)
+
+        conn.commit()
+
+    return result
+
+
 @router.post("/works/{work_id}/contributors")
 def create_work_contributor(
     work_id: str,
@@ -2452,11 +5806,26 @@ def search_contributors(
                 """
                 SELECT
                     p.id::text AS party_id,
+                    p.party_type,
                     p.display_name,
                     p.email,
                     p.website,
                     p.phone_country_code,
-                    p.phone_number
+                    p.phone_number,
+                    p.titles_before_names,
+                    p.names_before_key,
+                    p.prefix_to_key,
+                    p.key_names,
+                    p.suffix_to_key,
+                    p.letters_after_names,
+                    p.person_name_inverted,
+                    p.corporate_name,
+                    p.language_code,
+                    p.short_bio,
+                    p.long_bio,
+                    p.notes,
+                    p.birth_date,
+                    p.death_date
                 FROM parties p
                 WHERE p.tenant_id = %s
                   AND (
@@ -2503,20 +5872,42 @@ def search_contributors(
                     if value
                 ).strip()
 
+                repeats = _fetch_contributor_repeat_rows(
+                    cur,
+                    tenant_id,
+                    str(row.get("party_id") or ""),
+                )
+
                 items.append(
                     {
                         "party_id": _safe_str(row.get("party_id")),
+                        "party_type": _safe_str(row.get("party_type")) or "person",
                         "display_name": _safe_str(row.get("display_name")),
                         "email": _safe_str(row.get("email")),
                         "website": _safe_str(row.get("website")),
                         "phone_country_code": phone_country_code,
                         "phone_number": phone_number,
                         "phone": phone,
+                        "titles_before_names": _safe_str(row.get("titles_before_names")),
+                        "names_before_key": _safe_str(row.get("names_before_key")),
+                        "prefix_to_key": _safe_str(row.get("prefix_to_key")),
+                        "key_names": _safe_str(row.get("key_names")),
+                        "suffix_to_key": _safe_str(row.get("suffix_to_key")),
+                        "letters_after_names": _safe_str(row.get("letters_after_names")),
+                        "person_name_inverted": _safe_str(row.get("person_name_inverted")),
+                        "corporate_name": _safe_str(row.get("corporate_name")),
+                        "language_code": _safe_str(row.get("language_code")),
+                        "short_bio": _safe_str(row.get("short_bio")),
+                        "long_bio": _safe_str(row.get("long_bio")),
+                        "notes": _safe_str(row.get("notes")),
+                        "birth_date": _jsonable(row.get("birth_date")) or "",
+                        "death_date": _jsonable(row.get("death_date")) or "",
                         "street": _safe_str(address.get("street")),
                         "city": _safe_str(address.get("city")),
                         "state": _safe_str(address.get("state")),
                         "zip": _safe_str(address.get("zip")),
                         "country": _safe_str(address.get("country")),
+                        **repeats,
                     }
                 )
 
@@ -2525,3 +5916,364 @@ def search_contributors(
         "query": search,
         "items": items,
     }
+
+def _fetch_metadata_assistant_question_state(
+    cur,
+    tenant_id: str,
+    work_id: str,
+    edition_id: str,
+) -> List[Dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT
+            question_key,
+            status,
+            created_at,
+            updated_at
+        FROM metadata_assistant_question_state
+        WHERE tenant_id = %s
+          AND work_id = %s
+          AND edition_id = %s
+        ORDER BY updated_at ASC, question_key ASC
+        """,
+        (
+            tenant_id,
+            work_id,
+            edition_id,
+        ),
+    )
+
+    return [
+        {
+            "question_key": _safe_str(
+                row.get("question_key")
+            ),
+            "questionKey": _safe_str(
+                row.get("question_key")
+            ),
+            "status": _safe_str(
+                row.get("status")
+            ),
+            "created_at": _jsonable(
+                row.get("created_at")
+            ),
+            "updated_at": _jsonable(
+                row.get("updated_at")
+            ),
+        }
+        for row in (cur.fetchall() or [])
+    ]
+
+
+@router.get(
+    "/works/{work_id}/editions/{edition_id}/metadata-assistant-state"
+)
+def get_metadata_assistant_question_state(
+    work_id: str,
+    edition_id: str,
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(
+                cur,
+                tenant_slug,
+            )
+
+            cur.execute(
+                """
+                SELECT 1
+                FROM editions
+                WHERE tenant_id = %s
+                  AND work_id = %s
+                  AND id = %s
+                LIMIT 1
+                """,
+                (
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                ),
+            )
+            if not cur.fetchone():
+                raise HTTPException(
+                    status_code=404,
+                    detail="Edition not found",
+                )
+
+            items = (
+                _fetch_metadata_assistant_question_state(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                )
+            )
+
+    return {
+        "ok": True,
+        "work_id": work_id,
+        "edition_id": edition_id,
+        "items": items,
+    }
+
+
+@router.post(
+    "/works/{work_id}/editions/{edition_id}/metadata-assistant-state"
+)
+def save_metadata_assistant_question_state(
+    work_id: str,
+    edition_id: str,
+    payload: Dict[str, Any] = Body(...),
+    tenant_slug: str = Query("marble-press"),
+):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(
+                cur,
+                tenant_slug,
+            )
+
+            try:
+                result = (
+                    update_metadata_assistant_question_state(
+                        cur,
+                        tenant_id,
+                        work_id,
+                        edition_id,
+                        payload,
+                    )
+                )
+            except ValueError as exc:
+                message = str(exc)
+                raise HTTPException(
+                    status_code=404
+                    if message == "Edition not found"
+                    else 400,
+                    detail=message,
+                )
+
+            items = (
+                _fetch_metadata_assistant_question_state(
+                    cur,
+                    tenant_id,
+                    work_id,
+                    edition_id,
+                )
+            )
+
+        conn.commit()
+
+    return {
+        **result,
+        "items": items,
+    }
+
+
+
+# ============================================================================
+# ONIX expansion readback overrides: Titles & Collections / Descriptive Content /
+# Publishing & Dates. Kept after the contributor-expanded implementation.
+# ============================================================================
+
+def _fetch_text_content_dates(
+    cur,
+    tenant_id: str,
+    edition_id: str,
+    edition_text_id: str,
+) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT id, content_date_role, date_format, date_text, item_order
+            FROM edition_text_content_dates
+            WHERE tenant_id = %s AND edition_id = %s AND edition_text_id = %s
+            ORDER BY item_order, id
+            """,
+            (tenant_id, edition_id, edition_text_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+    return [
+        {
+            "id": str(row.get("id") or ""),
+            "content_date_role": _safe_str(row.get("content_date_role")),
+            "contentDateRole": _safe_str(row.get("content_date_role")),
+            "date_format": _safe_str(row.get("date_format")),
+            "dateFormat": _safe_str(row.get("date_format")),
+            "date_text": _safe_str(row.get("date_text")),
+            "dateText": _safe_str(row.get("date_text")),
+            "date_value": _safe_str(row.get("date_text")),
+            "dateValue": _safe_str(row.get("date_text")),
+            "date": _safe_str(row.get("date_text")),
+            "item_order": int(row.get("item_order") or 0),
+        }
+        for row in rows
+    ]
+
+
+
+
+def _fetch_edition_publishing_dates(cur, tenant_id: str, edition_id: str) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT id, date_role, date_value, date_text, date_format, note,
+                   item_order, created_at, updated_at
+            FROM edition_publishing_dates
+            WHERE tenant_id = %s AND edition_id = %s
+            ORDER BY item_order, created_at, id
+            """,
+            (tenant_id, edition_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    result = []
+    for row in rows:
+        lexical = _safe_str(row.get("date_text"))
+        if not lexical and row.get("date_value"):
+            lexical = str(_jsonable(row.get("date_value")) or "").replace("-", "")
+        result.append(
+            {
+                "id": str(row.get("id") or ""),
+                "date_role": _safe_str(row.get("date_role")),
+                "dateRole": _safe_str(row.get("date_role")),
+                "publishing_date_role": _safe_str(row.get("date_role")),
+                "publishingDateRole": _safe_str(row.get("date_role")),
+                "date_value": lexical,
+                "dateValue": lexical,
+                "date": lexical,
+                "display_date": lexical,
+                "displayDate": lexical,
+                "date_text": lexical,
+                "dateText": lexical,
+                "date_format": _safe_str(row.get("date_format")),
+                "dateFormat": _safe_str(row.get("date_format")),
+                "note": _safe_str(row.get("note")),
+                "date_note": _safe_str(row.get("note")),
+                "dateNote": _safe_str(row.get("note")),
+                "item_order": int(row.get("item_order") or 0),
+                "sequence_number": int(row.get("item_order") or 0),
+                "sequenceNumber": int(row.get("item_order") or 0),
+            }
+        )
+    return result
+
+
+def _fetch_work_titles(cur, tenant_id: str, work_id: str) -> Dict[str, Any]:
+    result = {
+        "title_prefix": "",
+        "title_without_prefix": "",
+        "title_element_level": "01",
+        "no_prefix": False,
+        "title_part_number": "",
+        "alternative_titles": [],
+    }
+    try:
+        cur.execute(
+            """
+            SELECT id, title_type, title_element_level, title_prefix,
+                   title_without_prefix, subtitle, language_code,
+                   no_prefix, part_number, is_primary, item_order
+            FROM work_titles
+            WHERE tenant_id = %s AND work_id = %s
+            ORDER BY is_primary DESC, item_order, id
+            """,
+            (tenant_id, work_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return result
+
+    alternatives = []
+    for row in rows:
+        if row.get("is_primary"):
+            result["title_prefix"] = _safe_str(row.get("title_prefix"))
+            result["title_without_prefix"] = _safe_str(row.get("title_without_prefix"))
+            result["title_element_level"] = _safe_str(row.get("title_element_level")) or "01"
+            result["no_prefix"] = bool(row.get("no_prefix"))
+            result["title_part_number"] = _safe_str(row.get("part_number"))
+            continue
+        prefix = _safe_str(row.get("title_prefix"))
+        body = _safe_str(row.get("title_without_prefix"))
+        title_text = " ".join(part for part in (prefix, body) if part).strip()
+
+        alternatives.append(
+            {
+                "id": str(row["id"]),
+                "title_type": _safe_str(row.get("title_type")),
+                "titleType": _safe_str(row.get("title_type")),
+                "title_element_level": _safe_str(row.get("title_element_level")),
+                "titleElementLevel": _safe_str(row.get("title_element_level")),
+                "title_prefix": prefix,
+                "titlePrefix": prefix,
+                "title_without_prefix": body,
+                "titleWithoutPrefix": body,
+                "no_prefix": bool(row.get("no_prefix")),
+                "noPrefix": bool(row.get("no_prefix")),
+                "part_number": _safe_str(row.get("part_number")),
+                "partNumber": _safe_str(row.get("part_number")),
+                "title": title_text,
+                "subtitle": _safe_str(row.get("subtitle")),
+                "language_code": _safe_str(row.get("language_code")),
+                "languageCode": _safe_str(row.get("language_code")),
+                "item_order": int(row.get("item_order") or 0),
+            }
+        )
+    result["alternative_titles"] = alternatives
+    return result
+
+
+def _fetch_work_collections(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
+    try:
+        cur.execute(
+            """
+            SELECT id, parent_collection_id, collection_type, title_type,
+                   title_element_level, no_prefix, collection_title,
+                   collection_subtitle, collection_number, volume_number,
+                   part_number, sequence_type, sequence_number, is_primary,
+                   item_order
+            FROM work_collections
+            WHERE tenant_id = %s AND work_id = %s
+            ORDER BY is_primary DESC, item_order, created_at, id
+            """,
+            (tenant_id, work_id),
+        )
+        rows = cur.fetchall() or []
+    except Exception:
+        return []
+
+    return [
+        {
+            "id": str(row["id"]),
+            "parent_collection_id": str(row["parent_collection_id"]) if row.get("parent_collection_id") else None,
+            "collection_type": _safe_str(row.get("collection_type")),
+            "collectionType": _safe_str(row.get("collection_type")),
+            "title_type": _safe_str(row.get("title_type")),
+            "titleType": _safe_str(row.get("title_type")),
+            "title_element_level": _safe_str(row.get("title_element_level")),
+            "titleElementLevel": _safe_str(row.get("title_element_level")),
+            "no_prefix": bool(row.get("no_prefix")),
+            "noPrefix": bool(row.get("no_prefix")),
+            "title": _safe_str(row.get("collection_title")),
+            "collection_title": _safe_str(row.get("collection_title")),
+            "collectionTitle": _safe_str(row.get("collection_title")),
+            "subtitle": _safe_str(row.get("collection_subtitle")),
+            "collection_subtitle": _safe_str(row.get("collection_subtitle")),
+            "collectionSubtitle": _safe_str(row.get("collection_subtitle")),
+            "collection_number": _safe_str(row.get("collection_number")),
+            "collectionNumber": _safe_str(row.get("collection_number")),
+            "volume_number": _safe_str(row.get("volume_number")),
+            "volumeNumber": _safe_str(row.get("volume_number")),
+            "part_number": _safe_str(row.get("part_number")),
+            "partNumber": _safe_str(row.get("part_number")),
+            "sequence_type": _safe_str(row.get("sequence_type")),
+            "sequence_number": _safe_str(row.get("sequence_number")),
+            "is_primary": bool(row.get("is_primary")),
+            "item_order": int(row.get("item_order") or 0),
+        }
+        for row in rows
+    ]

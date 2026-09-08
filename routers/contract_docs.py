@@ -197,6 +197,74 @@ def _fmt_percent(v: Any) -> str:
         return _trim(v) or "0"
 
 
+
+def _insert_numbered_contract_block(paragraph, text: str, *, advance: bool = False) -> bool:
+    """Expand a standalone block into native list paragraphs under its section."""
+    from copy import deepcopy
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+
+    anchor = paragraph._p
+    heading = anchor.getprevious()
+    while heading is not None:
+        num = heading.find(qn("w:pPr") + "/" + qn("w:numPr"))
+        if num is not None:
+            level = num.find(qn("w:ilvl"))
+            identity = num.find(qn("w:numId"))
+            if identity is not None and identity.get(qn("w:val")) != "0" and (level is None or level.get(qn("w:val")) == "0"):
+                break
+        heading = heading.getprevious()
+    if heading is None:
+        return False
+
+    num_id = identity.get(qn("w:val"))
+    # Use a genuine sibling subparagraph for font, spacing and alignment.
+    exemplar = heading.getnext()
+    while exemplar is not None:
+        pr = exemplar.find(qn("w:pPr"))
+        numbering = pr.find(qn("w:numPr")) if pr is not None else None
+        if numbering is not None:
+            lvl = numbering.find(qn("w:ilvl"))
+            nid = numbering.find(qn("w:numId"))
+            if lvl is not None and lvl.get(qn("w:val")) == "1" and nid is not None and nid.get(qn("w:val")) == num_id:
+                break
+        exemplar = exemplar.getnext()
+    base = exemplar.find(qn("w:pPr")) if exemplar is not None else paragraph._p.pPr
+
+    def apply_list(element):
+        previous = element.find(qn("w:pPr"))
+        if previous is not None:
+            element.remove(previous)
+        pr = deepcopy(base) if base is not None else OxmlElement("w:pPr")
+        for tag in ("numPr", "ind", "tabs"):
+            for child in list(pr.findall(qn("w:" + tag))):
+                pr.remove(child)
+        # Indents and tab position come from the template's level-2 definition.
+        element.insert(0, pr)
+        num = pr.get_or_add_numPr()
+        num.get_or_add_ilvl().val = 1
+        num.get_or_add_numId().val = int(num_id)
+
+    following = anchor.getnext()
+    lines = [re.sub(r"^\s*(?:\d+[.)]|[a-z][)])\s+", "", line.strip())
+             for line in str(text or "").splitlines() if line.strip()]
+    for line in lines:
+        element = OxmlElement("w:p")
+        anchor.addprevious(element)
+        apply_list(element)
+        new_paragraph = Paragraph(element, paragraph._parent)
+        new_paragraph.add_run(line).font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+    if advance:
+        while following is not None and not "".join(following.itertext()).strip():
+            following = following.getnext()
+        if following is not None:
+            final_text = "".join(e.text or "" for e in following.iter(qn("w:t")))
+            if final_text.strip().startswith("The advance is not repayable"):
+                apply_list(following)
+    anchor.getparent().remove(anchor)
+    return True
+
 def _append_text_to_paragraph(p, text: str, color: RGBColor | None = None) -> None:
     text = "" if text is None else str(text)
     parts = text.split("\n")
@@ -920,35 +988,35 @@ def _build_advance_installments_sentence(total_advance: Any, rows: list[dict[str
 
 def _build_delivery_follow_on_package() -> str:
     return (
-        "b) The Work shall be deemed accepted by Publisher only if Publisher has expressly confirmed its "
+        "b) The Book shall be deemed accepted by Publisher only if Publisher has expressly confirmed its "
         "acceptance, in writing, to Author, and expressions of encouragement or payment of money shall not "
         "be deemed to constitute acceptance. Publisher shall advise Author in writing within forty-five (45) "
-        "days of its receipt of the complete Work whether or not the Work is acceptable in length, content, "
+        "days of its receipt of the complete Book whether or not the Book is acceptable in length, content, "
         "and form to Publisher. If Publisher fails to so notify Author within such forty-five (45) day period, "
         "Author shall give Publisher written notification of Publisher’s failure to do so, whereupon Publisher "
         "shall have an additional thirty (30) days from receipt of such written notification in which to inform "
-        "Author whether or not the Work is editorially acceptable. If Publisher still fails to so notify Author "
-        "after such additional thirty (30) day period, the Work shall be deemed automatically accepted.\n\n"
-        "c) If the Work as delivered is not editorially satisfactory to Publisher, Publisher shall provide Author "
+        "Author whether or not the Book is editorially acceptable. If Publisher still fails to so notify Author "
+        "after such additional thirty (30) day period, the Book shall be deemed automatically accepted.\n\n"
+        "c) If the Book as delivered is not editorially satisfactory to Publisher, Publisher shall provide Author "
         "with reasonably detailed written suggestions for revisions and request Author to work cooperatively with "
-        "Publisher to make the Work satisfactory to Publisher within a time period to be fixed by Publisher, which "
+        "Publisher to make the Book satisfactory to Publisher within a time period to be fixed by Publisher, which "
         "time period shall be reasonably related to the requested revisions and shall be at least thirty (30) days "
         "in length in any event, and Author shall use Author’s best efforts to do so.\n\n"
-        "d) If Author fails to revise the Work so as to render it editorially satisfactory to Publisher in "
+        "d) If Author fails to revise the Book so as to render it editorially satisfactory to Publisher in "
         "accordance with subparagraph (c), then Publisher shall have the right to terminate this Agreement, in "
-        "which event Author may offer the rights to the Work elsewhere. If a third-party publisher thereafter "
-        "wishes to acquire publication rights to the Work, Author shall submit to Publisher written agreement for "
+        "which event Author may offer the rights to the Book elsewhere. If a third-party publisher thereafter "
+        "wishes to acquire publication rights to the Book, Author shall submit to Publisher written agreement for "
         "repayment to Publisher of the actual amount advanced by Publisher to Author under this Agreement out of "
-        "the first monies to be paid to Author for the Work by such third party within eighteen (18) months from "
+        "the first monies to be paid to Author for the Book by such third party within eighteen (18) months from "
         "Publisher’s notice after termination. Publisher shall terminate and relinquish its rights with respect to "
-        "the Work conditioned upon Author entering into such agreement with the third party, and in any event, "
-        "whether or not Author enters into agreement with a third party for the Work, Author agrees to repay the "
-        "Advance for the Work to Publisher within such eighteen (18) months from notification that the Work is not "
+        "the Book conditioned upon Author entering into such agreement with the third party, and in any event, "
+        "whether or not Author enters into agreement with a third party for the Book, Author agrees to repay the "
+        "Advance for the Book to Publisher within such eighteen (18) months from notification that the Book is not "
         "editorially acceptable.\n\n"
         "e) If Author fails to comply with the requirements of Paragraph 11, then Publisher shall have the option "
         "itself to obtain the permissions and materials referred to in Paragraph 11 and charge the commercially "
         "reasonable and documented costs thereof against any sums payable to Author.\n\n"
-        "f) In no event shall Publisher engage another author to complete the Work."
+        "f) In no event shall Publisher engage another author to complete the Book."
     )
 
 
@@ -1382,6 +1450,16 @@ def generate_contract(req: GenerateRequest):
                 return
 
             original_text = "".join(r.text for r in p.runs)
+
+            block_match = TOKEN_RE.fullmatch(original_text.strip())
+            if block_match:
+                block_key = _normalize_token_name(block_match.group(1))
+                compact_key = re.sub(r"[\s_]", "", block_key).lower()
+                if compact_key in {"manuscriptdeliveryblock", "advanceinstallments", "advanceinstallmentsblock"}:
+                    if _insert_numbered_contract_block(
+                        p, values.get(block_key, ""), advance=compact_key.startswith("advance")
+                    ):
+                        return
 
             if (not has_boardbook) and ("Boardbook_" in original_text):
                 element = p._element
