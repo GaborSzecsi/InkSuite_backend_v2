@@ -232,6 +232,23 @@ def _insert_numbered_contract_block(paragraph, text: str, *, advance: bool = Fal
         exemplar = exemplar.getnext()
     base = exemplar.find(qn("w:pPr")) if exemplar is not None else paragraph._p.pPr
 
+    # First-line-only layout: labels sit at the heading's text tab;
+    # subsequent lines return to the heading's body margin.
+    heading_pr = heading.find(qn("w:pPr"))
+    heading_ind = heading_pr.find(qn("w:ind"))
+    body_left = int(heading_ind.get(qn("w:start"), heading_ind.get(qn("w:left"), "0"))) if heading_ind is not None else 0
+    first = int(heading_ind.get(qn("w:firstLine"), "0")) if heading_ind is not None else 0
+    hanging = int(heading_ind.get(qn("w:hanging"), "0")) if heading_ind is not None else 0
+    number_position = body_left + first - hanging
+    # Respect explicit heading tabs; otherwise use the document default tabs.
+    settings = paragraph.part.document.settings.element
+    default_tab = settings.find(qn("w:defaultTabStop"))
+    tab_step = int(default_tab.get(qn("w:val"))) if default_tab is not None else 720
+    tab_step = max(tab_step, 1)
+    stops = [int(t.get(qn("w:pos"))) for t in heading_pr.findall(qn("w:tabs") + "/" + qn("w:tab")) if t.get(qn("w:val")) != "clear" and int(t.get(qn("w:pos"))) > number_position]
+    label_position = min(stops) if stops else ((max(0, number_position) // tab_step) + 1) * tab_step
+    text_position = label_position + 360
+
     def apply_list(element):
         previous = element.find(qn("w:pPr"))
         if previous is not None:
@@ -245,6 +262,15 @@ def _insert_numbered_contract_block(paragraph, text: str, *, advance: bool = Fal
         num = pr.get_or_add_numPr()
         num.get_or_add_ilvl().val = 1
         num.get_or_add_numId().val = int(num_id)
+        indent = pr.get_or_add_ind()
+        indent.set(qn("w:left"), str(body_left))
+        indent.set(qn("w:start"), str(body_left))
+        indent.set(qn("w:firstLine"), str(label_position - body_left))
+        tabs = pr.get_or_add_tabs()
+        tab = OxmlElement("w:tab")
+        tab.set(qn("w:val"), "num")
+        tab.set(qn("w:pos"), str(text_position))
+        tabs.append(tab)
 
     following = anchor.getnext()
     lines = [re.sub(r"^\s*(?:\d+[.)]|[a-z][)])\s+", "", line.strip())
