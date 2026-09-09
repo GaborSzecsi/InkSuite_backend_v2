@@ -402,7 +402,7 @@ def get_me_payload_from_claims(claims: dict) -> dict:
             try:
                 cur.execute(
                     """
-                    SELECT t.slug, m.role, m.module_permissions
+                    SELECT t.slug, m.role, m.module_permissions, t.name
                     FROM memberships m
                     JOIN tenants t ON t.id = m.tenant_id
                     WHERE m.user_id = %s
@@ -411,13 +411,13 @@ def get_me_payload_from_claims(claims: dict) -> dict:
                     (user_id,),
                 )
                 tenants = [
-                    {"tenant_slug": r[0], "role": r[1], "module_permissions": r[2] or {}}
+                    {"tenant_slug": r[0], "role": r[1], "module_permissions": r[2] or {}, "tenant_name": r[3]}
                     for r in cur.fetchall()
                 ]
             except Exception:
                 cur.execute(
                     """
-                    SELECT t.slug, m.role
+                    SELECT t.slug, m.role, t.name
                     FROM memberships m
                     JOIN tenants t ON t.id = m.tenant_id
                     WHERE m.user_id = %s
@@ -425,7 +425,7 @@ def get_me_payload_from_claims(claims: dict) -> dict:
                     """,
                     (user_id,),
                 )
-                tenants = [{"tenant_slug": r[0], "role": r[1], "module_permissions": {}} for r in cur.fetchall()]
+                tenants = [{"tenant_slug": r[0], "role": r[1], "module_permissions": {}, "tenant_name": r[2]} for r in cur.fetchall()]
 
         out["user"]["email"] = db_email or out["user"].get("email") or "unknown"
         out["user"]["platform_role"] = platform_role or out["user"].get("platform_role") or "user"

@@ -507,7 +507,7 @@ def resend_invite(invite_id: str, ctx: dict = Depends(require_role([TENANT_ADMIN
 # Reset Password
 # -------------------------------------------------
 def _cognito_client():
-    return boto3.client("cognito-idp", region_name=os.environ.get("AWS_REGION") or "us-east-2")
+    return boto3.client("cognito-idp", region_name=_cognito_user_pool_id().split("_", 1)[0])
 
 def _cognito_user_pool_id() -> str:
     v = (os.environ.get("COGNITO_USER_POOL_ID") or "").strip()

@@ -280,3 +280,7 @@ def register_and_accept_invite_route(body: RegisterAcceptInviteBody):
         if _is_db_down_error(msg):
             raise HTTPException(status_code=503, detail="Service temporarily unavailable. Check database connection.")
         raise HTTPException(status_code=500, detail="Unexpected server error")
+
+# Public password recovery endpoints share the /auth prefix.
+from app.auth.password_recovery import router as password_recovery_router
+router.include_router(password_recovery_router)
