@@ -215,12 +215,29 @@ def _send_email_smtp(
     to_name: str,
     subject: str,
     body_text: str,
+    signature_context: Optional[tuple] = None,
 ) -> None:
     msg = EmailMessage()
     msg["To"] = f"{to_name} <{to_email}>" if to_name else to_email
     msg["From"] = f"{from_name} <{from_email}>" if from_name else from_email
     msg["Subject"] = subject
-    msg.set_content(body_text)
+    if signature_context:
+        from app.meetings.service import signature
+        from psycopg.rows import dict_row
+        import html
+        with db_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+            # Existing email flows still work before Meetings is configured.
+            cur.execute("SELECT to_regclass('meeting_profiles') AS present")
+            present = cur.fetchone()['present']
+            if present:
+                signature_text, signature_html = signature(cur, *signature_context)
+            else:
+                signature_text, signature_html = '', ''
+        msg.set_content(body_text + ('\n\n' + signature_text if signature_text else ''))
+        if signature_html:
+            msg.add_alternative('<p>' + html.escape(body_text).replace('\n','<br>') + '</p><p>' + signature_html + '</p>', subtype='html')
+    else:
+        msg.set_content(body_text)
 
     if tls_mode == "ssl":
         with smtplib.SMTP_SSL(smtp_host, smtp_port) as smtp:
@@ -425,6 +442,7 @@ def create_invite_for_draft(
     try:
         username, password = _load_smtp_secret(settings["smtp_secret_id"])
         _send_email_smtp(
+            signature_context=(mctx["tenant_id"], mctx["user_id"]),
             smtp_host=settings["smtp_host"],
             smtp_port=settings["smtp_port"],
             tls_mode=settings["tls_mode"],

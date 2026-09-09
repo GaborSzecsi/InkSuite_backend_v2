@@ -313,3 +313,13 @@ async def root():
     </body>
     </html>
     """
+
+# Meetings uses the existing tenant/auth dependencies and a separate durable worker.
+from app.meetings.routes import router as meetings_router
+from app.meetings.providers import ProviderError
+from fastapi.responses import JSONResponse
+app.include_router(meetings_router, prefix="/api")
+
+@app.exception_handler(ProviderError)
+async def meetings_provider_error(request, exc):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})

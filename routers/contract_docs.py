@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response as FastAPIRes
 from pydantic import BaseModel, EmailStr
 
 from app.core.db import db_conn
+from .contract_royalties import render_royalty_sections, RoyaltyValidationError
 
 try:
     from docx import Document
@@ -1467,6 +1468,14 @@ def generate_contract(req: GenerateRequest):
         values["Option_Clause"] = option_value
         values["OPTION_CLAUSE"] = option_value
         values["Option Clause"] = option_value
+
+        try:
+            render_royalty_sections(
+                doc, memo, "illustrator" if is_illustrator else "author",
+                insert_block=_insert_numbered_contract_block,
+            )
+        except RoyaltyValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         has_boardbook = _populate_royalty_tokens(memo, values)
         _populate_subrights(memo, values)

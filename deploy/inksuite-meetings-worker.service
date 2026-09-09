@@ -1,0 +1,15 @@
+[Unit]
+Description=InkSuite Meetings reminder and calendar worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/inksuite/app
+EnvironmentFile=/etc/inksuite-api.env
+ExecStart=/home/ubuntu/inksuite/app/.venv/bin/python -m app.meetings.worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

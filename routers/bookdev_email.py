@@ -1918,6 +1918,7 @@ def send_bookdev_request(
         print("SMTP password length    :", len(password or ""))
 
         _send_email_smtp(
+            signature_context=(mctx["tenant_id"], mctx["user_id"]),
             smtp_host=settings["smtp_host"],
             smtp_port=settings["smtp_port"],
             tls_mode=settings["tls_mode"],
