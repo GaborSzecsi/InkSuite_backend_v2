@@ -64,6 +64,32 @@ def get_profile(ctx=Depends(require_tenant_access)):
         p=s.profile(cur,tenant,user);text,markup=s.signature(cur,tenant,user)
         return {k:p[k] for k in ('timezone','display_name','company_email','sender_connection_id','smtp_sender_id','signature_text','signature_links','availability')} | {'preview_text':text,'preview_html':markup}
 
+@router.get(ROOT+'/profile-photo')
+def profile_photo(ctx=Depends(require_tenant_access)):
+    """Use an existing Google connection; expose only its photo URL, never tokens."""
+    from urllib.parse import urlparse
+    tenant,user=context(ctx)
+    with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:
+        connection=s.one(cur, """SELECT * FROM meeting_connections
+            WHERE tenant_id=%s AND user_id=%s AND provider='google' AND status='connected'
+            ORDER BY (lower(email)=lower(%s)) DESC,created_at,id LIMIT 1""",
+            (tenant,user,ctx['user'].get('email') or ''))
+    if not connection:
+        return {'picture':None}
+    try:
+        identity=s.adapter(connection).identity()
+        if str(identity['id']) != str(connection['account_id']):
+            return {'picture':None}
+        picture=identity.get('picture') or ''
+        url=urlparse(picture)
+        host=(url.hostname or '').lower()
+        if url.scheme=='https' and not url.username and not url.password and any(host==domain or host.endswith('.'+domain) for domain in ('googleusercontent.com','ggpht.com')):
+            return {'picture':picture}
+    except Exception:
+        # An unavailable Google account must not prevent the workspace loading.
+        pass
+    return {'picture':None}
+
 @router.get(ROOT+'/smtp-senders')
 def smtp_senders(ctx=Depends(require_tenant_access)):
     tenant,user=context(ctx)

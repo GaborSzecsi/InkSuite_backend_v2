@@ -43,8 +43,19 @@ class EventIn(BaseModel):
         return self
 
 
-class SharingIn(BaseModel):
-    share_busy: bool
+def first_name(name):
+    value = (name or '').strip().split('@', 1)[0]
+    return value.replace('.', ' ').replace('_', ' ').split()[0].capitalize() if value else 'Teammate'
+
+
+def team_people(cur, tenant, user=None):
+    return s.all_rows(cur, """SELECT m.user_id AS id,
+        COALESCE(NULLIF(to_jsonb(u)->>'first_name',''), NULLIF(to_jsonb(u)->>'given_name',''),
+                 NULLIF(p.display_name,''), NULLIF(to_jsonb(u)->>'display_name',''), u.email) AS name
+        FROM memberships m JOIN users u ON u.id=m.user_id
+        LEFT JOIN meeting_profiles p ON p.tenant_id=m.tenant_id AND p.user_id=m.user_id
+        WHERE m.tenant_id=%s AND (%s::uuid IS NULL OR m.user_id<>%s::uuid)
+        ORDER BY name""", (tenant,user,user))
 
 
 def busy_view(intervals, name):
@@ -59,24 +70,8 @@ def settings(ctx=Depends(require_tenant_access)):
     with db_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
         s.profile(cur, tenant, user)
         available = ready(cur)
-        preference = s.one(cur, 'SELECT share_busy FROM meeting_calendar_preferences WHERE tenant_id=%s AND user_id=%s', (tenant,user)) if available else None
-        people = s.all_rows(cur, """SELECT p.user_id AS id, COALESCE(NULLIF(p.display_name,''),u.email) AS name
-            FROM meeting_profiles p JOIN users u ON u.id=p.user_id
-            JOIN meeting_calendar_preferences cp ON cp.tenant_id=p.tenant_id AND cp.user_id=p.user_id
-            WHERE p.tenant_id=%s AND p.user_id<>%s AND cp.share_busy
-            AND EXISTS(SELECT 1 FROM memberships m WHERE m.tenant_id=p.tenant_id AND m.user_id=p.user_id)
-            ORDER BY name""", (tenant,user)) if available else []
-        return {'storage_ready': available, 'share_busy': bool(preference and preference['share_busy']), 'people': people}
-
-
-@router.put('/settings')
-def sharing(body: SharingIn, ctx=Depends(require_tenant_access)):
-    tenant, user = ctx['tenant']['id'], ctx['user']['id']
-    with db_conn() as conn, conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-        require_ready(cur)
-        s.profile(cur, tenant, user, lock=True)
-        cur.execute('INSERT INTO meeting_calendar_preferences(tenant_id,user_id,share_busy) VALUES(%s,%s,%s) ON CONFLICT(tenant_id,user_id) DO UPDATE SET share_busy=EXCLUDED.share_busy', (tenant,user,body.share_busy))
-    return {'share_busy': body.share_busy}
+        people = team_people(cur, tenant, user)
+        return {'storage_ready': available, 'people': [dict(p, name=first_name(p['name'])) for p in people]}
 
 
 @router.get('/events')
@@ -87,14 +82,9 @@ def events(start: datetime, end: datetime, team_user: UUID | None = None, ctx=De
     with db_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
         available = ready(cur)
         if team_user:
-            require_ready(cur)
-            person = s.one(cur, """SELECT p.user_id, COALESCE(NULLIF(p.display_name,''),u.email) AS name
-                FROM meeting_profiles p JOIN users u ON u.id=p.user_id
-                JOIN meeting_calendar_preferences cp ON cp.tenant_id=p.tenant_id AND cp.user_id=p.user_id
-                WHERE p.tenant_id=%s AND p.user_id=%s AND cp.share_busy
-                AND EXISTS(SELECT 1 FROM memberships m WHERE m.tenant_id=p.tenant_id AND m.user_id=p.user_id)""", (tenant,team_user))
+            person = next((p for p in team_people(cur, tenant) if str(p['id']) == str(team_user)), None)
             if not person:
-                raise HTTPException(404, 'Team availability is not shared.')
+                raise HTTPException(404, 'Team member not found.')
             user = team_user
         bookings = s.all_rows(cur, """SELECT id,start_at,end_at,snapshot,external_connection_id,external_calendar_id,external_event_id
             FROM meeting_bookings WHERE tenant_id=%s AND user_id=%s AND status IN ('pending','confirmed','sync_error')
@@ -128,7 +118,9 @@ def events(start: datetime, end: datetime, team_user: UUID | None = None, ctx=De
                     warnings.append('A calendar could not load. Availability may be incomplete.' if team_user else f"Could not load {cal['name']} ({c['email']}). Try refreshing or reconnecting.")
         if team_user:
             from .availability import merge_busy
-            result = busy_view(merge_busy(intervals),person['name'])
+            result = busy_view(merge_busy(intervals),first_name(person['name']))
+            for event in result:
+                event['id'] = f"{team_user}:{event['id']}"
         return {'events':result, 'warnings':list(dict.fromkeys(warnings))}
 
 

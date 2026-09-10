@@ -98,7 +98,7 @@ class CalendarProvider:
     def identity(self):
         p=self.api('GET','/oauth2/v3/userinfo' if self.provider=='google' else '/me?$select=id,mail,userPrincipalName,displayName')
         if self.provider=='google' and not p.get('email_verified'):raise ProviderError('The connected email must be verified.')
-        return {'id':p.get('sub') or p['id'],'email':p.get('email') or p.get('mail') or p.get('userPrincipalName'),'name':p.get('name') or p.get('displayName','')}
+        return {'id':p.get('sub') or p['id'],'email':p.get('email') or p.get('mail') or p.get('userPrincipalName'),'name':p.get('name') or p.get('displayName',''), 'picture':p.get('picture') if self.provider=='google' else None}
     def calendars(self):
         result=[];page=None
         while True:

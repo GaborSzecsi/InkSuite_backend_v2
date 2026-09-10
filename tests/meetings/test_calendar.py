@@ -56,28 +56,31 @@ def db(monkeypatch):
     return cur
 
 
-def test_team_requires_consent_and_same_tenant_before_provider_access(monkeypatch,db):
+def test_team_requires_same_tenant_before_provider_access(monkeypatch,db):
     tenant,user,target=uuid4(),uuid4(),uuid4()
-    query=Mock(return_value=None);provider=Mock()
-    monkeypatch.setattr(c.s,'one',query);monkeypatch.setattr(c.s,'adapter',provider)
+    query=Mock(return_value=[]);provider=Mock()
+    monkeypatch.setattr(c.s,'all_rows',query);monkeypatch.setattr(c.s,'adapter',provider)
     with pytest.raises(HTTPException) as error:
         c.events(A,B,target,{'tenant':{'id':tenant},'user':{'id':user}})
     assert error.value.status_code==404
-    assert query.call_args.args[2]==(tenant,target)
-    assert 'cp.share_busy' in query.call_args.args[1]
+    assert query.call_args.args[2]==(tenant,None,None)
+    assert 'share_busy' not in query.call_args.args[1]
     assert 'memberships' in query.call_args.args[1]
     provider.assert_not_called()
 
 
 def test_team_queries_free_busy_never_event_details(monkeypatch,db):
-    monkeypatch.setattr(c.s,'one',Mock(return_value={'name':'Colleague'}))
+    target=uuid4()
+    monkeypatch.setattr(c,'team_people',Mock(return_value=[{'id':target,'name':'Susan Smith'}]))
     monkeypatch.setattr(c.s,'all_rows',Mock(side_effect=[[],[],[{'status':'connected','calendars':[{'id':'private','name':'Secret'}]}]]))
     provider=Mock();provider.busy.return_value=[(A,B)]
     monkeypatch.setattr(c.s,'adapter',Mock(return_value=provider))
-    result=c.events(A,B,uuid4(),{'tenant':{'id':uuid4()},'user':{'id':uuid4()}})
+    result=c.events(A,B,target,{'tenant':{'id':uuid4()},'user':{'id':uuid4()}})
     provider.calendar_events.assert_not_called()
     assert result['events'][0]['title']=='Busy'
     assert 'Secret' not in str(result)
+    assert result['events'][0]['person']=='Susan'
+    assert result['events'][0]['id'].startswith(str(target)+':')
 
 
 def test_synced_booking_is_not_shown_twice(monkeypatch,db):
@@ -105,3 +108,18 @@ def test_added_events_block_booking_availability(monkeypatch):
     c.s.available(Mock(),{'tenant_id':'tenant','user_id':'owner','config':{'timezone':'UTC'}},'2026-09-10')
     assert slots.call_args.args[2]==[(A,B)]
     assert rows.call_args.args[2][:2]==('tenant','owner')
+
+
+def test_team_roster_defaults_to_all_members_without_preferences(monkeypatch):
+    rows=Mock(return_value=[])
+    monkeypatch.setattr(c.s,'all_rows',rows)
+    c.team_people(Mock(),'tenant','viewer')
+    sql=rows.call_args.args[1]
+    assert 'LEFT JOIN meeting_profiles' in sql
+    assert 'share_busy' not in sql and 'meeting_calendar_preferences' not in sql
+    assert rows.call_args.args[2]==('tenant','viewer','viewer')
+
+
+@pytest.mark.parametrize('name,expected',[('Susan Smith','Susan'),('susan.smith@example.com','Susan'),('','Teammate')])
+def test_first_name_labels(name,expected):
+    assert c.first_name(name)==expected
