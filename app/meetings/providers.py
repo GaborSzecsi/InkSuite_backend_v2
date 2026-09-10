@@ -150,6 +150,47 @@ class CalendarProvider:
                         result.append((instant(x['start']['dateTime']+'Z' if not x['start']['dateTime'].endswith('Z') else x['start']['dateTime']),instant(x['end']['dateTime']+'Z' if not x['end']['dateTime'].endswith('Z') else x['end']['dateTime'])))
                     url=data.get('@odata.nextLink');path=url.removeprefix('https://graph.microsoft.com/v1.0') if url else None
         return result
+    def calendar_events(self, calendar, start, end):
+        """Expand recurring events inside a bounded view; all-day dates stay date-only."""
+        result = []
+        if self.provider == 'google':
+            path = '/calendar/v3/calendars/' + quote(calendar, safe='') + '/events'
+            params = {'timeMin': start.isoformat(), 'timeMax': end.isoformat(),
+                      'singleEvents': 'true', 'maxResults': 2500,
+                      'fields': 'items(id,summary,start,end,status),nextPageToken'}
+            while True:
+                data = self.api('GET', path, params=params)
+                for e in data.get('items', []):
+                    if e.get('status') == 'cancelled':
+                        continue
+                    result.append({'id': e['id'], 'title': e.get('summary') or 'Busy',
+                                   'start': e['start'].get('dateTime') or e['start']['date'],
+                                   'end': e['end'].get('dateTime') or e['end']['date'],
+                                   'all_day': 'date' in e['start']})
+                if not data.get('nextPageToken'):
+                    break
+                params['pageToken'] = data['nextPageToken']
+        else:
+            path = '/me/calendars/' + quote(calendar, safe='') + '/calendarView?' + urlencode({
+                'startDateTime': start.isoformat(), 'endDateTime': end.isoformat(),
+                '$select': 'id,subject,start,end,isAllDay,isCancelled', '$top': '1000'})
+            while path:
+                data = self.api('GET', path)
+                for e in data.get('value', []):
+                    if e.get('isCancelled'):
+                        continue
+                    def stamp(value):
+                        raw = value['dateTime']
+                        if e.get('isAllDay'):
+                            return raw[:10]
+                        return raw if raw.endswith('Z') or '+' in raw[10:] else raw + 'Z'
+                    result.append({'id': e['id'], 'title': e.get('subject') or 'Busy',
+                                   'start': stamp(e['start']), 'end': stamp(e['end']),
+                                   'all_day': e.get('isAllDay', False)})
+                url = data.get('@odata.nextLink')
+                path = url.removeprefix('https://graph.microsoft.com/v1.0') if url else None
+        return result
+
     def event(self,booking,action):
         cid=quote(booking['external_calendar_id'],safe='');eid=booking.get('external_event_id');cfg=booking['snapshot'];guest=booking['guest']
         if self.provider=='google':

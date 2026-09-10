@@ -101,6 +101,10 @@ def available(cur,t,day,exclude=None):
     cfg=t['config'];zone=ZoneInfo(cfg['timezone']);day=datetime.fromisoformat(day).date()
     start=datetime.combine(day,datetime.min.time(),zone).astimezone(UTC)-timedelta(days=1);end=start+timedelta(days=3)
     busy=[(r['busy_start'],r['busy_end']) for r in all_rows(cur,"SELECT busy_start,busy_end FROM meeting_bookings WHERE tenant_id=%s AND user_id=%s AND status IN ('pending','confirmed','sync_error') AND busy_start<%s AND busy_end>%s AND (%s::uuid IS NULL OR id<>%s::uuid)",(t['tenant_id'],t['user_id'],end,start,exclude,exclude))]
+    if one(cur,"SELECT to_regclass('public.meeting_calendar_events') AS present")['present']:
+        busy.extend((r['start_at'],r['end_at']) for r in all_rows(cur,
+            'SELECT start_at,end_at FROM meeting_calendar_events WHERE tenant_id=%s AND user_id=%s AND start_at<%s AND end_at>%s',
+            (t['tenant_id'],t['user_id'],end,start)))
     grouped={}
     refs=list(cfg.get('conflicts',[]))
     if cfg.get('destination') and cfg['destination'] not in refs:refs.append(cfg['destination'])
