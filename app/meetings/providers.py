@@ -5,16 +5,46 @@ import boto3
 import requests
 from .availability import instant
 
-class ProviderError(RuntimeError): pass
+class ProviderError(RuntimeError):
+    pass
+
+
+def _secrets_client():
+    region = (
+        os.getenv("AWS_REGION")
+        or os.getenv("AWS_DEFAULT_REGION")
+        or "us-east-2"
+    )
+    return boto3.client("secretsmanager", region_name=region)
+
 
 def secret_write(name, value):
-    client=boto3.client('secretsmanager')
-    try:client.create_secret(Name=name,SecretString=json.dumps(value))
-    except client.exceptions.ResourceExistsException:client.put_secret_value(SecretId=name,SecretString=json.dumps(value))
+    client = _secrets_client()
+    try:
+        client.create_secret(
+            Name=name,
+            SecretString=json.dumps(value),
+        )
+    except client.exceptions.ResourceExistsException:
+        client.put_secret_value(
+            SecretId=name,
+            SecretString=json.dumps(value),
+        )
     return name
 
-def secret_read(name):return json.loads(boto3.client('secretsmanager').get_secret_value(SecretId=name)['SecretString'])
-def secret_delete(name):boto3.client('secretsmanager').delete_secret(SecretId=name,ForceDeleteWithoutRecovery=True)
+
+def secret_read(name):
+    result = _secrets_client().get_secret_value(
+        SecretId=name
+    )
+    return json.loads(result["SecretString"])
+
+
+def secret_delete(name):
+    _secrets_client().delete_secret(
+        SecretId=name,
+        ForceDeleteWithoutRecovery=True,
+    )
 
 def config(provider):
     if provider not in ('google','microsoft'):raise ProviderError('Unknown calendar provider.')
