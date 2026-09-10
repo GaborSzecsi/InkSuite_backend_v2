@@ -57,8 +57,7 @@ def config(provider):
     return dict(client_id=client,client_secret=secret,redirect_uri=base+'/api/meetings/oauth/'+provider+'/callback',
                 authorize='https://accounts.google.com/o/oauth2/v2/auth' if provider=='google' else root+'/authorize',
                 token='https://oauth2.googleapis.com/token' if provider=='google' else root+'/token',
-                scope='openid email profile https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/gmail.send' if provider=='google' else 'openid profile email offline_access User.Read Calendars.ReadWrite Mail.Send')
-
+                scope='openid email profile https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.freebusy' if provider=='google' else 'openid profile email offline_access User.Read Calendars.ReadWrite')
 def authorize(provider,state,verifier):
     c=config(provider)
     args={k:c[k] for k in ('client_id','redirect_uri','scope')}
