@@ -1,4 +1,5 @@
 import secrets, uuid
+import requests
 from datetime import datetime,timedelta,timezone
 from fastapi import APIRouter,Depends,HTTPException,Request
 from fastapi.responses import RedirectResponse
@@ -345,7 +346,8 @@ def read_notification(id:uuid.UUID,ctx=Depends(require_tenant_access)):
 @router.get(ROOT+'/connections')
 def connections(ctx=Depends(require_tenant_access)):
     tenant,user=context(ctx)
-    with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:return s.all_rows(cur,'SELECT id,provider,email,status,calendars FROM meeting_connections WHERE tenant_id=%s AND user_id=%s',(tenant,user))
+    with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:
+        return s.all_rows(cur,"SELECT id,provider,email,status,calendars FROM meeting_connections WHERE tenant_id=%s AND user_id=%s AND status='connected'",(tenant,user))
 
 @router.post(ROOT+'/connections/{id}/refresh')
 def refresh_calendars(id:uuid.UUID,ctx=Depends(require_tenant_access)):
@@ -358,10 +360,53 @@ def refresh_calendars(id:uuid.UUID,ctx=Depends(require_tenant_access)):
 @router.delete(ROOT+'/connections/{id}')
 def disconnect(id:uuid.UUID,ctx=Depends(require_tenant_access)):
     tenant,user=context(ctx)
+
+    # Read the OAuth credential before changing local state.
     with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:
         c=s.owned(cur,'meeting_connections',id,tenant,user)
-        cur.execute("UPDATE meeting_connections SET status='disconnected' WHERE id=%s",(id,))
+        credentials=secret_read(c['secret_id'])
+
+    if c['provider']=='google':
+        token=credentials.get('refresh_token') or credentials.get('access_token')
+        if token:
+            try:
+                response=requests.post(
+                    'https://oauth2.googleapis.com/revoke',
+                    data={'token':token},
+                    timeout=20,
+                )
+            except requests.RequestException as exc:
+                raise HTTPException(503,'Google could not revoke the calendar connection. Please try again.') from exc
+
+            # Google can return 400 when the token is already invalid/revoked.
+            if response.status_code not in (200,400):
+                raise HTTPException(503,'Google could not revoke the calendar connection. Please try again.')
+
+    elif c['provider']=='microsoft':
+        # Do not present a local-only removal as a full provider disconnect.
+        raise HTTPException(501,'Full Microsoft calendar revocation is not configured yet.')
+
+    # Keep the connection row for historical booking references, but make it
+    # inactive and detach it from the profile.
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        c=s.owned(cur,'meeting_connections',id,tenant,user)
+        cur.execute(
+            '''UPDATE meeting_profiles
+               SET sender_connection_id=NULL,updated_at=now()
+               WHERE tenant_id=%s AND user_id=%s AND sender_connection_id=%s''',
+            (tenant,user,id),
+        )
+        cur.execute(
+            "UPDATE meeting_connections SET status='disconnected',updated_at=now() WHERE id=%s",
+            (id,),
+        )
+
+    try:
         secret_delete(c['secret_id'])
+    except Exception:
+        # Provider access is already revoked and the DB connection is inactive.
+        pass
+
     return {'ok':True}
 
 @router.post(ROOT+'/connect/{provider}')
