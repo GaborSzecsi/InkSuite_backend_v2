@@ -135,11 +135,35 @@ class CalendarProvider:
                     params['pageToken']=data['nextPageToken']
             return result
         if self.provider=='google':
-            data=self.api('POST','/calendar/v3/freeBusy',json={'timeMin':start.isoformat(),'timeMax':end.isoformat(),'items':[{'id':c} for c in calendars]})
+            # Google holiday calendars are useful for display, but they must not
+            # participate in free/busy calculations or block meeting availability.
+            calendars = [
+                cid for cid in calendars
+                if '#holiday@group.v.calendar.google.com' not in cid
+            ]
+
+            if not calendars:
+                return result
+
+            data=self.api(
+                'POST',
+                '/calendar/v3/freeBusy',
+                json={
+                    'timeMin': start.isoformat(),
+                    'timeMax': end.isoformat(),
+                    'items': [{'id': c} for c in calendars],
+                },
+            )
             for cid in calendars:
                 c=data.get('calendars',{}).get(cid)
-                if c is None or c.get('errors'):raise ProviderError('Could not check all selected calendars. Try again later.')
-                result.extend((instant(x['start']),instant(x['end'])) for x in c.get('busy',[]))
+                if c is None or c.get('errors'):
+                    raise ProviderError(
+                        'Could not check all selected calendars. Try again later.'
+                    )
+                result.extend(
+                    (instant(x['start']), instant(x['end']))
+                    for x in c.get('busy',[])
+                )
         else:
             for cid in calendars:
                 path='/me/calendars/'+quote(cid,safe='')+'/calendarView?'+urlencode({'startDateTime':start.isoformat(),'endDateTime':end.isoformat(),'$select':'id,start,end,showAs,isCancelled','$top':'1000'})
