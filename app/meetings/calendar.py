@@ -113,9 +113,18 @@ def events(start: datetime, end: datetime, team_user: UUID | None = None, ctx=De
                             if (str(c['id']),cal['id'],e['id']) in synced:
                                 continue
                             result.append({**e, 'id':f"{c['id']}:{cal['id']}:{e['id']}", 'source':c['provider'], 'calendar':cal['name']})
-                except Exception:
+                except Exception as exc:
+                    print(
+                        f"[meetings-calendar] failed provider={c['provider']} "
+                        f"connection_id={c['id']} calendar_id={cal.get('id')} "
+                        f"calendar_name={cal.get('name')} error={type(exc).__name__}: {exc}"
+                    )
                     # Never expose credential/provider payloads or another user's calendar identity.
-                    warnings.append('A calendar could not load. Availability may be incomplete.' if team_user else f"Could not load {cal['name']} ({c['email']}). Try refreshing or reconnecting.")
+                    warnings.append(
+                        'A calendar could not load. Availability may be incomplete.'
+                        if team_user
+                        else f"Could not load {cal['name']} ({c['email']}). Try refreshing or reconnecting."
+                    )
         if team_user:
             from .availability import merge_busy
             result = busy_view(merge_busy(intervals),first_name(person['name']))
