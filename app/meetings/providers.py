@@ -69,7 +69,13 @@ def exchange(provider,code,verifier):
     c=config(provider);data={k:c[k] for k in ('client_id','client_secret','redirect_uri')}
     data.update(code=code,code_verifier=verifier,grant_type='authorization_code')
     response=requests.post(c['token'],data=data,timeout=20)
-    if not response.ok:raise ProviderError('Calendar authorization failed. Please reconnect.')
+    if not response.ok:
+        try:
+            detail=response.json()
+        except ValueError:
+            detail={}
+        print(f"Meetings OAuth token exchange failed provider={provider} status={response.status_code} error={detail.get('error')} description={detail.get('error_description')}")
+        raise ProviderError('Calendar authorization failed. Please reconnect.')
     result=response.json();result['expires_at']=time.time()+result.get('expires_in',3600)
     if not result.get('refresh_token'):raise ProviderError('Offline access was not granted. Reconnect with calendar and email permissions.')
     return result
