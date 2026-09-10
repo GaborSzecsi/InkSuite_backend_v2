@@ -1,5 +1,6 @@
 """Calendar adapters. Credentials stay in AWS Secrets Manager, as do SMTP secrets."""
 import base64, hashlib, json, os, time
+from datetime import timezone
 from urllib.parse import urlencode, quote
 import boto3
 import requests
@@ -148,7 +149,20 @@ class CalendarProvider:
         cid=quote(booking['external_calendar_id'],safe='');eid=booking.get('external_event_id');cfg=booking['snapshot'];guest=booking['guest']
         if self.provider=='google':
             path='/calendar/v3/calendars/'+cid+'/events'
-            body={'summary':cfg['title'],'description':guest.get('notes',''),'start':{'dateTime':booking['start_at'].isoformat()},'end':{'dateTime':booking['end_at'].isoformat()},'location':cfg.get('location',''),'attendees':[{'email':guest['email'],'displayName':guest['name']}]}
+            body={
+                'summary':cfg['title'],
+                'description':guest.get('notes',''),
+                'start':{
+                    'dateTime':booking['start_at'].astimezone(timezone.utc).isoformat(),
+                    'timeZone':'UTC'
+                },
+                'end':{
+                    'dateTime':booking['end_at'].astimezone(timezone.utc).isoformat(),
+                    'timeZone':'UTC'
+                },
+                'location':cfg.get('location',''),
+                'attendees':[{'email':guest['email'],'displayName':guest['name']}]
+            }
             if action=='create':
                 body['id']=str(booking['id']).replace('-','')
                 # Deterministic event ID makes timeout retries safe.
