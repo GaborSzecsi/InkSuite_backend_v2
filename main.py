@@ -319,6 +319,8 @@ from app.meetings.routes import router as meetings_router
 from app.meetings.providers import ProviderError
 from fastapi.responses import JSONResponse
 app.include_router(meetings_router, prefix="/api")
+from app.marketing.routes import router as marketing_router
+app.include_router(marketing_router, prefix="/api")
 from app.meetings.calendar import router as meeting_calendar_router
 app.include_router(meeting_calendar_router, prefix="/api")
 
