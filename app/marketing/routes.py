@@ -229,7 +229,7 @@ def boards(account_id:UUID,ctx=Depends(s.admin)):
             if a['provider']!='pinterest': raise HTTPException(422,'Select a Pinterest account.')
             token=publishing.credentials(cur,a);result=[];bookmark=None
             for _ in range(20):
-                data=provider_request('GET','https://api.pinterest.com/v5/boards',token,params={'page_size':100,**({'bookmark':bookmark} if bookmark else {})})
+                data=provider_request('GET','https://api-sandbox.pinterest.com/v5/boards',token,params={'page_size':100,**({'bookmark':bookmark} if bookmark else {})})
                 result.extend({'id':b['id'],'name':b['name']} for b in data.get('items',[]));bookmark=data.get('bookmark')
                 if not bookmark: break
             return result

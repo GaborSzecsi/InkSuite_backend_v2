@@ -177,6 +177,7 @@ def begin(cur, ctx, provider):
     elif provider == "pinterest":
         params["scope"] = (
             "boards:read,"
+            "boards:write,"
             "pins:read,"
             "pins:write,"
             "user_accounts:read"
@@ -217,7 +218,7 @@ def token_exchange(provider, body):
     if provider == "pinterest":
         return request(
             "POST",
-            "https://api.pinterest.com/v5/oauth/token",
+            "https://api-sandbox.pinterest.com/v5/oauth/token",
             auth=(client, secret),
             data=body,
         )
@@ -464,7 +465,7 @@ def finish(cur, ctx, provider, code):
     elif provider == "pinterest":
         item = request(
             "GET",
-            "https://api.pinterest.com/v5/user_account",
+            "https://api-sandbox.pinterest.com/v5/user_account",
             tokens["access_token"],
         )
 

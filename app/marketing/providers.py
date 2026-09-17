@@ -55,11 +55,15 @@ def request(method, url, token=None, **kwargs):
     )
 
     if is_provider_error:
-        code = (
-            str(error.get('code', 'provider_error'))
-            if isinstance(error, dict)
-            else 'provider_error'
-        )
+        if isinstance(error, dict):
+            code = str(error.get('code', 'provider_error'))
+            provider_message = error.get('message')
+        elif isinstance(data, dict):
+            code = str(data.get('code', 'provider_error'))
+            provider_message = data.get('message')
+        else:
+            code = 'provider_error'
+            provider_message = None
 
         print(
             'PROVIDER ERROR:',
@@ -113,8 +117,8 @@ def request(method, url, token=None, **kwargs):
 
         else:
             msg = (
-                'Provider rejected the request. '
-                'Check media and destination settings.'
+                provider_message
+                or 'Provider rejected the request. Check media and destination settings.'
             )
 
         raise ProviderError(
@@ -289,7 +293,7 @@ class PinterestPublisher(SocialPublisher):
     def advance(self,a,token,p,t,media):
         opts=t['provider_payload'];body={'board_id':opts['board_id'],'title':opts.get('title') or p['title'],'description':content(p,t),'media_source':{'source_type':'image_url','url':media[0]['public_url']},'alt_text':media[0].get('alt_text') or ''}
         if opts.get('link'): body['link']=opts['link']
-        d=request('POST','https://api.pinterest.com/v5/pins',token,json=body)
+        d=request('POST','https://api-sandbox.pinterest.com/v5/pins',token,json=body)
         pid=str(d['id']);return Result('published',{},pid,'https://www.pinterest.com/pin/'+pid+'/')
 
 class TikTokPublisher(SocialPublisher):
