@@ -20,7 +20,14 @@ def config():
     if (
         not bucket
         or environment not in ("development", "production")
-        or not bucket.endswith("-dev" if environment == "development" else "-prod")
+        or (
+            environment == "development"
+            and "-dev" not in bucket
+        )
+        or (
+            environment == "production"
+            and "-prod" not in bucket
+        )
         or bucket
         in {
             os.getenv("S3_BUCKET", "inksuite-data"),
