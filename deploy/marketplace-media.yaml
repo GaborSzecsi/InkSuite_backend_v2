@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Private InkSuite native social media. Review then deploy separately; no existing tenant bucket is modified.
+Parameters:
+  BucketName:
+    Type: String
+    AllowedPattern: "[a-z0-9][a-z0-9.-]{2,62}"
+  AllowedOrigins:
+    Type: CommaDelimitedList
+    Default: https://www.inksuite.io
+    Description: Explicit frontend origins. Add http://localhost:3000 only to development stacks.
+  ApiRoleName:
+    Type: String
+    Description: Existing EC2 API IAM role name
+  WorkerRoleName:
+    Type: String
+    Description: Worker IAM role name (can be the API role during initial deployment)
+  CloudFrontPublicKey:
+    Type: String
+    Description: PEM-encoded RSA 2048 public key; keep the matching private key outside source control.
+Resources:
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      VersioningConfiguration: { Status: Enabled }
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: !Ref AllowedOrigins
+            AllowedMethods: [POST]
+            AllowedHeaders: [Content-Type]
+            ExposedHeaders: [ETag, x-amz-version-id]
+            MaxAge: 600
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 }
+  OriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-social"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  PublicKey:
+    Type: AWS::CloudFront::PublicKey
+    Properties:
+      PublicKeyConfig:
+        CallerReference: !Sub "${AWS::StackName}-social-key"
+        Name: !Sub "${AWS::StackName}-social-key"
+        EncodedKey: !Ref CloudFrontPublicKey
+  KeyGroup:
+    Type: AWS::CloudFront::KeyGroup
+    Properties:
+      KeyGroupConfig:
+        Name: !Sub "${AWS::StackName}-social-keys"
+        Items: [!Ref PublicKey]
+  ImmutableCache:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-immutable"
+        MinTTL: 0
+        DefaultTTL: 31536000
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig: { CookieBehavior: none }
+          HeadersConfig: { HeaderBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: none }
+          EnableAcceptEncodingGzip: false
+          EnableAcceptEncodingBrotli: false
+  BrowserHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-browser"
+        CustomHeadersConfig:
+          Items:
+            - Header: Cache-Control
+              Value: private, max-age=240
+              Override: true
+        SecurityHeadersConfig:
+          ContentTypeOptions: { Override: true }
+          ReferrerPolicy: { ReferrerPolicy: no-referrer, Override: true }
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: social
+            DomainName: !GetAtt MediaBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccess.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+        DefaultCacheBehavior:
+          TargetOriginId: social
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          TrustedKeyGroups: [!Ref KeyGroup]
+          CachePolicyId: !Ref ImmutableCache
+          ResponseHeadersPolicyId: !Ref BrowserHeaders
+          Compress: false
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MediaBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${MediaBucket.Arn}/processed/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+          - Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource: [!GetAtt MediaBucket.Arn, !Sub "${MediaBucket.Arn}/*"]
+            Condition:
+              Bool: { aws:SecureTransport: false }
+  ApiPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-upload"
+      Roles: [!Ref ApiRoleName]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: [s3:PutObject, s3:GetObject]
+            Resource: !Sub "${MediaBucket.Arn}/originals/*"
+  WorkerPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-process"
+      Roles: [!Ref WorkerRoleName]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              [s3:GetObjectVersion, s3:DeleteObject, s3:DeleteObjectVersion]
+            Resource: !Sub "${MediaBucket.Arn}/originals/*"
+          - Effect: Allow
+            Action: [s3:PutObject, s3:DeleteObject, s3:DeleteObjectVersion]
+            Resource: !Sub "${MediaBucket.Arn}/processed/*"
+          - Effect: Allow
+            Action: s3:ListBucketVersions
+            Resource: !GetAtt MediaBucket.Arn
+            Condition:
+              StringLike: { s3:prefix: ["originals/*", "processed/*"] }
+Outputs:
+  Bucket:
+    Value: !Ref MediaBucket
+  CdnUrl:
+    Value: !Sub "https://${Distribution.DomainName}"
+  KeyPairId:
+    Value: !Ref PublicKey

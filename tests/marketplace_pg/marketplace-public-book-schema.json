@@ -1,0 +1,1449 @@
+{
+  "read_only": {
+    "transaction_read_only": "on"
+  },
+  "server": {
+    "database": "inksuite",
+    "version": "PostgreSQL 16.13 on aarch64-unknown-linux-gnu, compiled by aarch64-unknown-linux-gnu-gcc (GCC) 12.4.0, 64-bit",
+    "schema": "public"
+  },
+  "tables": [
+    {
+      "table_schema": "public",
+      "table_name": "advances"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "agency_agent_links"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "agency_profiles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_all_marketing_contacts_20260714"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_angie_marketing_20260714"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_brenda_contact_links_20260316"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_brenda_incomplete_bookstores_20260712"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_brenda_incomplete_schools_20260712"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_brian_petsmart_duplicate_20260712"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_project_team_members"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_project_timeline_items"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_requests"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_task_assignments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_user_work_items"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contact_directory"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contract_draft_invites"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_awards"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_contact_links"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_marketing_profiles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_media_appearances"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_media_contacts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_niche_publicity_targets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_other_publications"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_previous_publicity"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_published_books"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_advance_installments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_addresses"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_awards"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_representations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_socials"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributors"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_drafts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_representation_addresses"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_royalty_rules"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_royalty_tier_conditions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_royalty_tiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_accessibility"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_ancillary_content"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_asset_assignments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_audience"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_cited_content"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_cited_content_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_content_types"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_extents"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_form_details"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_imprint_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_imprints"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_markets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_measurements"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_metadata_reviews"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_prices"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_prizes"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_product_contacts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_product_form_features"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_publisher_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_publisher_websites"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_publishers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_publishing_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_related_products"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_related_works"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_rights"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_sales_restrictions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_sales_rights"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_subjects"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supplier_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supply_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supply_details"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supply_markets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supporting_resource_features"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supporting_resource_parent_features"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supporting_resource_versions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supporting_resources"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_text_content_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_texts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_types"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_usage_constraints"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "editions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "editions_backup_pre_name_cleanup"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "fraser_ca_sales_lines"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "inventory_movements"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "invites"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_audit"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_campaign_works"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_campaigns"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_contacts_cleanup_20260714"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_contacts_cleanup_before_bloggers_20260714"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_oauth_states"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_access_grants"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_access_requests"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_actors"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_blocks"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_book_editions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_books"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_comment_likes"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_comments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_connections"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_conversation_participants"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_conversations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_follows"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_library_items"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_likes"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_messages"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_organizations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_post_books"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_posts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_profiles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_reports"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_audit"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_bookings"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_calendar_events"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_calendar_preferences"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_connections"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_jobs"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_oauth_states"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_profiles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_rate_limits"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_smtp_senders"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_types"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "memberships"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "metadata_assistant_question_state"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_export_job_items"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_export_jobs"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_import_rows"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_imports"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_raw_messages"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_raw_products"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_recipients"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "parties"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "parties_extras_backup_20260315"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_addresses"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_alternative_names"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_contributor_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_contributor_places"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_name_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_professional_affiliations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_representations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_socials"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_websites"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "publishing_assets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_payment_instructions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_payments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_periods"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_rules"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_sales_lines"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_sets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_statement_lines"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_statements"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_tier_conditions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_tiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_accounts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_media_assets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_post_assets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_post_targets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_post_works"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_posts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_publish_jobs"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "subrights_income_lines"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "subrights_types"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "tenant_email_settings"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "tenant_onix_headers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "tenant_org_profile"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "tenants"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "user_notifications"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "users"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "v_contributor_representation"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_about_points"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_collection_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_collections"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_contact_links"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_contributor_metadata"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_contributors"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_foreign_rights_sold"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_marketing_notes"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_party_preferences"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_titles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "works"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "works_backup_pre_name_cleanup"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "works_internal_extras_backup"
+    },
+    {
+      "table_schema": "secure_payments",
+      "table_name": "payment_accounts"
+    },
+    {
+      "table_schema": "secure_payments",
+      "table_name": "payment_audit_events"
+    },
+    {
+      "table_schema": "secure_payments",
+      "table_name": "payment_profiles"
+    },
+    {
+      "table_schema": "secure_payments",
+      "table_name": "payment_requests"
+    }
+  ],
+  "columns": [
+    {
+      "table_name": "edition_rights",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "edition_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "exclusive_rights_country",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "exclusive_rights_territory",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "sales_rights_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "countries_included",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "countries_excluded",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "regions_included",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "regions_excluded",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "language_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "copyright_holder",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "notes",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "item_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "1"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "copyright_notice",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "public_domain",
+      "data_type": "boolean",
+      "udt_name": "bool",
+      "is_nullable": "NO",
+      "column_default": "false"
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "copyright_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_rights",
+      "column_name": "row_sales_rights_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "edition_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "sales_rights_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "countries_included",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "regions_included",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "countries_excluded",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "regions_excluded",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "item_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "1"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "work_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "asset_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'cover_image'::text"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "asset_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "asset_variant",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'standard'::text"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "storage_key",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "public_url",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "file_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "width_pixels",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "height_pixels",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "file_size_bytes",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "caption",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "credit",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "notes",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "is_public",
+      "data_type": "boolean",
+      "udt_name": "bool",
+      "is_nullable": "NO",
+      "column_default": "false"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "is_active",
+      "data_type": "boolean",
+      "udt_name": "bool",
+      "is_nullable": "NO",
+      "column_default": "true"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "publishing_assets",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    }
+  ],
+  "constraints": [
+    {
+      "table_name": "edition_rights",
+      "conname": "edition_rights_edition_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (edition_id) REFERENCES editions(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_rights",
+      "conname": "edition_rights_edition_id_key",
+      "contype": "u",
+      "definition": "UNIQUE (edition_id)"
+    },
+    {
+      "table_name": "edition_rights",
+      "conname": "edition_rights_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "edition_rights",
+      "conname": "edition_rights_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "conname": "edition_sales_rights_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "conname": "fk_edition_sales_rights_edition",
+      "contype": "f",
+      "definition": "FOREIGN KEY (edition_id) REFERENCES editions(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "publishing_assets",
+      "conname": "publishing_assets_file_size_positive_chk",
+      "contype": "c",
+      "definition": "CHECK (((file_size_bytes IS NULL) OR (file_size_bytes > 0)))"
+    },
+    {
+      "table_name": "publishing_assets",
+      "conname": "publishing_assets_height_positive_chk",
+      "contype": "c",
+      "definition": "CHECK (((height_pixels IS NULL) OR (height_pixels > 0)))"
+    },
+    {
+      "table_name": "publishing_assets",
+      "conname": "publishing_assets_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "publishing_assets",
+      "conname": "publishing_assets_public_url_chk",
+      "contype": "c",
+      "definition": "CHECK (((is_public = false) OR (btrim(public_url) <> ''::text)))"
+    },
+    {
+      "table_name": "publishing_assets",
+      "conname": "publishing_assets_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "publishing_assets",
+      "conname": "publishing_assets_width_positive_chk",
+      "contype": "c",
+      "definition": "CHECK (((width_pixels IS NULL) OR (width_pixels > 0)))"
+    },
+    {
+      "table_name": "publishing_assets",
+      "conname": "publishing_assets_work_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE"
+    }
+  ],
+  "indexes": [
+    {
+      "tablename": "edition_rights",
+      "indexname": "edition_rights_edition_id_key",
+      "indexdef": "CREATE UNIQUE INDEX edition_rights_edition_id_key ON public.edition_rights USING btree (edition_id)"
+    },
+    {
+      "tablename": "edition_rights",
+      "indexname": "edition_rights_pkey",
+      "indexdef": "CREATE UNIQUE INDEX edition_rights_pkey ON public.edition_rights USING btree (id)"
+    },
+    {
+      "tablename": "edition_rights",
+      "indexname": "idx_edition_rights_edition",
+      "indexdef": "CREATE INDEX idx_edition_rights_edition ON public.edition_rights USING btree (tenant_id, edition_id, item_order)"
+    },
+    {
+      "tablename": "edition_sales_rights",
+      "indexname": "edition_sales_rights_pkey",
+      "indexdef": "CREATE UNIQUE INDEX edition_sales_rights_pkey ON public.edition_sales_rights USING btree (id)"
+    },
+    {
+      "tablename": "edition_sales_rights",
+      "indexname": "ix_edition_sales_rights_edition",
+      "indexdef": "CREATE INDEX ix_edition_sales_rights_edition ON public.edition_sales_rights USING btree (tenant_id, edition_id, item_order)"
+    },
+    {
+      "tablename": "publishing_assets",
+      "indexname": "idx_publishing_assets_active",
+      "indexdef": "CREATE INDEX idx_publishing_assets_active ON public.publishing_assets USING btree (tenant_id, work_id, asset_type) WHERE (is_active = true)"
+    },
+    {
+      "tablename": "publishing_assets",
+      "indexname": "idx_publishing_assets_public",
+      "indexdef": "CREATE INDEX idx_publishing_assets_public ON public.publishing_assets USING btree (tenant_id, work_id, asset_type) WHERE ((is_public = true) AND (btrim(public_url) <> ''::text))"
+    },
+    {
+      "tablename": "publishing_assets",
+      "indexname": "idx_publishing_assets_work",
+      "indexdef": "CREATE INDEX idx_publishing_assets_work ON public.publishing_assets USING btree (tenant_id, work_id, asset_type, asset_variant)"
+    },
+    {
+      "tablename": "publishing_assets",
+      "indexname": "publishing_assets_pkey",
+      "indexdef": "CREATE UNIQUE INDEX publishing_assets_pkey ON public.publishing_assets USING btree (id)"
+    },
+    {
+      "tablename": "publishing_assets",
+      "indexname": "uq_publishing_asset_public_url",
+      "indexdef": "CREATE UNIQUE INDEX uq_publishing_asset_public_url ON public.publishing_assets USING btree (tenant_id, public_url) WHERE (btrim(public_url) <> ''::text)"
+    },
+    {
+      "tablename": "publishing_assets",
+      "indexname": "uq_publishing_asset_storage_key",
+      "indexdef": "CREATE UNIQUE INDEX uq_publishing_asset_storage_key ON public.publishing_assets USING btree (tenant_id, storage_key) WHERE (btrim(storage_key) <> ''::text)"
+    }
+  ],
+  "triggers": [
+    {
+      "table_name": "edition_rights",
+      "tgname": "trg_edition_rights_updated_at",
+      "definition": "CREATE TRIGGER trg_edition_rights_updated_at BEFORE UPDATE ON public.edition_rights FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+    },
+    {
+      "table_name": "publishing_assets",
+      "tgname": "trg_publishing_assets_updated_at",
+      "definition": "CREATE TRIGGER trg_publishing_assets_updated_at BEFORE UPDATE ON public.publishing_assets FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+    }
+  ],
+  "row_security": [
+    {
+      "relname": "edition_rights",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "edition_sales_rights",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "publishing_assets",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    }
+  ],
+  "extensions": [
+    {
+      "extname": "pgcrypto",
+      "extversion": "1.3"
+    },
+    {
+      "extname": "plpgsql",
+      "extversion": "1.0"
+    }
+  ],
+  "default_privileges": [],
+  "table_privileges": [
+    {
+      "table_name": "edition_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "edition_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "edition_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "edition_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "edition_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "edition_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "edition_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "edition_sales_rights",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "publishing_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "publishing_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "publishing_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "publishing_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "publishing_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "publishing_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "publishing_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    }
+  ],
+  "marble_press": [
+    {
+      "id": "b9e9efbd-a2fc-4506-a79d-4dd2e12910b5",
+      "slug": "marble-press",
+      "name": "Marble Press"
+    }
+  ]
+}

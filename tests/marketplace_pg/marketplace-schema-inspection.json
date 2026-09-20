@@ -1,0 +1,4538 @@
+{
+  "read_only": {
+    "transaction_read_only": "on"
+  },
+  "server": {
+    "database": "inksuite",
+    "version": "PostgreSQL 16.13 on aarch64-unknown-linux-gnu, compiled by aarch64-unknown-linux-gnu-gcc (GCC) 12.4.0, 64-bit",
+    "schema": "public"
+  },
+  "tables": [
+    {
+      "table_schema": "public",
+      "table_name": "advances"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "agency_agent_links"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "agency_profiles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_all_marketing_contacts_20260714"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_angie_marketing_20260714"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_brenda_contact_links_20260316"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_brenda_incomplete_bookstores_20260712"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_brenda_incomplete_schools_20260712"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "backup_brian_petsmart_duplicate_20260712"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_project_team_members"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_project_timeline_items"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_requests"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_task_assignments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "bookdev_user_work_items"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contact_directory"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contract_draft_invites"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_awards"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_contact_links"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_marketing_profiles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_media_appearances"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_media_contacts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_niche_publicity_targets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_other_publications"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_previous_publicity"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "contributor_published_books"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_advance_installments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_addresses"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_awards"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_representations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributor_socials"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_contributors"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_drafts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_representation_addresses"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_royalty_rules"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_royalty_tier_conditions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "deal_memo_royalty_tiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_accessibility"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_ancillary_content"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_asset_assignments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_audience"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_cited_content"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_cited_content_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_content_types"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_extents"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_form_details"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_imprint_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_imprints"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_markets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_measurements"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_metadata_reviews"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_prices"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_prizes"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_product_contacts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_product_form_features"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_publisher_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_publisher_websites"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_publishers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_publishing_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_related_products"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_related_works"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_rights"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_sales_restrictions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_sales_rights"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_subjects"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supplier_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supply_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supply_details"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supply_markets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supporting_resource_features"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supporting_resource_parent_features"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supporting_resource_versions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_supporting_resources"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_text_content_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_texts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_types"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "edition_usage_constraints"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "editions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "editions_backup_pre_name_cleanup"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "fraser_ca_sales_lines"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "inventory_movements"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "invites"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_audit"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_campaign_works"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_campaigns"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_contacts_cleanup_20260714"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_contacts_cleanup_before_bloggers_20260714"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketing_oauth_states"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_actors"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_blocks"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_book_editions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_books"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_comments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_connections"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_conversation_participants"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_conversations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_follows"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_library_items"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_likes"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_messages"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_organizations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_post_books"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_posts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_profiles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "marketplace_reports"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_audit"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_bookings"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_calendar_events"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_calendar_preferences"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_connections"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_jobs"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_oauth_states"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_profiles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_rate_limits"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_smtp_senders"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "meeting_types"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "memberships"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "metadata_assistant_question_state"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_export_job_items"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_export_jobs"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_import_rows"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_imports"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_raw_messages"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_raw_products"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "onix_recipients"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "parties"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "parties_extras_backup_20260315"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_addresses"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_alternative_names"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_contributor_dates"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_contributor_places"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_name_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_professional_affiliations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_representations"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_socials"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "party_websites"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "publishing_assets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_payment_instructions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_payments"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_periods"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_rules"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_sales_lines"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_sets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_statement_lines"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_statements"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_tier_conditions"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "royalty_tiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_accounts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_media_assets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_post_assets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_post_targets"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_post_works"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_posts"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "social_publish_jobs"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "subrights_income_lines"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "subrights_types"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "tenant_email_settings"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "tenant_onix_headers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "tenant_org_profile"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "tenants"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "user_notifications"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "users"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "v_contributor_representation"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_about_points"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_collection_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_collections"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_contact_links"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_contributor_metadata"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_contributors"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_foreign_rights_sold"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_identifiers"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_marketing_notes"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_party_preferences"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "work_titles"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "works"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "works_backup_pre_name_cleanup"
+    },
+    {
+      "table_schema": "public",
+      "table_name": "works_internal_extras_backup"
+    },
+    {
+      "table_schema": "secure_payments",
+      "table_name": "payment_accounts"
+    },
+    {
+      "table_schema": "secure_payments",
+      "table_name": "payment_audit_events"
+    },
+    {
+      "table_schema": "secure_payments",
+      "table_name": "payment_profiles"
+    },
+    {
+      "table_schema": "secure_payments",
+      "table_name": "payment_requests"
+    }
+  ],
+  "columns": [
+    {
+      "table_name": "edition_identifiers",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_identifiers",
+      "column_name": "edition_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_identifiers",
+      "column_name": "id_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_identifiers",
+      "column_name": "id_type_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "column_name": "id_value",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_identifiers",
+      "column_name": "item_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "1"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "supply_detail_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "price_type_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "price_amount",
+      "data_type": "numeric",
+      "udt_name": "numeric",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "currency_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "price_qualifier",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "discount_code_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "discount_type_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "discount_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "tax_rate_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "tax_rate_percent",
+      "data_type": "numeric",
+      "udt_name": "numeric",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "taxable_amount",
+      "data_type": "numeric",
+      "udt_name": "numeric",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "tax_amount",
+      "data_type": "numeric",
+      "udt_name": "numeric",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "territory_country_included",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "territory_region_included",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "price_status",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "price_effective_from",
+      "data_type": "date",
+      "udt_name": "date",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "price_effective_until",
+      "data_type": "date",
+      "udt_name": "date",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "minimum_order_quantity",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "country_excluded",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "region_excluded",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "price_note",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "item_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "1"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_prices",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "edition_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "date_role",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "date_value",
+      "data_type": "date",
+      "udt_name": "date",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "date_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'00'::text"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "note",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "item_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "1"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "column_name": "date_text",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "edition_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "scheme_id",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "subject_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "heading_text",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "region_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "scheme_version",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "keywords",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "is_main",
+      "data_type": "boolean",
+      "udt_name": "bool",
+      "is_nullable": "NO",
+      "column_default": "false"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "item_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "1"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_subjects",
+      "column_name": "scheme_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "edition_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "supplier_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "supplier_role",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "pack_quantity",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "on_sale_date",
+      "data_type": "date",
+      "udt_name": "date",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "product_availability",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "returns_code_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "returns_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "country_included",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "region_included",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "stock_location_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "stock_on_hand",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "stock_on_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "stock_cbo",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "order_time_days",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "carton_quantity",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "expected_ship_date",
+      "data_type": "date",
+      "udt_name": "date",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "returns_note",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "supply_note",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "supplier_email",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "supplier_telephone",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supply_details",
+      "column_name": "supplier_fax",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "resource_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "resource_form",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "resource_link",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "content_date_role",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "content_date",
+      "data_type": "date",
+      "udt_name": "date",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "file_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "file_size",
+      "data_type": "numeric",
+      "udt_name": "numeric",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "file_size_unit",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "width",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "height",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "caption",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "item_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "1"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "storage_key",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "filename",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "file_size_bytes",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "width_pixels",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "height_pixels",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "duration_seconds",
+      "data_type": "numeric",
+      "udt_name": "numeric",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "language_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "content_date_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "column_name": "content_date_text",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "edition_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "resource_content_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "content_audience",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'00'::text"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "resource_mode",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "resource_description",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "is_primary",
+      "data_type": "boolean",
+      "udt_name": "bool",
+      "is_nullable": "NO",
+      "column_default": "false"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "item_order",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "1"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "territory_countries",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "caption",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "credit",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "column_name": "cloned_from_resource_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "work_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "status",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'planned'::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "record_reference",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "ean",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "isbn13",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "isbn10",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "barcode",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "notification_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "product_composition",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "product_form",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "product_form_detail",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "primary_content_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "product_packaging",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "publishing_status",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "edition_number",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "year_first_published",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "copyright_year",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "duration",
+      "data_type": "numeric",
+      "udt_name": "numeric",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "duration_unit",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "file_size",
+      "data_type": "numeric",
+      "udt_name": "numeric",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "file_size_unit",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "illustrations_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "illustrations_desc",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "illustrations_number",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "cover_image_link",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "cover_image_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "cover_image_caption",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "promotion_campaign",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "source_system",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'internal'::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "inventory_number",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'0'::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "barcode_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "edition_statement",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "color_content",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "color_pages",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "number_of_pieces",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "trade_category",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "file_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "epub_version",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "technical_protection",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "digital_requirements",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "audio_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "narrator_statement",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "onix_product_form",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "onix_product_form_detail",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "audience_description",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "product_details_note",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "record_source_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "barcode_position_on_product",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "country_of_manufacture",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "product_form_description",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "market_publishing_status",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "market_date_role",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "market_date_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'00'::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "market_date_text",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "promotion_contact",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "promotion_contact_text_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'05'::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "initial_print_run",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "editions",
+      "column_name": "initial_print_run_text_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'05'::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "promotion_campaign_text_format",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'05'::text"
+    },
+    {
+      "table_name": "editions",
+      "column_name": "record_source_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "memberships",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "memberships",
+      "column_name": "user_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "memberships",
+      "column_name": "role",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "memberships",
+      "column_name": "module_permissions",
+      "data_type": "jsonb",
+      "udt_name": "jsonb",
+      "is_nullable": "NO",
+      "column_default": "'{}'::jsonb"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "parties",
+      "column_name": "party_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'person'::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "display_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "parties",
+      "column_name": "names_before_key",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "key_names",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "person_name_inverted",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "corporate_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "email",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "website",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "phone_country_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "phone_number",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "birth_date",
+      "data_type": "date",
+      "udt_name": "date",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "parties",
+      "column_name": "birth_city",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "birth_country",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "citizenship",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "short_bio",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "long_bio",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "titles_before_names",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "prefix_to_key",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "suffix_to_key",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "letters_after_names",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "pen_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "death_date",
+      "data_type": "date",
+      "udt_name": "date",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "parties",
+      "column_name": "language_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "country_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "region_code",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "parties",
+      "column_name": "notes",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "campaign_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "work_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "source_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "source_asset_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "s3_bucket",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "s3_key",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "public_url",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "filename",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "display_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "mime_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "media_type",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "width",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "height",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "duration_seconds",
+      "data_type": "numeric",
+      "udt_name": "numeric",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "filesize_bytes",
+      "data_type": "bigint",
+      "udt_name": "int8",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "alt_text",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "created_by",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "social_media_assets",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "column_name": "tenant_slug",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "column_name": "company_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "column_name": "company_address",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "column_name": "ein",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "YES",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "tenants",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "tenants",
+      "column_name": "slug",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "tenants",
+      "column_name": "name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "tenants",
+      "column_name": "s3_prefix",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "tenants",
+      "column_name": "created_at",
+      "data_type": "timestamp without time zone",
+      "udt_name": "timestamp",
+      "is_nullable": "YES",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "users",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "users",
+      "column_name": "cognito_sub",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "users",
+      "column_name": "email",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "users",
+      "column_name": "platform_role",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'user'::text"
+    },
+    {
+      "table_name": "users",
+      "column_name": "created_at",
+      "data_type": "timestamp without time zone",
+      "udt_name": "timestamp",
+      "is_nullable": "YES",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "users",
+      "column_name": "full_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "work_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "party_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "contributor_role",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "sequence_number",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "1"
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "place_relator",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "place_country",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "contributor_date_role",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "contributor_date",
+      "data_type": "date",
+      "udt_name": "date",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "from_language_codes",
+      "data_type": "ARRAY",
+      "udt_name": "_text",
+      "is_nullable": "NO",
+      "column_default": "'{}'::text[]"
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "to_language_codes",
+      "data_type": "ARRAY",
+      "udt_name": "_text",
+      "is_nullable": "NO",
+      "column_default": "'{}'::text[]"
+    },
+    {
+      "table_name": "work_contributors",
+      "column_name": "contributor_description",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": "gen_random_uuid()"
+    },
+    {
+      "table_name": "works",
+      "column_name": "tenant_id",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "uid",
+      "data_type": "uuid",
+      "udt_name": "uuid",
+      "is_nullable": "NO",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "title",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "subtitle",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "series_title",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "series_number",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "NO",
+      "column_default": "0"
+    },
+    {
+      "table_name": "works",
+      "column_name": "ages",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "us_grade",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "language",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "publisher_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'Marble Press'::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "imprint_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'Marble Press'::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "publisher_or_imprint",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "'Marble Press'::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "rights",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "editor_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "art_director_name",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "publishing_status",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "city_of_publication",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "country_of_publication",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "copyright_year",
+      "data_type": "integer",
+      "udt_name": "int4",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "main_description",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "back_cover_copy",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "biographical_note",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_summary",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_bookstore_shelf",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_audience",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_dates_holidays",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "created_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "works",
+      "column_name": "updated_at",
+      "data_type": "timestamp with time zone",
+      "udt_name": "timestamptz",
+      "is_nullable": "NO",
+      "column_default": "now()"
+    },
+    {
+      "table_name": "works",
+      "column_name": "loc_number",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_promotable_point_1",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_promotable_point_2",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_promotable_point_3",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_diff_competitor_1",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_diff_competitor_2",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_diff_competitor_3",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "about_extra",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "YES",
+      "column_default": null
+    },
+    {
+      "table_name": "works",
+      "column_name": "original_language",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    },
+    {
+      "table_name": "works",
+      "column_name": "short_title",
+      "data_type": "text",
+      "udt_name": "text",
+      "is_nullable": "NO",
+      "column_default": "''::text"
+    }
+  ],
+  "constraints": [
+    {
+      "table_name": "edition_identifiers",
+      "conname": "edition_identifiers_edition_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (edition_id) REFERENCES editions(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "conname": "edition_identifiers_edition_id_id_type_id_value_key",
+      "contype": "u",
+      "definition": "UNIQUE (edition_id, id_type, id_value)"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "conname": "edition_identifiers_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "conname": "edition_identifiers_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_prices",
+      "conname": "edition_prices_effective_dates_chk",
+      "contype": "c",
+      "definition": "CHECK (((price_effective_from IS NULL) OR (price_effective_until IS NULL) OR (price_effective_until >= price_effective_from)))"
+    },
+    {
+      "table_name": "edition_prices",
+      "conname": "edition_prices_min_order_positive_chk",
+      "contype": "c",
+      "definition": "CHECK (((minimum_order_quantity IS NULL) OR (minimum_order_quantity > 0)))"
+    },
+    {
+      "table_name": "edition_prices",
+      "conname": "edition_prices_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "edition_prices",
+      "conname": "edition_prices_supply_detail_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (supply_detail_id) REFERENCES edition_supply_details(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_prices",
+      "conname": "edition_prices_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "conname": "edition_publishing_dates_edition_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (edition_id) REFERENCES editions(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "conname": "edition_publishing_dates_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "conname": "edition_publishing_dates_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_subjects",
+      "conname": "edition_subjects_edition_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (edition_id) REFERENCES editions(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_subjects",
+      "conname": "edition_subjects_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "edition_subjects",
+      "conname": "edition_subjects_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "conname": "edition_supply_details_carton_positive_chk",
+      "contype": "c",
+      "definition": "CHECK (((carton_quantity IS NULL) OR (carton_quantity > 0)))"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "conname": "edition_supply_details_edition_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (edition_id) REFERENCES editions(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "conname": "edition_supply_details_order_time_nonnegative_chk",
+      "contype": "c",
+      "definition": "CHECK (((order_time_days IS NULL) OR (order_time_days >= 0)))"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "conname": "edition_supply_details_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "conname": "edition_supply_details_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "conname": "edition_supporting_resource_versions_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "conname": "edition_supporting_resource_versions_resource_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (resource_id) REFERENCES edition_supporting_resources(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "conname": "edition_supporting_resource_versions_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "conname": "edition_supporting_resources_edition_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (edition_id) REFERENCES editions(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "conname": "edition_supporting_resources_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "conname": "edition_supporting_resources_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "editions",
+      "conname": "editions_color_pages_nonnegative_chk",
+      "contype": "c",
+      "definition": "CHECK (((color_pages IS NULL) OR (color_pages >= 0)))"
+    },
+    {
+      "table_name": "editions",
+      "conname": "editions_number_of_pieces_positive_chk",
+      "contype": "c",
+      "definition": "CHECK (((number_of_pieces IS NULL) OR (number_of_pieces > 0)))"
+    },
+    {
+      "table_name": "editions",
+      "conname": "editions_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "editions",
+      "conname": "editions_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "editions",
+      "conname": "editions_work_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "memberships",
+      "conname": "memberships_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (tenant_id, user_id)"
+    },
+    {
+      "table_name": "memberships",
+      "conname": "memberships_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "memberships",
+      "conname": "memberships_tenant_user_uq",
+      "contype": "u",
+      "definition": "UNIQUE (tenant_id, user_id)"
+    },
+    {
+      "table_name": "memberships",
+      "conname": "memberships_user_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "parties",
+      "conname": "parties_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "parties",
+      "conname": "parties_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "social_media_assets",
+      "conname": "social_media_assets_campaign_id_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (campaign_id, tenant_id) REFERENCES marketing_campaigns(id, tenant_id)"
+    },
+    {
+      "table_name": "social_media_assets",
+      "conname": "social_media_assets_created_by_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (created_by) REFERENCES users(id)"
+    },
+    {
+      "table_name": "social_media_assets",
+      "conname": "social_media_assets_id_tenant_id_key",
+      "contype": "u",
+      "definition": "UNIQUE (id, tenant_id)"
+    },
+    {
+      "table_name": "social_media_assets",
+      "conname": "social_media_assets_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "social_media_assets",
+      "conname": "social_media_assets_source_asset_id_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (source_asset_id, tenant_id) REFERENCES social_media_assets(id, tenant_id)"
+    },
+    {
+      "table_name": "social_media_assets",
+      "conname": "social_media_assets_source_type_check",
+      "contype": "c",
+      "definition": "CHECK ((source_type = ANY (ARRAY['title_public_asset'::text, 'publisher_asset'::text, 'campaign_asset'::text, 'generated_derivative'::text])))"
+    },
+    {
+      "table_name": "social_media_assets",
+      "conname": "social_media_assets_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id)"
+    },
+    {
+      "table_name": "social_media_assets",
+      "conname": "social_media_assets_tenant_id_s3_bucket_s3_key_key",
+      "contype": "u",
+      "definition": "UNIQUE (tenant_id, s3_bucket, s3_key)"
+    },
+    {
+      "table_name": "social_media_assets",
+      "conname": "social_media_assets_work_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (work_id) REFERENCES works(id)"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "conname": "tenant_org_profile_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (tenant_slug)"
+    },
+    {
+      "table_name": "tenants",
+      "conname": "tenants_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "tenants",
+      "conname": "tenants_slug_key",
+      "contype": "u",
+      "definition": "UNIQUE (slug)"
+    },
+    {
+      "table_name": "users",
+      "conname": "users_cognito_sub_key",
+      "contype": "u",
+      "definition": "UNIQUE (cognito_sub)"
+    },
+    {
+      "table_name": "users",
+      "conname": "users_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "work_contributors",
+      "conname": "work_contributors_party_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (party_id) REFERENCES parties(id) ON DELETE RESTRICT"
+    },
+    {
+      "table_name": "work_contributors",
+      "conname": "work_contributors_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "work_contributors",
+      "conname": "work_contributors_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "work_contributors",
+      "conname": "work_contributors_work_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "works",
+      "conname": "works_pkey",
+      "contype": "p",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "table_name": "works",
+      "conname": "works_tenant_id_fkey",
+      "contype": "f",
+      "definition": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+    },
+    {
+      "table_name": "works",
+      "conname": "works_tenant_id_uid_key",
+      "contype": "u",
+      "definition": "UNIQUE (tenant_id, uid)"
+    }
+  ],
+  "indexes": [
+    {
+      "tablename": "edition_identifiers",
+      "indexname": "edition_identifiers_edition_id_id_type_id_value_key",
+      "indexdef": "CREATE UNIQUE INDEX edition_identifiers_edition_id_id_type_id_value_key ON public.edition_identifiers USING btree (edition_id, id_type, id_value)"
+    },
+    {
+      "tablename": "edition_identifiers",
+      "indexname": "edition_identifiers_pkey",
+      "indexdef": "CREATE UNIQUE INDEX edition_identifiers_pkey ON public.edition_identifiers USING btree (id)"
+    },
+    {
+      "tablename": "edition_identifiers",
+      "indexname": "idx_edition_identifiers_edition",
+      "indexdef": "CREATE INDEX idx_edition_identifiers_edition ON public.edition_identifiers USING btree (edition_id)"
+    },
+    {
+      "tablename": "edition_identifiers",
+      "indexname": "uq_edition_identifier_value",
+      "indexdef": "CREATE UNIQUE INDEX uq_edition_identifier_value ON public.edition_identifiers USING btree (tenant_id, edition_id, id_type, id_value)"
+    },
+    {
+      "tablename": "edition_prices",
+      "indexname": "edition_prices_pkey",
+      "indexdef": "CREATE UNIQUE INDEX edition_prices_pkey ON public.edition_prices USING btree (id)"
+    },
+    {
+      "tablename": "edition_prices",
+      "indexname": "idx_edition_prices_supply",
+      "indexdef": "CREATE INDEX idx_edition_prices_supply ON public.edition_prices USING btree (supply_detail_id)"
+    },
+    {
+      "tablename": "edition_publishing_dates",
+      "indexname": "edition_publishing_dates_pkey",
+      "indexdef": "CREATE UNIQUE INDEX edition_publishing_dates_pkey ON public.edition_publishing_dates USING btree (id)"
+    },
+    {
+      "tablename": "edition_publishing_dates",
+      "indexname": "idx_edition_publishing_dates_edition",
+      "indexdef": "CREATE INDEX idx_edition_publishing_dates_edition ON public.edition_publishing_dates USING btree (tenant_id, edition_id, item_order)"
+    },
+    {
+      "tablename": "edition_publishing_dates",
+      "indexname": "uq_edition_publishing_date_role",
+      "indexdef": "CREATE UNIQUE INDEX uq_edition_publishing_date_role ON public.edition_publishing_dates USING btree (tenant_id, edition_id, date_role, date_value)"
+    },
+    {
+      "tablename": "edition_subjects",
+      "indexname": "edition_subjects_pkey",
+      "indexdef": "CREATE UNIQUE INDEX edition_subjects_pkey ON public.edition_subjects USING btree (id)"
+    },
+    {
+      "tablename": "edition_subjects",
+      "indexname": "idx_edition_subjects_edition",
+      "indexdef": "CREATE INDEX idx_edition_subjects_edition ON public.edition_subjects USING btree (edition_id)"
+    },
+    {
+      "tablename": "edition_subjects",
+      "indexname": "uq_edition_subjects_main",
+      "indexdef": "CREATE UNIQUE INDEX uq_edition_subjects_main ON public.edition_subjects USING btree (tenant_id, edition_id) WHERE (is_main = true)"
+    },
+    {
+      "tablename": "edition_supply_details",
+      "indexname": "edition_supply_details_pkey",
+      "indexdef": "CREATE UNIQUE INDEX edition_supply_details_pkey ON public.edition_supply_details USING btree (id)"
+    },
+    {
+      "tablename": "edition_supply_details",
+      "indexname": "idx_edition_supply_details_edition",
+      "indexdef": "CREATE INDEX idx_edition_supply_details_edition ON public.edition_supply_details USING btree (tenant_id, edition_id)"
+    },
+    {
+      "tablename": "edition_supply_details",
+      "indexname": "idx_supply_details_edition",
+      "indexdef": "CREATE INDEX idx_supply_details_edition ON public.edition_supply_details USING btree (edition_id)"
+    },
+    {
+      "tablename": "edition_supporting_resource_versions",
+      "indexname": "edition_supporting_resource_versions_pkey",
+      "indexdef": "CREATE UNIQUE INDEX edition_supporting_resource_versions_pkey ON public.edition_supporting_resource_versions USING btree (id)"
+    },
+    {
+      "tablename": "edition_supporting_resource_versions",
+      "indexname": "idx_supporting_resource_versions_resource",
+      "indexdef": "CREATE INDEX idx_supporting_resource_versions_resource ON public.edition_supporting_resource_versions USING btree (tenant_id, resource_id, item_order)"
+    },
+    {
+      "tablename": "edition_supporting_resource_versions",
+      "indexname": "uq_supporting_resource_version_storage_key",
+      "indexdef": "CREATE UNIQUE INDEX uq_supporting_resource_version_storage_key ON public.edition_supporting_resource_versions USING btree (tenant_id, storage_key) WHERE ((storage_key IS NOT NULL) AND (TRIM(BOTH FROM storage_key) <> ''::text))"
+    },
+    {
+      "tablename": "edition_supporting_resources",
+      "indexname": "edition_supporting_resources_pkey",
+      "indexdef": "CREATE UNIQUE INDEX edition_supporting_resources_pkey ON public.edition_supporting_resources USING btree (id)"
+    },
+    {
+      "tablename": "edition_supporting_resources",
+      "indexname": "idx_edition_supporting_resources_edition",
+      "indexdef": "CREATE INDEX idx_edition_supporting_resources_edition ON public.edition_supporting_resources USING btree (tenant_id, edition_id, item_order)"
+    },
+    {
+      "tablename": "edition_supporting_resources",
+      "indexname": "idx_supporting_resources_edition",
+      "indexdef": "CREATE INDEX idx_supporting_resources_edition ON public.edition_supporting_resources USING btree (tenant_id, edition_id, item_order)"
+    },
+    {
+      "tablename": "edition_supporting_resources",
+      "indexname": "uq_edition_supporting_resources_primary",
+      "indexdef": "CREATE UNIQUE INDEX uq_edition_supporting_resources_primary ON public.edition_supporting_resources USING btree (tenant_id, edition_id, resource_content_type) WHERE (is_primary = true)"
+    },
+    {
+      "tablename": "editions",
+      "indexname": "editions_pkey",
+      "indexdef": "CREATE UNIQUE INDEX editions_pkey ON public.editions USING btree (id)"
+    },
+    {
+      "tablename": "editions",
+      "indexname": "idx_editions_tenant",
+      "indexdef": "CREATE INDEX idx_editions_tenant ON public.editions USING btree (tenant_id)"
+    },
+    {
+      "tablename": "editions",
+      "indexname": "idx_editions_work",
+      "indexdef": "CREATE INDEX idx_editions_work ON public.editions USING btree (work_id)"
+    },
+    {
+      "tablename": "editions",
+      "indexname": "ux_editions_tenant_isbn13",
+      "indexdef": "CREATE UNIQUE INDEX ux_editions_tenant_isbn13 ON public.editions USING btree (tenant_id, normalize_isbn(isbn13)) WHERE (normalize_isbn(isbn13) IS NOT NULL)"
+    },
+    {
+      "tablename": "memberships",
+      "indexname": "memberships_pkey",
+      "indexdef": "CREATE UNIQUE INDEX memberships_pkey ON public.memberships USING btree (tenant_id, user_id)"
+    },
+    {
+      "tablename": "memberships",
+      "indexname": "memberships_tenant_user_uq",
+      "indexdef": "CREATE UNIQUE INDEX memberships_tenant_user_uq ON public.memberships USING btree (tenant_id, user_id)"
+    },
+    {
+      "tablename": "parties",
+      "indexname": "idx_parties_tenant_name",
+      "indexdef": "CREATE INDEX idx_parties_tenant_name ON public.parties USING btree (tenant_id, display_name)"
+    },
+    {
+      "tablename": "parties",
+      "indexname": "parties_pkey",
+      "indexdef": "CREATE UNIQUE INDEX parties_pkey ON public.parties USING btree (id)"
+    },
+    {
+      "tablename": "social_media_assets",
+      "indexname": "social_media_assets_id_tenant_id_key",
+      "indexdef": "CREATE UNIQUE INDEX social_media_assets_id_tenant_id_key ON public.social_media_assets USING btree (id, tenant_id)"
+    },
+    {
+      "tablename": "social_media_assets",
+      "indexname": "social_media_assets_pkey",
+      "indexdef": "CREATE UNIQUE INDEX social_media_assets_pkey ON public.social_media_assets USING btree (id)"
+    },
+    {
+      "tablename": "social_media_assets",
+      "indexname": "social_media_assets_tenant_id_s3_bucket_s3_key_key",
+      "indexdef": "CREATE UNIQUE INDEX social_media_assets_tenant_id_s3_bucket_s3_key_key ON public.social_media_assets USING btree (tenant_id, s3_bucket, s3_key)"
+    },
+    {
+      "tablename": "tenant_org_profile",
+      "indexname": "tenant_org_profile_pkey",
+      "indexdef": "CREATE UNIQUE INDEX tenant_org_profile_pkey ON public.tenant_org_profile USING btree (tenant_slug)"
+    },
+    {
+      "tablename": "tenants",
+      "indexname": "tenants_pkey",
+      "indexdef": "CREATE UNIQUE INDEX tenants_pkey ON public.tenants USING btree (id)"
+    },
+    {
+      "tablename": "tenants",
+      "indexname": "tenants_slug_key",
+      "indexdef": "CREATE UNIQUE INDEX tenants_slug_key ON public.tenants USING btree (slug)"
+    },
+    {
+      "tablename": "users",
+      "indexname": "users_cognito_sub_key",
+      "indexdef": "CREATE UNIQUE INDEX users_cognito_sub_key ON public.users USING btree (cognito_sub)"
+    },
+    {
+      "tablename": "users",
+      "indexname": "users_pkey",
+      "indexdef": "CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)"
+    },
+    {
+      "tablename": "work_contributors",
+      "indexname": "idx_work_contributors_party",
+      "indexdef": "CREATE INDEX idx_work_contributors_party ON public.work_contributors USING btree (party_id)"
+    },
+    {
+      "tablename": "work_contributors",
+      "indexname": "idx_work_contributors_work",
+      "indexdef": "CREATE INDEX idx_work_contributors_work ON public.work_contributors USING btree (work_id)"
+    },
+    {
+      "tablename": "work_contributors",
+      "indexname": "work_contributors_pkey",
+      "indexdef": "CREATE UNIQUE INDEX work_contributors_pkey ON public.work_contributors USING btree (id)"
+    },
+    {
+      "tablename": "works",
+      "indexname": "idx_works_tenant",
+      "indexdef": "CREATE INDEX idx_works_tenant ON public.works USING btree (tenant_id)"
+    },
+    {
+      "tablename": "works",
+      "indexname": "idx_works_uid",
+      "indexdef": "CREATE INDEX idx_works_uid ON public.works USING btree (tenant_id, uid)"
+    },
+    {
+      "tablename": "works",
+      "indexname": "works_pkey",
+      "indexdef": "CREATE UNIQUE INDEX works_pkey ON public.works USING btree (id)"
+    },
+    {
+      "tablename": "works",
+      "indexname": "works_tenant_id_uid_key",
+      "indexdef": "CREATE UNIQUE INDEX works_tenant_id_uid_key ON public.works USING btree (tenant_id, uid)"
+    }
+  ],
+  "triggers": [
+    {
+      "table_name": "works",
+      "tgname": "trg_touch_works",
+      "definition": "CREATE TRIGGER trg_touch_works BEFORE UPDATE ON public.works FOR EACH ROW EXECUTE FUNCTION touch_updated_at()"
+    },
+    {
+      "table_name": "parties",
+      "tgname": "trg_touch_parties",
+      "definition": "CREATE TRIGGER trg_touch_parties BEFORE UPDATE ON public.parties FOR EACH ROW EXECUTE FUNCTION touch_updated_at()"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "tgname": "trg_edition_identifiers_updated_at",
+      "definition": "CREATE TRIGGER trg_edition_identifiers_updated_at BEFORE UPDATE ON public.edition_identifiers FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+    },
+    {
+      "table_name": "editions",
+      "tgname": "trg_touch_editions",
+      "definition": "CREATE TRIGGER trg_touch_editions BEFORE UPDATE ON public.editions FOR EACH ROW EXECUTE FUNCTION touch_updated_at()"
+    },
+    {
+      "table_name": "edition_subjects",
+      "tgname": "trg_edition_subjects_updated_at",
+      "definition": "CREATE TRIGGER trg_edition_subjects_updated_at BEFORE UPDATE ON public.edition_subjects FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "tgname": "trg_edition_publishing_dates_updated_at",
+      "definition": "CREATE TRIGGER trg_edition_publishing_dates_updated_at BEFORE UPDATE ON public.edition_publishing_dates FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+    },
+    {
+      "table_name": "edition_prices",
+      "tgname": "trg_edition_prices_updated_at",
+      "definition": "CREATE TRIGGER trg_edition_prices_updated_at BEFORE UPDATE ON public.edition_prices FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "tgname": "trg_edition_supporting_resources_updated_at",
+      "definition": "CREATE TRIGGER trg_edition_supporting_resources_updated_at BEFORE UPDATE ON public.edition_supporting_resources FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "tgname": "trg_edition_supply_details_updated_at",
+      "definition": "CREATE TRIGGER trg_edition_supply_details_updated_at BEFORE UPDATE ON public.edition_supply_details FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "tgname": "trg_supporting_resource_versions_updated_at",
+      "definition": "CREATE TRIGGER trg_supporting_resource_versions_updated_at BEFORE UPDATE ON public.edition_supporting_resource_versions FOR EACH ROW EXECUTE FUNCTION set_updated_at()"
+    },
+    {
+      "table_name": "social_media_assets",
+      "tgname": "marketing_asset_work_tenant",
+      "definition": "CREATE TRIGGER marketing_asset_work_tenant BEFORE INSERT OR UPDATE ON public.social_media_assets FOR EACH ROW EXECUTE FUNCTION marketing_check_work_tenant()"
+    }
+  ],
+  "row_security": [
+    {
+      "relname": "works",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "memberships",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "users",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "tenants",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "tenant_org_profile",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "parties",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "edition_identifiers",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "editions",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "edition_subjects",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "edition_publishing_dates",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "edition_prices",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "edition_supporting_resources",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "edition_supply_details",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "work_contributors",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "edition_supporting_resource_versions",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    },
+    {
+      "relname": "social_media_assets",
+      "relrowsecurity": false,
+      "relforcerowsecurity": false
+    }
+  ],
+  "extensions": [
+    {
+      "extname": "pgcrypto",
+      "extversion": "1.3"
+    },
+    {
+      "extname": "plpgsql",
+      "extversion": "1.0"
+    }
+  ],
+  "default_privileges": [],
+  "table_privileges": [
+    {
+      "table_name": "edition_identifiers",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "edition_identifiers",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "edition_prices",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "edition_prices",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "edition_prices",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "edition_prices",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "edition_prices",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "edition_prices",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "edition_prices",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "edition_publishing_dates",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "edition_subjects",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "edition_subjects",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "edition_subjects",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "edition_subjects",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "edition_subjects",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "edition_subjects",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "edition_subjects",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "edition_supply_details",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "edition_supporting_resource_versions",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "edition_supporting_resources",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "editions",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "editions",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "editions",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "editions",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "editions",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "editions",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "editions",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "memberships",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "memberships",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "memberships",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "memberships",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "memberships",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "memberships",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "memberships",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "parties",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "parties",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "parties",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "parties",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "parties",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "parties",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "parties",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "social_media_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "social_media_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "social_media_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "social_media_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "social_media_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "social_media_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "social_media_assets",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "tenant_org_profile",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "tenants",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "tenants",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "tenants",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "tenants",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "tenants",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "tenants",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "tenants",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "users",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "users",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "users",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "users",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "users",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "users",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "users",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "work_contributors",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "work_contributors",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "work_contributors",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "work_contributors",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "work_contributors",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "work_contributors",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "work_contributors",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    },
+    {
+      "table_name": "works",
+      "grantee": "inksuite_app",
+      "privilege_type": "DELETE"
+    },
+    {
+      "table_name": "works",
+      "grantee": "inksuite_app",
+      "privilege_type": "INSERT"
+    },
+    {
+      "table_name": "works",
+      "grantee": "inksuite_app",
+      "privilege_type": "REFERENCES"
+    },
+    {
+      "table_name": "works",
+      "grantee": "inksuite_app",
+      "privilege_type": "SELECT"
+    },
+    {
+      "table_name": "works",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRIGGER"
+    },
+    {
+      "table_name": "works",
+      "grantee": "inksuite_app",
+      "privilege_type": "TRUNCATE"
+    },
+    {
+      "table_name": "works",
+      "grantee": "inksuite_app",
+      "privilege_type": "UPDATE"
+    }
+  ],
+  "marble_press": [
+    {
+      "id": "b9e9efbd-a2fc-4506-a79d-4dd2e12910b5",
+      "slug": "marble-press",
+      "name": "Marble Press"
+    }
+  ]
+}

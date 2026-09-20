@@ -327,3 +327,7 @@ app.include_router(meeting_calendar_router, prefix="/api")
 @app.exception_handler(ProviderError)
 async def meetings_provider_error(request, exc):
     return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+# Marketplace migrations are applied manually, never during startup.
+from app.marketplace.routes import router as marketplace_router
+app.include_router(marketplace_router, prefix='/api')

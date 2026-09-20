@@ -9,6 +9,7 @@ from urllib.parse import quote
 import smtplib
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 from typing import Any, Optional, Dict
 
 import boto3
@@ -216,11 +217,13 @@ def _send_email_smtp(
     subject: str,
     body_text: str,
     signature_context: Optional[tuple] = None,
-) -> None:
+) -> str:
     msg = EmailMessage()
     msg["To"] = f"{to_name} <{to_email}>" if to_name else to_email
     msg["From"] = f"{from_name} <{from_email}>" if from_name else from_email
     msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=False, usegmt=True)
+    msg["Message-ID"] = make_msgid(domain=from_email.rsplit("@", 1)[-1])
     if signature_context:
         from app.meetings.service import signature
         from psycopg.rows import dict_row
@@ -240,16 +243,17 @@ def _send_email_smtp(
         msg.set_content(body_text)
 
     if tls_mode == "ssl":
-        with smtplib.SMTP_SSL(smtp_host, smtp_port) as smtp:
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=20) as smtp:
             smtp.login(username, password)
             smtp.send_message(msg)
     else:
-        with smtplib.SMTP(smtp_host, smtp_port) as smtp:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
             smtp.ehlo()
             smtp.starttls()
             smtp.ehlo()
             smtp.login(username, password)
             smtp.send_message(msg)
+    return str(msg["Message-ID"])
 
 
 def _insert_invite(

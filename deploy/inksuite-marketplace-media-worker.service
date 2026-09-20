@@ -1,0 +1,26 @@
+[Unit]
+Description=InkSuite Marketplace media processor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=inksuite
+Group=inksuite
+WorkingDirectory=/opt/inksuite/backend
+EnvironmentFile=/etc/inksuite/marketplace-media.env
+ExecStart=/opt/inksuite/backend/.venv/bin/python -m app.marketplace.native_worker
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+MemoryMax=2G
+CPUQuota=200%
+TasksMax=64
+LimitFSIZE=1073741824
+
+[Install]
+WantedBy=multi-user.target
