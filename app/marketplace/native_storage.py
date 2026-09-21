@@ -7,7 +7,21 @@ from pathlib import Path
 from urllib.parse import urlsplit, quote
 from botocore.signers import CloudFrontSigner
 from fastapi import HTTPException
-from routers.storage_s3 import s3
+import boto3
+from botocore.config import Config
+
+@lru_cache(maxsize=1)
+def s3():
+    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-2"
+    return boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "virtual"},
+        ),
+    )
 
 
 def config():
