@@ -94,8 +94,8 @@ def events(start: datetime, end: datetime, team_user: UUID | None = None, ctx=De
         if team_user:
             intervals = [(r['start_at'],r['end_at']) for r in bookings+local]
         else:
-            result = [{'id':str(b['id']), 'title':b['snapshot']['title'], 'start':b['start_at'], 'end':b['end_at'], 'source':'inksuite', 'booking':True, 'all_day':False} for b in bookings]
-            result += [{'id':str(b['id']), 'title':b['title'], 'start':b['start_at'], 'end':b['end_at'], 'source':'inksuite', 'editable':True, 'all_day':False} for b in local]
+            result = [{'id':str(b['id']), 'title':b['snapshot']['title'], 'start':b['start_at'], 'end':b['end_at'], 'source':'inksuite', 'booking':True, 'all_day':False,'ref':{'kind':'booking','id':str(b['id'])}} for b in bookings]
+            result += [{'id':str(b['id']), 'title':b['title'], 'start':b['start_at'], 'end':b['end_at'], 'source':'inksuite', 'editable':True, 'all_day':False,'ref':{'kind':'local','id':str(b['id'])}} for b in local]
         synced = {(str(b['external_connection_id']), b['external_calendar_id'], b['external_event_id']) for b in bookings}
         for c in connections:
             if c['status'] != 'connected':
@@ -112,7 +112,7 @@ def events(start: datetime, end: datetime, team_user: UUID | None = None, ctx=De
                         for e in adapter.calendar_events(cal['id'],start,end):
                             if (str(c['id']),cal['id'],e['id']) in synced:
                                 continue
-                            result.append({**e, 'id':f"{c['id']}:{cal['id']}:{e['id']}", 'source':c['provider'], 'calendar':cal['name']})
+                            result.append({**e, 'id':f"{c['id']}:{cal['id']}:{e['id']}", 'source':c['provider'], 'calendar':cal['name'],'ref':{'kind':'external','id':e['id'],'connection':str(c['id']),'calendar':cal['id']}})
                 except Exception as exc:
                     print(
                         f"[meetings-calendar] failed provider={c['provider']} "
@@ -123,7 +123,12 @@ def events(start: datetime, end: datetime, team_user: UUID | None = None, ctx=De
                     warnings.append(
                         'A calendar could not load. Availability may be incomplete.'
                         if team_user
-                        else f"Could not load {cal['name']} ({c['email']}). Try refreshing or reconnecting."
+                        else f"Could not load {cal['name']} ({c['email']}). " + (
+                            str(exc) if isinstance(exc,ProviderError) else
+                            'The backend cannot access its AWS credentials. Check the backend AWS login.' if type(exc).__name__ in ('NoCredentialsError','PartialCredentialsError') else
+                            'The calendar request timed out. Try again shortly.' if type(exc).__name__ in ('Timeout','ReadTimeout','ConnectTimeout') else
+                            'The backend could not read this calendar. Check the backend error log.'
+                        )
                     )
         if team_user:
             from .availability import merge_busy
@@ -149,7 +154,17 @@ def delete_event(event_id: UUID, ctx=Depends(require_tenant_access)):
     with db_conn() as conn, conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
         require_ready(cur)
         s.profile(cur,tenant,user,lock=True)
+        from .event_details import storage,queue_mail
+        if storage(cur):
+            detail=s.one(cur,'SELECT * FROM meeting_event_details WHERE tenant_id=%s AND user_id=%s AND event_id=%s',(tenant,user,event_id))
+            b=s.one(cur,'SELECT * FROM meeting_calendar_events WHERE id=%s AND tenant_id=%s AND user_id=%s',(event_id,tenant,user))
+            if b and detail and detail['attendees']:
+                cur.execute("UPDATE meeting_event_mail SET status='cancelled' WHERE tenant_id=%s AND user_id=%s AND event_id=%s AND status='pending'",(tenant,user,event_id))
+                queue_mail(cur,b,tenant,user,detail['location'],detail['attendees'],detail['version']+1,cancel=True)
         row = s.one(cur, 'DELETE FROM meeting_calendar_events WHERE id=%s AND tenant_id=%s AND user_id=%s RETURNING id', (event_id,tenant,user))
         if not row:
             raise HTTPException(404,'Event not found.')
     return {'deleted':True}
+
+from .event_details import router as details_router
+router.include_router(details_router)

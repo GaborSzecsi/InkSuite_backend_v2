@@ -10,6 +10,34 @@ class ProviderError(RuntimeError):
     pass
 
 
+def calendar_error(response, provider, token=False):
+    """Translate provider failures without exposing responses, tokens, or event data."""
+    name='Google' if provider=='google' else 'Microsoft'
+    try:
+        error=response.json().get('error',{})
+        code=error if isinstance(error,str) else error.get('code') or error.get('status','')
+        reasons={v.get('reason','') for v in error.get('errors',[])} if isinstance(error,dict) else set()
+    except (ValueError,TypeError,AttributeError):
+        code='';reasons=set()
+    if response.status_code==429 or response.status_code>=500 or reasons & {'rateLimitExceeded','userRateLimitExceeded','quotaExceeded'}:
+        return ProviderError(f'{name} is temporarily unavailable or limiting requests. Try again shortly.')
+    if token:
+        if code=='invalid_grant':
+            return ProviderError(f'{name} authorization has expired or been revoked. Open Calendar settings and reconnect this account.')
+        if code in ('invalid_client','unauthorized_client'):
+            return ProviderError(f'{name} rejected the app credentials. An administrator needs to check the calendar connection configuration.')
+        return ProviderError(f'{name} could not refresh the calendar connection (HTTP {response.status_code}). Try again or reconnect in Calendar settings.')
+    if response.status_code==401:
+        return ProviderError(f'{name} rejected the calendar authorization. Reconnect this account in Calendar settings.')
+    if reasons & {'accessNotConfigured','serviceDisabled'} or code=='SERVICE_DISABLED':
+        return ProviderError(f'The {name} Calendar API is not enabled for this app. An administrator needs to enable it.')
+    if response.status_code==403:
+        return ProviderError(f'{name} denied access to this calendar. Check calendar permissions or reconnect and allow calendar access.')
+    if response.status_code==404:
+        return ProviderError(f'{name} could not find this calendar or event. Refresh calendars in Calendar settings.')
+    return ProviderError(f'{name} could not complete the calendar request (HTTP {response.status_code}). Try refreshing.')
+
+
 def _secrets_client():
     region = (
         os.getenv("AWS_REGION")
@@ -85,15 +113,19 @@ class CalendarProvider:
     def access(self):
         if self.credentials.get('expires_at',0)<time.time()+120:
             c=config(self.provider)
+            if not self.credentials.get('refresh_token'):raise ProviderError('This calendar connection is missing offline authorization. Reconnect it in Calendar settings.')
             response=requests.post(c['token'],data={'client_id':c['client_id'],'client_secret':c['client_secret'],'grant_type':'refresh_token','refresh_token':self.credentials['refresh_token']},timeout=20)
-            if not response.ok:raise ProviderError('Calendar connection expired. Reconnect your account.')
+            if not response.ok:raise calendar_error(response,self.provider,token=True)
             self.credentials.update(response.json());self.credentials['expires_at']=time.time()+self.credentials.get('expires_in',3600)
             if self.persist:self.persist(self.credentials)
         return self.credentials['access_token']
     def api(self,method,path,**kwargs):
         base='https://www.googleapis.com' if self.provider=='google' else 'https://graph.microsoft.com/v1.0'
-        response=requests.request(method,base+path,headers={'Authorization':'Bearer '+self.access(),'Prefer':'outlook.timezone="UTC"'},timeout=20,**kwargs)
-        if not response.ok:raise ProviderError('Calendar or email provider could not complete the request. Check the connection and retry.')
+        headers={'Authorization':'Bearer '+self.access(),'Prefer':'outlook.timezone="UTC"'}
+        headers.update(kwargs.pop('headers',{}))
+        response=requests.request(method,base+path,headers=headers,timeout=20,**kwargs)
+        if response.status_code==412:raise ProviderError('This meeting changed. Close and reopen it before saving again.')
+        if not response.ok:raise calendar_error(response,self.provider)
         return response.json() if response.content else {}
     def identity(self):
         p=self.api('GET','/oauth2/v3/userinfo' if self.provider=='google' else '/me?$select=id,mail,userPrincipalName,displayName')
@@ -215,6 +247,43 @@ class CalendarProvider:
                 path = url.removeprefix('https://graph.microsoft.com/v1.0') if url else None
         return result
 
+    def event_path(self, calendar, event):
+        return ('/calendar/v3/calendars/' if self.provider=='google' else '/me/calendars/')+quote(calendar,safe='')+'/events/'+quote(event,safe='')
+
+    def event_details(self, calendar, event):
+        raw=self.api('GET',self.event_path(calendar,event))
+        if self.provider=='google':
+            attendees=[{'email':a.get('email',''),'name':a.get('displayName',''),'status':a.get('responseStatus','needsAction')} for a in raw.get('attendees',[])]
+            organizer=raw.get('organizer',{})
+            return {'location':raw.get('location',''),'attendees':attendees,'organizer':organizer.get('email',''),
+                    'can_edit':bool(organizer.get('self')) and raw.get('status')!='cancelled' and not raw.get('attendeesOmitted',False),
+                    'revision':raw.get('etag',''),'raw':raw}
+        return {'location':raw.get('location',{}).get('displayName',''),
+                'attendees':[{'email':a.get('emailAddress',{}).get('address',''),'name':a.get('emailAddress',{}).get('name',''),'status':a.get('status',{}).get('response','none')} for a in raw.get('attendees',[])],
+                'organizer':raw.get('organizer',{}).get('emailAddress',{}).get('address',''),
+                'can_edit':bool(raw.get('isOrganizer')) and not raw.get('isCancelled'),
+                'revision':raw.get('@odata.etag',''),'raw':raw}
+
+    def update_details(self, calendar, event, location, invitees, revision):
+        details=self.event_details(calendar,event)
+        if not details['can_edit']:raise ProviderError('Only the meeting organizer can change the location or invite guests.')
+        if not revision or details['revision']!=revision:raise ProviderError('This meeting changed. Close and reopen it before saving again.')
+        raw=details['raw'];attendees=list(raw.get('attendees',[]));known={a['email'].lower() for a in details['attendees']}
+        known.add(details['organizer'].lower())
+        for email in invitees:
+            if email.lower() in known:continue
+            known.add(email.lower())
+            attendees.append({'email':email} if self.provider=='google' else {'emailAddress':{'address':email},'type':'required'})
+        body={}
+        if location!=details['location']:
+            body['location']=location if self.provider=='google' else {'displayName':location}
+        if len(attendees)!=len(raw.get('attendees',[])):body['attendees']=attendees
+        if body:
+            self.api('PATCH',self.event_path(calendar,event),json=body,headers={'If-Match':revision},
+                     params={'sendUpdates':'all'} if self.provider=='google' else {})
+        # A successful PATCH means the provider accepted its invitations/updates.
+        return self.event_details(calendar,event)
+
     def event(self,booking,action):
         cid=quote(booking['external_calendar_id'],safe='');eid=booking.get('external_event_id');cfg=booking['snapshot'];guest=booking['guest']
         if self.provider=='google':
@@ -254,7 +323,16 @@ class CalendarProvider:
             base='https://www.googleapis.com' if self.provider=='google' else 'https://graph.microsoft.com/v1.0'
             response=requests.delete(base+path,headers={'Authorization':'Bearer '+self.access()},params={'sendUpdates':'all'} if self.provider=='google' else {},timeout=20)
             if not response.ok and response.status_code not in (404,410):raise ProviderError('Unable to cancel the calendar event.')
-        else:self.api('PATCH',path,json=body,params={'sendUpdates':'all'} if self.provider=='google' else {})
+        else:
+            # Preserve attendees added from the calendar popup or the provider itself.
+            current=self.api('GET',path)
+            attendees=list(current.get('attendees',[]))
+            key=lambda a:(a.get('email') if self.provider=='google' else a.get('emailAddress',{}).get('address','')).lower()
+            known={key(a) for a in attendees}
+            for a in body['attendees']:
+                if key(a) not in known:attendees.append(a)
+            body['attendees']=attendees
+            self.api('PATCH',path,json=body,params={'sendUpdates':'all'} if self.provider=='google' else {})
         return eid
     def send(self,message):
         if self.provider=='google':self.api('POST','/gmail/v1/users/me/messages/send',json={'raw':base64.urlsafe_b64encode(message.as_bytes()).decode()})

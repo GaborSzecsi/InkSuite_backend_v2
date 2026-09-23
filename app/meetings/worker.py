@@ -12,19 +12,29 @@ from zoneinfo import ZoneInfo
 log=logging.getLogger(__name__)
 
 def make_message(cur,b,j,p):
-    guest=b['guest'];host=j['recipient']=='host';to=p['company_email'] if host else guest['email'];zone=ZoneInfo(p['timezone'] if host else guest['timezone'])
+    guest=b['guest'];host=j['recipient']=='host';extra=j['recipient'] not in ('host','guest')
+    if extra:
+        guest=next((a for a in b['snapshot'].get('additional_attendees',[]) if a['email'].lower()==j['recipient'].lower()),None)
+        if guest is None:raise ValueError('Attendee is no longer invited.')
+    to=p['company_email'] if host else guest['email'];zone=ZoneInfo(p['timezone'] if host else guest.get('timezone',p['timezone']))
     when=b['start_at'].astimezone(zone).strftime('%A, %B %d, %Y at %I:%M %p %Z')
-    label={'booked':'Meeting confirmed','cancelled':'Meeting cancelled','rescheduled':'Meeting rescheduled'}.get(j['kind'],'Meeting reminder')
+    label={'booked':'Meeting confirmed','cancelled':'Meeting cancelled','rescheduled':'Meeting rescheduled','updated':'Meeting updated'}.get(j['kind'],'Meeting reminder')
     if j['kind'].startswith('reminder_'):label+=' · '+{'1440':'24 hours','60':'1 hour','30':'30 minutes'}[j['kind'].split('_')[1]]
-    token=secret_read(b['manage_secret_id'])['token'];manage=s.public_base()+'/meeting/manage/'+token
-    text=f"{label}: {b['snapshot']['title']}\n\n{when}\nHost: {p['display_name']} <{p['company_email']}>\nLocation: {b['snapshot'].get('location') or 'To be determined'}\n\nManage or reschedule: {manage}"
+    text=f"{label}: {b['snapshot']['title']}\n\n{when}\nHost: {p['display_name']} <{p['company_email']}>\nLocation: {b['snapshot'].get('location') or 'To be determined'}"
+    if not extra:
+        token=secret_read(b['manage_secret_id'])['token'];manage=s.public_base()+'/meeting/manage/'+token
+        text+=f"\n\nManage or reschedule: {manage}"
     signature_text,signature_html=s.signature(cur,b['tenant_id'],b['user_id'])
     msg=EmailMessage();msg['From']=formataddr((p['display_name'],p['company_email']));msg['Reply-To']=p['company_email'];msg['To']=to;msg['Subject']=label+': '+b['snapshot']['title'];msg['Message-ID']='<'+str(j['id'])+'@meetings.inksuite.io>'
     msg.set_content(text+'\n\n'+signature_text);msg.add_alternative('<p>'+html.escape(text).replace('\n','<br>')+'</p><p>'+signature_html+'</p>',subtype='html')
     def esc(v):return str(v).replace('\\','\\\\').replace('\n','\\n').replace(';','\\;').replace(',','\\,').replace('\r','')
     stamp=lambda d:d.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     ics='\r\n'.join(['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//InkSuite//Meetings//EN','METHOD:PUBLISH','BEGIN:VEVENT','UID:'+str(b['id'])+'@inksuite.io','SEQUENCE:'+str(b['version']),'DTSTAMP:'+stamp(datetime.now(timezone.utc)),'DTSTART:'+stamp(b['start_at']),'DTEND:'+stamp(b['end_at']),'SUMMARY:'+esc(b['snapshot']['title']),'ORGANIZER:mailto:'+p['company_email'],'LOCATION:'+esc(b['snapshot'].get('location','')),'STATUS:'+('CANCELLED' if b['status']=='cancelled' else 'CONFIRMED'),'END:VEVENT','END:VCALENDAR',''])
-    msg.add_attachment(ics.encode(),maintype='text',subtype='calendar',filename='meeting.ics')
+    method='CANCEL' if b['status']=='cancelled' else 'REQUEST'
+    ics=ics.replace('METHOD:PUBLISH','METHOD:'+method)
+    attendees=[b['guest']]+b['snapshot'].get('additional_attendees',[])
+    ics=ics.replace('END:VEVENT','\r\n'.join('ATTENDEE;RSVP=TRUE:mailto:'+a['email'] for a in attendees)+'\r\nEND:VEVENT')
+    msg.add_attachment(ics.encode(),maintype='text',subtype='calendar',filename='meeting.ics',params={'method':method})
     return msg
 
 def run_once():
@@ -116,6 +126,8 @@ if __name__=='__main__':
     logging.basicConfig(level=logging.INFO)
     while True:
         try:
-            if not run_once():time.sleep(10)
+            from .event_mail import run_once as run_event_mail
+            worked=run_once()
+            if not run_event_mail() and not worked:time.sleep(10)
         except Exception:
             log.warning('Meetings worker could not access its queue. Retrying.');time.sleep(10)

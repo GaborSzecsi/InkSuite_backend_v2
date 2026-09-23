@@ -128,12 +128,13 @@ def schedule(cur,b,kind):
     now=datetime.now(UTC)
     cur.execute("UPDATE meeting_jobs SET status='cancelled',updated_at=now() WHERE booking_id=%s AND version<>%s AND status IN ('pending','retry','processing')",(b['id'],b['version']))
     if b['external_calendar_id']:job(cur,b,'calendar_'+('create' if kind=='booked' else 'cancel' if kind=='cancelled' else 'update'),'provider',now)
-    for recipient in ('host','guest'):job(cur,b,kind,recipient,now)
+    additional=[a['email'] for a in b['snapshot'].get('additional_attendees',[]) if a['email'].lower()!=b['guest']['email'].lower()]
+    for recipient in ('host','guest',*additional):job(cur,b,kind,recipient,now)
     notify(cur,b,f"{b['id']}:{b['version']}:{kind}",kind,'Meeting '+kind,b['snapshot']['title'])
     if kind!='cancelled':
         for minutes in (1440,60,30):
             due=b['start_at']-timedelta(minutes=minutes)
-            for recipient in ('host','guest','internal'):job(cur,b,'reminder_'+str(minutes),recipient,due)
+            for recipient in ('host','guest','internal',*additional):job(cur,b,'reminder_'+str(minutes),recipient,due)
             if due<=now:
                 cur.execute("UPDATE meeting_jobs SET status='skipped' WHERE booking_id=%s AND version=%s AND kind=%s AND status='pending'",(b['id'],b['version'],'reminder_'+str(minutes)))
     cur.execute('INSERT INTO meeting_audit(booking_id,event) VALUES(%s,%s)',(b['id'],kind))
