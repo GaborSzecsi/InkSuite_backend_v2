@@ -38,7 +38,7 @@ router = APIRouter(prefix="/banking", tags=["Banking"])
 DATABASE_URL = os.environ["DATABASE_URL"]
 KMS_KEY_ID = os.environ["BANKING_KMS_KEY_ID"]
 TOKEN_PEPPER = os.environ["BANKING_TOKEN_PEPPER"].encode("utf-8")
-PUBLIC_APP_URL = os.environ.get("PUBLIC_APP_URL", "https://www.inksuite.io").rstrip("/")
+PUBLIC_APP_URL = os.environ.get("FRONTEND_BASE_URL", "https://www.inksuite.io").rstrip("/")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
 kms = boto3.client("kms", region_name=AWS_REGION)
 
@@ -255,33 +255,96 @@ def verify_otp(payload: OtpVerify, x_banking_request_token: str = Header(..., al
 
 
 @router.put("/public/bank-account")
-def submit_bank_account(payload: BankSubmission,
-                        x_banking_request_token: str = Header(..., alias="X-Banking-Request-Token"),
-                        x_banking_submit_token: str = Header(..., alias="X-Banking-Submit-Token")):
+def submit_bank_account(
+    payload: BankSubmission,
+    x_banking_request_token: str = Header(..., alias="X-Banking-Request-Token"),
+    x_banking_submit_token: str = Header(..., alias="X-Banking-Submit-Token"),
+):
     token = x_banking_request_token
-    if payload.payment_method == "ACH" and (not payload.routing_number or not payload.account_number):
-        raise HTTPException(422, "ACH requires routing number and account number")
-    if payload.payment_method == "INTERNATIONAL_WIRE" and not (payload.iban or payload.account_number):
-        raise HTTPException(422, "International wire requires IBAN or account number")
+
+    # Payment-rail-specific validation.
+    if payload.payment_method == "ACH":
+        if payload.country_code.upper() != "US":
+            raise HTTPException(422, "ACH is available only for U.S. bank accounts")
+        if not payload.routing_number or not payload.account_number:
+            raise HTTPException(422, "ACH requires an ACH routing number and account number")
+        if payload.swift_bic or payload.iban:
+            raise HTTPException(
+                422,
+                "ACH was selected, but wire-transfer details were provided. "
+                "Remove the SWIFT/IBAN information or select a wire payment method.",
+            )
+
+    elif payload.payment_method == "DOMESTIC_WIRE":
+        if payload.country_code.upper() != "US":
+            raise HTTPException(422, "Domestic wire is available only for U.S. bank accounts")
+        if not payload.routing_number or not payload.account_number:
+            raise HTTPException(422, "Domestic wire requires a wire routing number and account number")
+        if payload.swift_bic or payload.iban:
+            raise HTTPException(
+                422,
+                "Domestic wire was selected, but international wire details were provided.",
+            )
+
+    elif payload.payment_method == "INTERNATIONAL_WIRE":
+        if payload.routing_number:
+            raise HTTPException(
+                422,
+                "International wire was selected, but a U.S. routing number was provided. "
+                "Use SWIFT/BIC and IBAN or the international account number instead.",
+            )
+        if not payload.swift_bic:
+            raise HTTPException(422, "International wire requires a SWIFT/BIC code")
+        if not (payload.iban or payload.account_number):
+            raise HTTPException(422, "International wire requires an IBAN or account number")
 
     with db() as conn, conn.cursor() as cur:
         req = load_public_request(cur, token)
-        cur.execute("SELECT submit_token_hash,submit_token_expires_at FROM secure_payments.payment_requests WHERE id=%s FOR UPDATE", (req[0],))
+
+        cur.execute(
+            """SELECT submit_token_hash,submit_token_expires_at
+               FROM secure_payments.payment_requests
+               WHERE id=%s FOR UPDATE""",
+            (req[0],),
+        )
         sh, se = cur.fetchone()
-        if not sh or not se or se <= now() or not hmac.compare_digest(sh, digest(x_banking_submit_token)):
+        if (
+            not sh
+            or not se
+            or se <= now()
+            or not hmac.compare_digest(sh, digest(x_banking_submit_token))
+        ):
             raise HTTPException(401, "Verification required")
 
         tenant, recipient_type, recipient_id = req[1], req[2], req[3]
-        cur.execute("SELECT id FROM secure_payments.payment_profiles WHERE tenant_id=%s AND recipient_type=%s AND recipient_id=%s FOR UPDATE",
-                    (tenant, recipient_type, recipient_id))
+
+        cur.execute(
+            """SELECT id
+               FROM secure_payments.payment_profiles
+               WHERE tenant_id=%s AND recipient_type=%s AND recipient_id=%s
+               FOR UPDATE""",
+            (tenant, recipient_type, recipient_id),
+        )
         found = cur.fetchone()
         profile_id = found[0] if found else uuid.uuid4()
-        if not found:
-            cur.execute("INSERT INTO secure_payments.payment_profiles(id,tenant_id,recipient_type,recipient_id,status,default_currency) VALUES(%s,%s,%s,%s,'PENDING',%s)",
-                        (profile_id, tenant, recipient_type, recipient_id, payload.currency.upper()))
 
-        cur.execute("SELECT id FROM secure_payments.payment_accounts WHERE payment_profile_id=%s AND is_active FOR UPDATE", (profile_id,))
+        if not found:
+            cur.execute(
+                """INSERT INTO secure_payments.payment_profiles
+                   (id,tenant_id,recipient_type,recipient_id,status,default_currency)
+                   VALUES(%s,%s,%s,%s,'PENDING',%s)""",
+                (profile_id, tenant, recipient_type, recipient_id, payload.currency.upper()),
+            )
+
+        cur.execute(
+            """SELECT id
+               FROM secure_payments.payment_accounts
+               WHERE payment_profile_id=%s AND is_active
+               FOR UPDATE""",
+            (profile_id,),
+        )
         old = cur.fetchone()
+
         account_id = str(uuid.uuid4())
         sensitive = {
             "legal_account_holder_name": payload.legal_account_holder_name,
@@ -291,26 +354,71 @@ def submit_bank_account(payload: BankSubmission,
             "swift_bic": payload.swift_bic,
             "iban": payload.iban,
         }
+
         ciphertext, encrypted_key, nonce = encrypt_payload(tenant, account_id, sensitive)
         raw_account = payload.iban or payload.account_number or ""
         last4 = raw_account[-4:] if raw_account else None
+
         # Existing accounts remain active until a finance user approves the replacement.
         # This prevents an email-account takeover from silently redirecting payments.
         activate_now = not bool(old)
-        cur.execute("""INSERT INTO secure_payments.payment_accounts
-          (id,payment_profile_id,payment_method,country_code,bank_name,account_last4,account_type,currency,
-           verification_status,encrypted_payload,encrypted_data_key,nonce,is_active)
-          VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'UNVERIFIED',%s,%s,%s,%s)""",
-          (account_id, profile_id, payload.payment_method, payload.country_code.upper(), payload.bank_name, last4,
-           payload.account_type, payload.currency.upper(), ciphertext, encrypted_key, nonce, activate_now))
+
+        cur.execute(
+            """INSERT INTO secure_payments.payment_accounts
+               (id,payment_profile_id,payment_method,country_code,bank_name,
+                account_last4,account_type,currency,verification_status,
+                encrypted_payload,encrypted_data_key,nonce,is_active)
+               VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'UNVERIFIED',%s,%s,%s,%s)""",
+            (
+                account_id,
+                profile_id,
+                payload.payment_method,
+                payload.country_code.upper(),
+                payload.bank_name,
+                last4,
+                payload.account_type,
+                payload.currency.upper(),
+                ciphertext,
+                encrypted_key,
+                nonce,
+                activate_now,
+            ),
+        )
+
         new_status = "CHANGE_PENDING" if old else "COMPLETE"
-        cur.execute("UPDATE secure_payments.payment_profiles SET status=%s,default_currency=%s,updated_at=now() WHERE id=%s",
-                    (new_status, payload.currency.upper(), profile_id))
-        cur.execute("UPDATE secure_payments.payment_requests SET used_at=now(),submit_token_hash=NULL,submit_token_expires_at=NULL WHERE id=%s", (req[0],))
-        cur.execute("""INSERT INTO secure_payments.payment_audit_events
-          (tenant_id,payment_profile_id,payment_account_id,request_id,action,metadata)
-          VALUES(%s,%s,%s,%s,%s,%s::jsonb)""",
-          (tenant, profile_id, account_id, req[0], "BANK_ACCOUNT_SUBMITTED", json.dumps({"replacement": bool(old), "last4": last4})))
+
+        cur.execute(
+            """UPDATE secure_payments.payment_profiles
+               SET status=%s,default_currency=%s,updated_at=now()
+               WHERE id=%s""",
+            (new_status, payload.currency.upper(), profile_id),
+        )
+
+        cur.execute(
+            """UPDATE secure_payments.payment_requests
+               SET used_at=now(),submit_token_hash=NULL,submit_token_expires_at=NULL
+               WHERE id=%s""",
+            (req[0],),
+        )
+
+        cur.execute(
+            """INSERT INTO secure_payments.payment_audit_events
+               (tenant_id,payment_profile_id,payment_account_id,request_id,action,metadata)
+               VALUES(%s,%s,%s,%s,%s,%s::jsonb)""",
+            (
+                tenant,
+                profile_id,
+                account_id,
+                req[0],
+                "BANK_ACCOUNT_SUBMITTED",
+                json.dumps({
+                    "replacement": bool(old),
+                    "last4": last4,
+                    "payment_method": payload.payment_method,
+                }),
+            ),
+        )
+
         conn.commit()
 
     # Completion notifications contain no bank name, account number, routing number,
@@ -328,8 +436,8 @@ def submit_bank_account(payload: BankSubmission,
             )
         except Exception:
             # The banking submission must not fail merely because a completion
-            # notification could not be delivered. Delivery failures belong in
-            # operational email monitoring, never in the public response.
+            # notification could not be delivered.
             pass
 
     return {"ok": True, "status": new_status, "account_last4": last4}
+
