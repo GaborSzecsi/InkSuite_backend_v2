@@ -35,7 +35,11 @@ from routers.contract_invites import (
 
 router = APIRouter(prefix="/banking", tags=["Banking"])
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+DATABASE_URL = os.environ["DATABASE_URL"].replace(
+    "postgresql+psycopg://",
+    "postgresql://",
+    1,
+)
 KMS_KEY_ID = os.environ["BANKING_KMS_KEY_ID"]
 TOKEN_PEPPER = os.environ["BANKING_TOKEN_PEPPER"].encode("utf-8")
 PUBLIC_APP_URL = os.environ.get("FRONTEND_BASE_URL", "https://www.inksuite.io").rstrip("/")
@@ -440,4 +444,5 @@ def submit_bank_account(
             pass
 
     return {"ok": True, "status": new_status, "account_last4": last4}
+
 
