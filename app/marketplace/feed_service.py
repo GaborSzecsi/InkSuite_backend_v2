@@ -43,7 +43,7 @@ def hydrate(cur, posts, viewer):
             "name": m["display_name"] or m["name"],
             "href": (
                 (
-                    "/marketplace/users/" + m["username"]
+                    "/" + m["username"]
                     if m["user_id"]
                     else "/marketplace/publishers/" + m["slug"]
                 )

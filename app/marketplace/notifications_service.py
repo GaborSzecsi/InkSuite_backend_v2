@@ -37,7 +37,41 @@ def connection_notifications(user=Depends(current_user)):
                 f"{item['id']}:{item['kind']}:{item['responded_at'] or item['created_at']}"
             )
             item.pop("requester_actor_id")
-        return {"items": pending, "count": total}
+        from . import arc_repository
+
+        if arc_repository.ready(cur):
+            for notice in arc_repository.notices(cur, user):
+                own = notice["own"]
+                message = {
+                    "expired": "Your ARC access has expired.",
+                    "expiring": "Your ARC access expires within seven days.",
+                }.get(
+                    notice["notice_status"], f"Your ARC request was {notice['status']}."
+                )
+                pending.append(
+                    {
+                        "id": notice["id"],
+                        "kind": "arc",
+                        "sender": {"name": notice["title"]},
+                        "message": (
+                            message if own else "A reader requested an advance copy."
+                        ),
+                        "href": (
+                            (
+                                f"/marketplace/library/{notice['book_id']}/read"
+                                if notice["notice_status"] == "approved"
+                                else "/marketplace/library"
+                            )
+                            if own
+                            else "/marketplace/arc-requests"
+                        ),
+                        "notification_key": f"arc:{notice['id']}:{notice['notice_status']}:{notice['decided_at']}",
+                    }
+                )
+        return {
+            "items": pending,
+            "count": total + sum(x["kind"] == "arc" for x in pending),
+        }
 
 
 def email_connection_request(connection_id):

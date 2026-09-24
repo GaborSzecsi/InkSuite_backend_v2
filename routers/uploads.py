@@ -737,6 +737,8 @@ def _is_cover(name: str) -> bool:
     return False
 
 def _s3_url_for_key(key: str) -> str:
+    if "/arc/" in key:
+        raise HTTPException(status_code=403, detail="ARC files are available only through the authorized reader.")
     if not UPLOADS_USE_PRESIGNED:
         return f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{key}"
 
@@ -846,7 +848,7 @@ def list_book_assets(bookUid: str = Query(...)):
 
                 for obj in (resp.get("Contents") or []):
                     key = obj.get("Key") or ""
-                    if not key or key.endswith("/"):
+                    if not key or key.endswith("/") or "/arc/" in key:
                         continue
 
                     name = key.split("/")[-1]

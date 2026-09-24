@@ -12,17 +12,13 @@ def test_inventory_is_marketing_only(monkeypatch,ctx):
     assert storage.usage(ctx)['used_bytes']==20
     assert client.get_paginator.return_value.paginate.call_args.kwargs['Prefix']=='tenants/marble/assets/marketing/public/'
 
-@pytest.mark.parametrize('used,size,allowed',[(0,1,True),(999999999,1,True),(999999999,2,False),(1000000001,1,False)])
-def test_limit_and_serialization(monkeypatch,ctx,used,size,allowed):
+def test_unlimited_upload_does_not_scan_storage(monkeypatch,ctx):
     cur=Mock()
-    def usage(context):
-        assert 'FOR UPDATE' in cur.execute.call_args.args[0]
-        return {'used_bytes':used}
+    usage=Mock(side_effect=AssertionError("No quota inventory scan needed"))
     monkeypatch.setattr(storage,'usage',usage)
-    if allowed: storage.require_space(cur,ctx,size)
-    else:
-        with pytest.raises(HTTPException) as e: storage.require_space(cur,ctx,size)
-        assert e.value.status_code==413
+    storage.require_space(cur,ctx,2_000_000_000)
+    assert 'FOR UPDATE' in cur.execute.call_args.args[0]
+    usage.assert_not_called()
 
 @pytest.mark.parametrize('key',['tenants/other/assets/marketing/public/a','tenants/marble/data/uploads/title/public/a'])
 def test_deletion_cannot_escape_marketing(monkeypatch,ctx,key):
@@ -45,9 +41,3 @@ def test_old_asset_deleted_without_deleting_derivatives(monkeypatch,ctx):
     assert client.delete_object.call_args.kwargs['Key']==key
     assert any('source_asset_id=NULL' in call.args[0] for call in cur.execute.call_args_list)
 
-def test_quota_failure_prevents_s3_upload(monkeypatch,ctx):
-    client=Mock();monkeypatch.setattr(assets,'s3',lambda:client)
-    monkeypatch.setattr(assets,'inspect_media',lambda *args:('image/jpeg','image',100,100,None))
-    monkeypatch.setattr(storage,'usage',lambda _: {'used_bytes':storage.LIMIT_BYTES})
-    with pytest.raises(HTTPException): assets.upload(Mock(),ctx,'file.jpg',b'data',None,'general')
-    client.put_object.assert_not_called()

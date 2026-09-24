@@ -238,8 +238,8 @@ def grant(cur, row, user_id):
         raise HTTPException(
             403, "This Marketplace account is unavailable. Contact InkSuite."
         )
-    # Random default username avoids taking another person's username.
-    username = "member_" + str(row["id"]).replace("-", "")[:20]
+    from .usernames import name_username, available_username
+    username = available_username(cur, name_username(row["name"]), user_id, lock=True)
     _repository.grant_query_2(cur, user_id, username, row)
     _repository.grant_query_3(cur, user_id)
     _repository.grant_query_4(cur, user_id, row)

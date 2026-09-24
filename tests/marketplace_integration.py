@@ -139,6 +139,7 @@ def seed(sql, params=()):
 
 
 try:
+    rpc((root.parent / "migrations/012_reader_profile_contacts.sql").read_text(encoding="utf-8"), execute=True)
     tid = str(uuid4())
     tid2 = str(uuid4())
     work = str(uuid4())

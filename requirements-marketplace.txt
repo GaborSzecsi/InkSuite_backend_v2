@@ -8,3 +8,6 @@ Pillow>=10.4
 email-validator>=2,<3
 cryptography>=43
 # Existing auth service also requires python-jose, requests and python-dotenv.
+
+# Protected ARC EPUB ingestion
+-r requirements-arc.txt

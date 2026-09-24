@@ -7,6 +7,23 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+class ReaderContact(Model):
+    email: str = Field(default="", max_length=254)
+    phone: str = Field(default="", max_length=40)
+    address: str = Field(default="", max_length=1000)
+    email_public: bool = False
+    phone_public: bool = False
+    address_public: bool = False
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value):
+        if value:
+            from pydantic import TypeAdapter, EmailStr
+            return str(TypeAdapter(EmailStr).validate_python(value))
+        return value
+
+
 class Profile(Model):
     username: str = Field(pattern=r"^[a-z0-9][a-z0-9_]{2,29}$")
     display_name: str = Field(min_length=1, max_length=100)
@@ -14,6 +31,7 @@ class Profile(Model):
     location_text: str = Field(default="", max_length=200)
     profile_visibility: Literal["public", "private"] = "public"
     messaging_preference: Literal["anyone", "connections_only", "nobody"] = "anyone"
+    contact_details: ReaderContact = Field(default_factory=ReaderContact)
 
 
 class Organization(Model):

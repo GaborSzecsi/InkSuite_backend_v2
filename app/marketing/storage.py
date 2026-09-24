@@ -3,7 +3,6 @@ from fastapi import HTTPException
 from . import service as s
 from .domain import tenant_root, public_key
 
-LIMIT_BYTES = 1_000_000_000
 
 
 def lock(cur, ctx):
@@ -20,13 +19,11 @@ def inventory(ctx):
 
 def usage(ctx):
     items=inventory(ctx);used=sum(int(i['Size']) for i in items)
-    return {'used_bytes':used,'limit_bytes':LIMIT_BYTES,'available_bytes':max(0,LIMIT_BYTES-used),'file_count':len(items)}
+    return {'used_bytes':used,'limit_bytes':None,'available_bytes':None,'file_count':len(items)}
 
 
 def require_space(cur,ctx,size):
     lock(cur,ctx)
-    if usage(ctx)['used_bytes']+size>LIMIT_BYTES:
-        raise HTTPException(413,'Marketing storage is limited to 1 GB per company. Delete older Marketing assets before uploading or generating more media.')
 
 
 def delete_key(cur,ctx,key):

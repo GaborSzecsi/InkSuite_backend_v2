@@ -318,6 +318,9 @@ def save_library(book_id: UUID, body: LibraryItem, user=Depends(current_user)):
 
 def remove_library(book_id: UUID, user=Depends(current_user)):
     with transaction() as cur:
+        from . import arc_repository
+        if arc_repository.ready(cur) and arc_repository.library_asset(cur, user["id"], book_id):
+            raise HTTPException(409, "ARC access and reading history remain in your Library.")
         _repository.remove_library_query_1(cur, book_id, user)
         return {"ok": True}
 

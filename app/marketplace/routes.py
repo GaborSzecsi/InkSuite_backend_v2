@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from . import identity, catalog, social, messages, media, invitations, notifications
-from . import native_routes
+from . import native_routes, arc_routes
 
 router = APIRouter(prefix="/marketplace", tags=["Marketplace"])
 for child in (
@@ -12,5 +12,6 @@ for child in (
     invitations.router,
     notifications.router,
     native_routes.router,
+    arc_routes.router,
 ):
     router.include_router(child)

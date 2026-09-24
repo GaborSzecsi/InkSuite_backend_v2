@@ -200,6 +200,8 @@ def me(claims=Depends(require_session)):
             )
             for o in allowed
         ]
+        if profile:
+            profile["contact_details"] = dict(profile.get("contact_details") or {}, email=user.get("email") or "")
         if profile and own:
             profile["messaging_preference"] = own["messaging_preference"]
         return {
@@ -221,7 +223,11 @@ def save_profile(body: Profile, user=Depends(current_user)):
         existing = _repository.save_profile_query_1(cur, user)
         if existing and existing["status"] != "active":
             raise HTTPException(403, "This Marketplace profile is unavailable.")
+        from .usernames import available_username
+        body.username = available_username(cur, body.username, user["id"], lock=True)
         _repository.save_profile_query_2(cur, user, body)
+        body.contact_details.email = user.get("email") or ""
+        _repository.save_contact_details(cur, user, body.contact_details)
         result = _repository.save_profile_query_3(cur, user, body)
         return public_actor(cur, result["id"], True)
 
@@ -232,5 +238,13 @@ def profile(username: str):
         return dict(
             public_actor(cur, p["id"]),
             location_text=p["location_text"],
+            **public_contact_details(p.get("contact_details")),
             followers=_repository.profile_query_2(cur, p)["n"],
         )
+
+
+def public_contact_details(details):
+    """Only explicitly published contact fields leave the owner profile API."""
+    details = details or {}
+    return {key: details[key] for key in ("email", "phone", "address")
+            if details.get(key + "_public") is True and details.get(key)}

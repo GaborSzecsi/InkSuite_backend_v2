@@ -178,7 +178,7 @@ def public_actor(cur, actor_id, owner=False, viewer=None):
         ),
         "href": (
             (
-                "/marketplace/users/" + a["username"]
+                "/" + a["username"]
                 if a["user_id"]
                 else "/marketplace/publishers/" + a["slug"]
             )

@@ -53,9 +53,9 @@ def initiate(body, user):
     reserve = body.file_size + (16 * 1024**2 if kind == "image" else 256 * 1024**2)
     with transaction() as cur:
         ready(cur)
-        actor(cur, user, body.actor_id)
+        owner_actor = actor(cur, user, body.actor_id)
         repo.lock_owner(cur, body.actor_id)
-        if int(repo.usage(cur, body.actor_id)) + reserve > settings["quota"]:
+        if owner_actor.get("user_id") and int(repo.usage(cur, body.actor_id)) + reserve > settings["quota"]:
             raise HTTPException(
                 413,
                 "Social storage is full. Delete older unused assets before uploading.",
@@ -121,13 +121,13 @@ def inspect(media_id, owner, user):
 def list_media(owner, offset, user):
     with transaction() as cur:
         ready(cur)
-        actor(cur, user, owner)
+        owner_actor = actor(cur, user, owner)
         data = repo.list_owned(cur, owner, offset)
         return {
             "items": [storage.describe(x) for x in data[:30]],
             "has_more": len(data) > 30,
             "used_bytes": repo.usage(cur, owner),
-            "quota_bytes": limits()["quota"],
+            "quota_bytes": limits()["quota"] if owner_actor.get("user_id") else None,
         }
 
 

@@ -18,7 +18,7 @@ def login_query_2(cur):
 def me_query_1(cur, user):
     return one(
         cur,
-        "SELECT username,display_name,bio,location_text,profile_visibility FROM marketplace_profiles WHERE user_id=%s",
+        "SELECT username,display_name,bio,location_text,profile_visibility,COALESCE(to_jsonb(p)->'contact_details','{}'::jsonb) AS contact_details FROM marketplace_profiles p WHERE user_id=%s",
         (user["id"],),
     )
 
@@ -84,7 +84,7 @@ def save_profile_query_3(cur, user, body):
 def profile_query_1(cur, username):
     return one(
         cur,
-        "SELECT a.id,p.location_text FROM marketplace_profiles p JOIN marketplace_actors a ON a.user_id=p.user_id\n          WHERE p.username=%s AND p.profile_visibility='public' AND a.status='active' ",
+        "SELECT a.id,p.location_text,COALESCE(to_jsonb(p)->'contact_details','{}'::jsonb) AS contact_details FROM marketplace_profiles p JOIN marketplace_actors a ON a.user_id=p.user_id\n          WHERE p.username=%s AND p.profile_visibility='public' AND a.status='active' ",
         (username,),
     )
 
@@ -95,3 +95,19 @@ def profile_query_2(cur, p):
         "SELECT count(*) AS n FROM marketplace_follows WHERE followed_actor_id=%s",
         (p["id"],),
     )
+
+
+def save_contact_details(cur, user, details):
+    from psycopg.types.json import Jsonb
+    from fastapi import HTTPException
+    column = one(cur, "SELECT 1 AS ready FROM information_schema.columns WHERE table_schema='public' AND table_name='marketplace_profiles' AND column_name='contact_details'")
+    if not column:
+        raise HTTPException(409, "Reader profiles need database migration 012_reader_profile_contacts.sql before saving.")
+    cur.execute("UPDATE marketplace_profiles SET contact_details=%s WHERE user_id=%s", (Jsonb(details.model_dump()), user["id"]))
+
+
+def save_verified_email(cur, user_id, email):
+    cur.execute("UPDATE users SET email=%s WHERE id=%s", (email, user_id))
+    column = one(cur, "SELECT 1 AS ready FROM information_schema.columns WHERE table_schema='public' AND table_name='marketplace_profiles' AND column_name='contact_details'")
+    if column:
+        cur.execute("UPDATE marketplace_profiles SET contact_details=jsonb_set(contact_details,'{email}',to_jsonb(%s::text)) WHERE user_id=%s", (email,user_id))
