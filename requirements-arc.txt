@@ -1,2 +1,2 @@
 defusedxml==0.7.1
-tinycss2==1.4.0
+tinycss2>=1.5.0,<2
