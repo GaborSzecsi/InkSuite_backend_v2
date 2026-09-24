@@ -105,9 +105,7 @@ def inspect_epub(data):
             ):
                 fail("The EPUB contains an oversized resource.")
             names.add(name)
-        if (
-            archive.read("mimetype").strip() != b"application/epub+zip"
-        ):
+        if archive.read("mimetype").strip() != b"application/epub+zip":
             fail()
         container = xml(archive.read("META-INF/container.xml"))
         roots = container.findall(".//{*}rootfile")
@@ -128,27 +126,54 @@ def inspect_epub(data):
         obfuscated_fonts = {}
         if "META-INF/encryption.xml" in names:
             encryption = xml(archive.read("META-INF/encryption.xml"))
-            entries = encryption.findall("{http://www.w3.org/2001/04/xmlenc#}EncryptedData")
+            entries = encryption.findall(
+                "{http://www.w3.org/2001/04/xmlenc#}EncryptedData"
+            )
             if not entries:
                 fail("The EPUB has invalid font protection metadata.")
             identifier_id = package.get("unique-identifier")
-            identifier = next((x.text or "" for x in package.findall(".//{*}identifier")
-                               if identifier_id and x.get("id") == identifier_id), "")
+            identifier = next(
+                (
+                    x.text or ""
+                    for x in package.findall(".//{*}identifier")
+                    if identifier_id and x.get("id") == identifier_id
+                ),
+                "",
+            )
             identifier = re.sub(r"[ \t\r\n]", "", identifier)
             if not identifier:
-                fail("The EPUB is missing the identifier needed to read its embedded fonts.")
+                fail(
+                    "The EPUB is missing the identifier needed to read its embedded fonts."
+                )
             key = hashlib.sha1(identifier.encode("utf-8")).hexdigest()
             for entry in entries:
                 method = entry.find("{*}EncryptionMethod")
                 reference = entry.find("{*}CipherData/{*}CipherReference")
-                if method is None or method.get("Algorithm") != "http://www.idpf.org/2008/embedding":
-                    fail("This EPUB uses unsupported encryption. Export a DRM-free EPUB.")
-                font_path = local_path(reference.get("URI", "")) if reference is not None else None
+                if (
+                    method is None
+                    or method.get("Algorithm") != "http://www.idpf.org/2008/embedding"
+                ):
+                    fail(
+                        "This EPUB uses unsupported encryption. Export a DRM-free EPUB."
+                    )
+                font_path = (
+                    local_path(reference.get("URI", ""))
+                    if reference is not None
+                    else None
+                )
                 font_mime = manifest.get(font_path, "")
-                if not font_path or not (font_mime.startswith("font/") or font_mime in {
-                    "application/vnd.ms-opentype", "application/x-font-ttf", "application/x-font-opentype"
-                }):
-                    fail("The EPUB font protection metadata points to a missing or unsupported font.")
+                if not font_path or not (
+                    font_mime.startswith("font/")
+                    or font_mime
+                    in {
+                        "application/vnd.ms-opentype",
+                        "application/x-font-ttf",
+                        "application/x-font-opentype",
+                    }
+                ):
+                    fail(
+                        "The EPUB font protection metadata points to a missing or unsupported font."
+                    )
                 obfuscated_fonts[font_path] = key
         spine = [
             ids.get(x.get("idref")) for x in package.findall(".//{*}spine/{*}itemref")
@@ -181,31 +206,121 @@ def inspect_epub(data):
         fail()
 
 
-def clean_css(text):
-    # EPUB typography only; no URL loads, imports, escaped identifiers or active CSS.
+def clean_declarations(content, path="", allowed=()):
     import tinycss2
 
-    rules = tinycss2.parse_stylesheet(text, skip_comments=True, skip_whitespace=True)
+    def safe_tokens(tokens):
+        for token in tokens:
+            if token.type in {"error", "bad-url", "bad-string"}:
+                return False
+            if token.type == "url":
+                if local_path(token.value, posixpath.dirname(path)) not in allowed:
+                    return False
+            elif token.type == "function":
+                if token.lower_name not in {
+                    "url",
+                    "format",
+                    "rgb",
+                    "rgba",
+                    "hsl",
+                    "hsla",
+                    "calc",
+                    "min",
+                    "max",
+                    "clamp",
+                    "translate",
+                    "translatex",
+                    "translatey",
+                    "translatez",
+                    "translate3d",
+                    "scale",
+                    "scalex",
+                    "scaley",
+                    "scale3d",
+                    "rotate",
+                    "rotatex",
+                    "rotatey",
+                    "rotatez",
+                    "rotate3d",
+                    "skew",
+                    "skewx",
+                    "skewy",
+                    "matrix",
+                    "matrix3d",
+                    "perspective",
+                    "linear-gradient",
+                    "radial-gradient",
+                }:
+                    return False
+                if token.lower_name == "url":
+                    args = [
+                        x
+                        for x in token.arguments
+                        if x.type not in {"whitespace", "comment"}
+                    ]
+                    if (
+                        len(args) != 1
+                        or args[0].type != "string"
+                        or local_path(args[0].value, posixpath.dirname(path))
+                        not in allowed
+                    ):
+                        return False
+                elif not safe_tokens(token.arguments):
+                    return False
+            elif hasattr(token, "content") and not safe_tokens(token.content):
+                return False
+        return True
+
     kept = []
-    for rule in rules:
-        if rule.type != "qualified-rule":
+    for declaration in tinycss2.parse_declaration_list(
+        content, skip_comments=True, skip_whitespace=True
+    ):
+        if declaration.type != "declaration" or declaration.lower_name.startswith("--"):
             continue
-        selector = tinycss2.serialize(rule.prelude)
-        if any(x in selector for x in ("@", "\\", "<", ">")):
+        if declaration.lower_name in {"behavior", "-moz-binding"}:
             continue
-        declarations = []
-        for d in tinycss2.parse_declaration_list(
-            rule.content, skip_comments=True, skip_whitespace=True
+        value = tinycss2.serialize(declaration.value)
+        if declaration.lower_name == "position" and value.strip().lower() not in {
+            "absolute",
+            "relative",
+            "static",
+        }:
+            continue
+        if re.search(r"expression|javascript|[<>]", value, re.I) or not safe_tokens(
+            declaration.value
         ):
-            if d.type != "declaration":
+            continue
+        kept.append(
+            declaration.lower_name
+            + ":"
+            + value
+            + (" !important" if declaration.important else "")
+        )
+    return ";".join(kept)
+
+
+def clean_css(text, path="", allowed=()):
+    import tinycss2
+
+    kept = []
+    for rule in tinycss2.parse_stylesheet(
+        text, skip_comments=True, skip_whitespace=True
+    ):
+        if rule.type == "qualified-rule":
+            selector = tinycss2.serialize(rule.prelude)
+            if any(x in selector for x in ("@", "\\", "<")):
                 continue
-            value = tinycss2.serialize(d.value)
-            if re.search(r"url|expression|javascript|@|\\|[<>]", value, re.I):
-                continue
-            if d.lower_name in {"behavior", "-moz-binding", "position", "z-index"}:
-                continue
-            declarations.append(d.lower_name + ":" + value)
-        kept.append(selector + "{" + ";".join(declarations) + "}")
+            kept.append(
+                selector + "{" + clean_declarations(rule.content, path, allowed) + "}"
+            )
+        elif (
+            rule.type == "at-rule"
+            and rule.lower_at_keyword == "font-face"
+            and rule.content is not None
+        ):
+            kept.append(
+                "@font-face{" + clean_declarations(rule.content, path, allowed) + "}"
+            )
     return "\n".join(kept)
 
 
@@ -223,9 +338,20 @@ def resource(data, package, path):
     if font_key:
         key = bytes.fromhex(font_key)
         length = min(len(raw), 1040)
-        raw = bytes(value ^ key[index % len(key)] for index, value in enumerate(raw[:length])) + raw[length:]
+        raw = (
+            bytes(
+                value ^ key[index % len(key)]
+                for index, value in enumerate(raw[:length])
+            )
+            + raw[length:]
+        )
     if mime == "text/css":
-        return clean_css(raw.decode("utf-8", "replace")).encode(), mime
+        return (
+            clean_css(
+                raw.decode("utf-8", "replace"), path, package["resources"]
+            ).encode(),
+            mime,
+        )
     if mime not in (
         "application/oebps-package+xml",
         "application/xhtml+xml",
@@ -238,8 +364,14 @@ def resource(data, package, path):
     for parent in list(root.iter()):
         for child in list(parent):
             if child.tag.split("}")[-1].lower() in BLOCKED_TAGS and not (
-                mime == "application/oebps-package+xml"
-                and child.tag.split("}")[-1].lower() == "meta"
+                child.tag.split("}")[-1].lower() == "meta"
+                and (
+                    mime == "application/oebps-package+xml"
+                    or (
+                        child.get("name", "").lower() == "viewport"
+                        and not child.get("http-equiv")
+                    )
+                )
             ):
                 parent.remove(child)
         for key, value in list(parent.attrib.items()):
@@ -251,16 +383,17 @@ def resource(data, package, path):
                 "action",
                 "target",
                 "download",
-                "style",
                 "base",
             }:
                 del parent.attrib[key]
+            elif attr == "style":
+                parent.set(key, clean_declarations(value, path, allowed))
             elif attr in {"href", "src", "poster", "data"}:
                 target = local_path(value, posixpath.dirname(path))
                 if target not in allowed or urlsplit(value).scheme:
                     del parent.attrib[key]
         if parent.tag.split("}")[-1].lower() == "style":
-            parent.text = clean_css(parent.text or "")
+            parent.text = clean_css(parent.text or "", path, allowed)
     # Remove unsupported OPF items; the reader must never fetch arbitrary files.
     if path == package["opf"]:
         for manifest in root.findall(".//{*}manifest"):

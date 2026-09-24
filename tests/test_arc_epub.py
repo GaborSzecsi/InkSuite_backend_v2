@@ -132,14 +132,20 @@ def test_accepts_archive_over_previous_upload_limit():
 
 def font_epub(algorithm="http://www.idpf.org/2008/embedding", target="font.ttf"):
     import hashlib
+
     original = b"\x00\x01\x00\x00" + bytes(range(256)) * 5
     key = hashlib.sha1(b"urn:test:book").digest()
-    encoded = bytes(value ^ key[i % 20] for i, value in enumerate(original[:1040])) + original[1040:]
-    data = make_epub({
-        "book.opf": b'<package unique-identifier="uid"><metadata><identifier id="uid"> urn:test:book </identifier></metadata><manifest><item id="c" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="f" href="font.ttf" media-type="application/x-font-ttf"/></manifest><spine><itemref idref="c"/></spine></package>',
-        "font.ttf": encoded,
-        "META-INF/encryption.xml": f'<encryption xmlns:e="http://www.w3.org/2001/04/xmlenc#"><e:EncryptedData><e:EncryptionMethod Algorithm="{algorithm}"/><e:CipherData><e:CipherReference URI="{target}"/></e:CipherData></e:EncryptedData></encryption>'.encode(),
-    })
+    encoded = (
+        bytes(value ^ key[i % 20] for i, value in enumerate(original[:1040]))
+        + original[1040:]
+    )
+    data = make_epub(
+        {
+            "book.opf": b'<package unique-identifier="uid"><metadata><identifier id="uid"> urn:test:book </identifier></metadata><manifest><item id="c" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="f" href="font.ttf" media-type="application/x-font-ttf"/></manifest><spine><itemref idref="c"/></spine></package>',
+            "font.ttf": encoded,
+            "META-INF/encryption.xml": f'<encryption xmlns:e="http://www.w3.org/2001/04/xmlenc#"><e:EncryptedData><e:EncryptionMethod Algorithm="{algorithm}"/><e:CipherData><e:CipherReference URI="{target}"/></e:CipherData></e:EncryptedData></encryption>'.encode(),
+        }
+    )
     return data, original
 
 
@@ -150,12 +156,47 @@ def test_standard_font_obfuscation_is_accepted_and_decoded():
     assert decoded == original
 
 
-@pytest.mark.parametrize("algorithm,target", [
-    ("http://www.w3.org/2001/04/xmlenc#aes256-cbc", "font.ttf"),
-    ("http://www.idpf.org/2008/embedding", "chapter.xhtml"),
-    ("http://www.idpf.org/2008/embedding", "../font.ttf"),
-])
+@pytest.mark.parametrize(
+    "algorithm,target",
+    [
+        ("http://www.w3.org/2001/04/xmlenc#aes256-cbc", "font.ttf"),
+        ("http://www.idpf.org/2008/embedding", "chapter.xhtml"),
+        ("http://www.idpf.org/2008/embedding", "../font.ttf"),
+    ],
+)
 def test_encryption_exemption_only_allows_standard_embedded_fonts(algorithm, target):
     data, _ = font_epub(algorithm, target)
     with pytest.raises(HTTPException):
         inspect_epub(data)
+
+
+def test_fixed_layout_positions_viewport_and_fonts_are_preserved():
+    data = make_epub(
+        {
+            "font.ttf": b"font",
+            "style.css": b'@font-face{font-family:Comic;src:url("font.ttf")}#bubble{position:absolute;left:20px;top:30px}',
+        },
+        chapter='<html xmlns="http://www.w3.org/1999/xhtml"><head><meta name="viewport" content="width=396,height=612"/><meta http-equiv="refresh" content="0;url=https://evil.invalid"/></head><body style="width:396px;height:612px"><span style="position:absolute;left:10px;transform:scale(0.05);background:url(https://evil.invalid)">Speech</span></body></html>',
+    )
+    package = inspect_epub(data)
+    package["resources"].update({"font.ttf": "font/ttf", "style.css": "text/css"})
+    content, _ = resource(data, package, "chapter.xhtml")
+    text = content.decode()
+    assert 'name="viewport"' in text and "width=396,height=612" in text
+    assert "position:absolute" in text and "scale(0.05)" in text
+    assert "evil.invalid" not in text and "refresh" not in text
+    css, _ = resource(data, package, "style.css")
+    assert (
+        b"@font-face" in css
+        and b'url("font.ttf")' in css
+        and b"position:absolute" in css
+    )
+
+
+def test_font_and_inline_css_cannot_fetch_external_or_unlisted_resources():
+    css = clean_css(
+        '@font-face{src:url("https://evil.invalid/font.ttf")}p{background:image-set("https://evil.invalid/x" 1x);color:red} @import "other.css";',
+        "style.css",
+        {"font.ttf"},
+    )
+    assert "evil.invalid" not in css and "@import" not in css

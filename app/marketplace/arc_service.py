@@ -20,10 +20,14 @@ from . import arc_epub
 
 
 # Bounded process-memory cache only.
-# Authorization is always checked before and after resource access.
+# Authorization is checked on every request, and again after cold resource loading.
 _archive_cache = OrderedDict()
 _archive_lock = Lock()
 _CACHE_BYTES = 96 * 1024 * 1024
+_resource_cache = OrderedDict()
+_RESOURCE_CACHE_BYTES = 32 * 1024 * 1024
+# Coalesce concurrent requests for the same archive (fonts, CSS and images).
+_archive_download_locks = [Lock() for _ in range(16)]
 
 
 def now():
@@ -691,65 +695,49 @@ def resource(sid, path, user):
         e["sha256"],
     )
 
+    resource_key = (*cache_key, path)
     with _archive_lock:
-        for key in list(_archive_cache):
-            if _archive_cache[key][0] < monotonic():
-                del _archive_cache[key]
+        for key in list(_resource_cache):
+            if _resource_cache[key][0] < monotonic():
+                del _resource_cache[key]
+        cached_resource = _resource_cache.get(resource_key)
+        if cached_resource:
+            _resource_cache[resource_key] = (monotonic() + 120, cached_resource[1])
+            _resource_cache.move_to_end(resource_key)
+            # Authorization above is still performed on every cache hit.
+            return cached_resource[1]
 
-        cached = _archive_cache.get(
-            cache_key
-        )
-
-        data = (
-            cached[1]
-            if cached
-            else None
-        )
-
-    if data is None:
-        client, bucket = storage()
-
-        body = client.get_object(
-            Bucket=bucket,
-            Key=e["storage_key"],
-        )["Body"]
-
-        try:
-            data = body.read()
-        finally:
-            body.close()
-
-        if (
-            hashlib.sha256(data).hexdigest()
-            != e["sha256"]
-        ):
-            raise HTTPException(
-                503,
-                "ARC storage integrity check failed.",
-            )
-
+    with _archive_download_locks[hash(cache_key) % len(_archive_download_locks)]:
         with _archive_lock:
-            _archive_cache[cache_key] = (
-                monotonic() + 120,
-                data,
-            )
+            for key in list(_archive_cache):
+                if _archive_cache[key][0] < monotonic():
+                    del _archive_cache[key]
+            cached = _archive_cache.get(cache_key)
+            data = cached[1] if cached else None
+            if cached:
+                _archive_cache[cache_key] = (monotonic() + 120, data)
+                _archive_cache.move_to_end(cache_key)
 
-            while (
-                sum(
-                    len(v[1])
-                    for v in _archive_cache.values()
-                )
-                > _CACHE_BYTES
-            ):
-                _archive_cache.popitem(
-                    last=False
-                )
+        if data is None:
+            client, bucket = storage()
+            body = client.get_object(Bucket=bucket, Key=e["storage_key"])["Body"]
+            try:
+                data = body.read()
+            finally:
+                body.close()
+            if hashlib.sha256(data).hexdigest() != e["sha256"]:
+                raise HTTPException(503, "ARC storage integrity check failed.")
+            with _archive_lock:
+                _archive_cache[cache_key] = (monotonic() + 120, data)
+                while sum(len(v[1]) for v in _archive_cache.values()) > _CACHE_BYTES:
+                    _archive_cache.popitem(last=False)
 
-    result = arc_epub.resource(
-        data,
-        e["package"],
-        path,
-    )
+    result = arc_epub.resource(data, e["package"], path)
+    with _archive_lock:
+        _resource_cache[resource_key] = (monotonic() + 120, result)
+        _resource_cache.move_to_end(resource_key)
+        while sum(len(v[1][0]) for v in _resource_cache.values()) > _RESOURCE_CACHE_BYTES:
+            _resource_cache.popitem(last=False)
 
     # Recheck after S3/cache work. Access might have been revoked
     # while the resource was being loaded.
