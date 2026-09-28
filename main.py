@@ -140,6 +140,8 @@ app.include_router(royalty_engine_router, prefix="/api", tags=["Royalty Statemen
 app.include_router(books.router, prefix="/api", tags=["Books"])
 app.include_router(uploads.router, prefix="/api", tags=["Uploads"])
 app.include_router(banking.router, prefix="/api", tags=["Banking"])
+from routers.banking_access import router as banking_access_router
+app.include_router(banking_access_router, prefix="/api")
 
 # Contracts
 app.include_router(contracts_templates.router, prefix="/api", tags=["Contracts"])
