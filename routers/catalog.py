@@ -2386,6 +2386,9 @@ def _fetch_editions(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
             {
                 "id": str(r["id"]),
                 "edition_id": str(r["id"]),
+                "cover_image_link": r.get("cover_image_link") or "",
+                "cover_image_format": r.get("cover_image_format") or "",
+                "cover_image_caption": r.get("cover_image_caption") or "",
                 "isbn": r.get("isbn13") or "",
                 "isbn13": r.get("isbn13") or "",
                 "format": format_label,
@@ -4855,9 +4858,51 @@ def list_works(
                     if preferred and preferred.get("author"):
                         author_by_work[wid] = _clean_display_name(preferred.get("author"))
 
+            # Covers belong to editions/public resources, not the work row.
+            # Resolve the whole page together rather than fetching each title.
+            cover_by_work: Dict[str, str] = {}
+            if work_ids:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (e.work_id)
+                        e.work_id, cover.link
+                    FROM editions e
+                    CROSS JOIN LATERAL (
+                        SELECT COALESCE(
+                            NULLIF(BTRIM(e.cover_image_link), ''),
+                            (
+                                SELECT NULLIF(BTRIM(erv.resource_link), '')
+                                FROM edition_supporting_resources esr
+                                JOIN edition_supporting_resource_versions erv
+                                  ON erv.resource_id = esr.id
+                                 AND erv.tenant_id = esr.tenant_id
+                                WHERE esr.tenant_id = e.tenant_id
+                                  AND esr.edition_id = e.id
+                                  AND esr.resource_content_type = '01'
+                                  AND NULLIF(BTRIM(erv.resource_link), '') IS NOT NULL
+                                ORDER BY esr.is_primary DESC NULLS LAST,
+                                         esr.item_order, erv.item_order,
+                                         erv.created_at, erv.id
+                                LIMIT 1
+                            )
+                        ) AS link
+                    ) cover
+                    WHERE e.tenant_id = %s
+                      AND e.work_id::text = ANY(%s)
+                      AND cover.link IS NOT NULL
+                    ORDER BY e.work_id, e.created_at, e.id
+                    """,
+                    (tenant_id, work_ids),
+                )
+                cover_by_work = {
+                    str(row["work_id"]): row["link"]
+                    for row in cur.fetchall()
+                }
+
             items = []
             for r in rows:
                 it = _work_row_to_list_item(r)
+                it["cover_image_link"] = cover_by_work.get(str(r["id"]), "")
                 wid = str(r.get("id", ""))
                 if wid in author_by_work:
                     it["author"] = author_by_work[wid]

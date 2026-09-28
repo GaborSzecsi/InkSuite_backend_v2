@@ -126,6 +126,8 @@ app.include_router(settings_router, prefix="/api")
 app.include_router(contract_invites, prefix="/api")
 app.include_router(catalog_router, prefix="/api")
 app.include_router(onix_router, prefix="/api")
+from routers.bookdev_notes import router as bookdev_notes_router
+app.include_router(bookdev_notes_router, prefix="/api")
 app.include_router(bookdev_email_router, prefix="/api", tags=["Book Development Requests"])
 
 # Uploads read router: mount ONCE.
@@ -156,6 +158,8 @@ app.include_router(ingest.router, prefix="/api", tags=["Ingest"])
 
 # Financials: mount under /api so it’s protected and consistent with your frontend URLs
 app.include_router(financials_router, prefix="/api", tags=["Financials"])
+from routers.payment_instructions import router as payment_instructions_router
+app.include_router(payment_instructions_router, prefix="/api")
 app.include_router(salesdata_router, prefix="/api")
 
 # Upload endpoints under /api
