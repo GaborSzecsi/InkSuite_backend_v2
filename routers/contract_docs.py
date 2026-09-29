@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response as FastAPIRes
 from pydantic import BaseModel, EmailStr
 
 from app.core.db import db_conn
-from .contract_royalties import render_royalty_sections, RoyaltyValidationError
+from .contract_royalties import render_royalty_sections, RoyaltyValidationError, format_contract_insertion
 
 try:
     from docx import Document
@@ -199,7 +199,7 @@ def _fmt_percent(v: Any) -> str:
 
 
 
-def _insert_numbered_contract_block(paragraph, text: str, *, advance: bool = False) -> bool:
+def _insert_numbered_contract_block(paragraph, text: str, *, advance: bool = False, justify: bool = False) -> bool:
     """Expand a standalone block into native list paragraphs under its section."""
     from copy import deepcopy
     from docx.oxml import OxmlElement
@@ -281,7 +281,12 @@ def _insert_numbered_contract_block(paragraph, text: str, *, advance: bool = Fal
         anchor.addprevious(element)
         apply_list(element)
         new_paragraph = Paragraph(element, paragraph._parent)
-        new_paragraph.add_run(line).font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+        if justify:
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            new_paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        inserted = new_paragraph.add_run(line)
+        format_contract_insertion(inserted)
+        inserted.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
     if advance:
         while following is not None and not "".join(following.itertext()).strip():
             following = following.getnext()
@@ -353,6 +358,7 @@ def _replace_inline_tokens(paragraph, values):
         token_run.addnext(tail)
         value = values.get(_normalize_token_name(match.group(1)), "")
         replacement = Run(token_run, paragraph)
+        format_contract_insertion(replacement)
         if value == "__DELETED__":
             replacement.text = "[Deleted]"
             replacement.italic = True
@@ -370,6 +376,7 @@ def _append_text_to_paragraph(p, text: str, color: RGBColor | None = None) -> No
     for i, part in enumerate(parts):
         if i == 0:
             run = p.add_run(part)
+            format_contract_insertion(run)
             if color is not None:
                 run.font.color.rgb = color
             last_run = run
@@ -382,6 +389,7 @@ def _append_text_to_paragraph(p, text: str, color: RGBColor | None = None) -> No
 
         last_run.add_break()
         run = p.add_run(part)
+        format_contract_insertion(run)
         if color is not None:
             run.font.color.rgb = color
         last_run = run

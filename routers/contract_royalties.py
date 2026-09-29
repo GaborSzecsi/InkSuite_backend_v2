@@ -158,6 +158,26 @@ _LEGACY = re.compile(r'\{\{\s*(Hardcover_[^}]+|Paperback_[^}]+|Boardbook_[^}]+|E
 _BLOCK = re.compile(r'^\s*\{\{\s*ROYALTIES_BLOCK\s*\}\}\s*$', re.I)
 
 
+def format_contract_insertion(run):
+    """Explicit fonts avoid template theme/style overrides in Word."""
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(12)
+    props = run._r.get_or_add_rPr()
+    fonts = props.rFonts
+    for script in ("ascii", "hAnsi", "eastAsia", "cs"):
+        fonts.set(qn("w:" + script), "Times New Roman")
+    for key in ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "cstheme", "csTheme"):
+        fonts.attrib.pop(qn("w:" + key), None)
+    size = props.find(qn("w:szCs"))
+    if size is None:
+        size = OxmlElement("w:szCs")
+        props.append(size)
+    size.set(qn("w:val"), "24")
+
+
 def _replace_clause_span(paragraph, start, end, replacement):
     """Replace a matched sentence without clearing the surrounding paragraph."""
     from docx.oxml import OxmlElement
@@ -209,6 +229,7 @@ def _replace_clause_span(paragraph, start, end, replacement):
     inserted.addnext(tail)
     run = Run(inserted, paragraph)
     run.text = replacement
+    format_contract_insertion(run)
     run.font.color.rgb = RGBColor(255, 0, 0)
 
 
@@ -267,16 +288,17 @@ def render_royalty_sections(doc, memo, party='author', insert_block=None):
                     for run in heading.runs:
                         if old in run.text:
                             run.text = run.text.replace(old, 'the following royalties:')
+                            format_contract_insertion(run)
                             break
                     else:
                         text = heading.text.replace(old, 'the following royalties:')
                         heading.clear()
-                        heading.add_run(text)
+                        format_contract_insertion(heading.add_run(text))
         if blocks and legacy:
             raise RoyaltyValidationError('Template contains both ROYALTIES_BLOCK and legacy royalty slots. Use one royalty section.')
         if blocks:
             for p in blocks:
-                if not insert_block or not insert_block(p, '\n'.join(text for _,text in clauses)):
+                if not insert_block or not insert_block(p, '\n'.join(text for _,text in clauses), justify=True):
                     raise RoyaltyValidationError('Place ROYALTIES_BLOCK below a numbered contract section heading.')
             continue
         if not legacy:
@@ -284,14 +306,17 @@ def render_royalty_sections(doc, memo, party='author', insert_block=None):
         applied = set()
         last = legacy[-1]
         def write(p, text, tail=''):
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             props = deepcopy(p.runs[0]._r.rPr) if p.runs and p.runs[0]._r.rPr is not None else None
             p.clear()
             run = p.add_run(text)
             if props is not None:
                 run._r.insert(0, props)
+            format_contract_insertion(run)
             run.font.color.rgb = RGBColor(255,0,0)
             if tail:
-                p.add_run(tail)
+                format_contract_insertion(p.add_run(tail))
         for p in legacy:
             tokens = _LEGACY.findall(p.text)
             keys = {_key(t.split('_')[0]) for t in tokens}

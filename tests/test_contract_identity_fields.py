@@ -8,13 +8,14 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import RGBColor, Pt
+from routers.contract_royalties import format_contract_insertion
 
 SOURCE = Path(__file__).resolve().parents[1] / 'routers' / 'contract_docs.py'
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
-ns = {'re': re, 'RGBColor': RGBColor, 'TOKEN_RE': re.compile(r'\{\{\s*([^{}]+?)\s*\}\}')}
+ns = {'format_contract_insertion': format_contract_insertion, 're': re, 'RGBColor': RGBColor, 'TOKEN_RE': re.compile(r'\{\{\s*([^{}]+?)\s*\}\}')}
 for name in ('_dig', '_first_non_empty', '_normalize_token_name', '_get_value_from_memo',
              '_default_mapping', '_replace_inline_tokens', '_iter_contract_paragraphs',
-             '_build_art_delivery_block', '_build_manuscript_delivery_block'):
+             '_build_art_delivery_block', '_build_manuscript_delivery_block', '_insert_numbered_contract_block'):
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), ns)
 
@@ -44,6 +45,9 @@ class IdentityFields(unittest.TestCase):
             ns['_replace_inline_tokens'](p, values)
             self.assertEqual(p.text, 'Before ' + value + ' after.')
             self.assertTrue(p.runs[-1].italic)
+            inserted = next(r for r in p.runs if r.text == value)
+            self.assertEqual(inserted.font.name, 'Times New Roman')
+            self.assertEqual(inserted.font.size, Pt(12))
         self.assertEqual(ns['_default_mapping']('author')['Author_Name'], 'author')
         self.assertEqual(ns['_get_value_from_memo']({'illustrator': {'display_name': 'Nested Artist'}}, 'illustrator_name'), 'Nested Artist')
 
@@ -91,6 +95,38 @@ class IdentityFields(unittest.TestCase):
         self.assertFalse(p.runs)
         context['replace_in_paragraph'](p)
         self.assertEqual(''.join(p._p.xpath('.//w:t/text()')), 'author@example.test')
+
+    def test_royalty_points_font_and_justification_round_trip(self):
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from routers.contract_royalties import render_royalty_sections
+        memo = {'royalties': {'illustrator': {'first_rights': [
+            {'format': 'Hardcover', 'mode': 'flat', 'flat_rate_percent': 10, 'base': 'list_price'},
+            {'format': 'Paperback', 'mode': 'flat', 'flat_rate_percent': 8, 'base': 'list_price'}]}}}
+        for block in (True, False):
+            doc = Document()
+            heading = doc.add_paragraph('8. Royalties.')
+            heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            num = heading._p.get_or_add_pPr().get_or_add_numPr()
+            num.get_or_add_ilvl().val = 0
+            num.get_or_add_numId().val = 1
+            slot = doc.add_paragraph('{{ROYALTIES_BLOCK}}' if block else '{{Hardcover_1}}')
+            slot.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            slot.runs[0].font.name = 'Arial'
+            slot.runs[0].font.size = Pt(9)
+            render_royalty_sections(doc, memo, 'illustrator', insert_block=ns['_insert_numbered_contract_block'])
+            output = io.BytesIO()
+            doc.save(output)
+            output.seek(0)
+            result = Document(output)
+            self.assertEqual(result.paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.LEFT)
+            self.assertEqual(len(result.paragraphs[1:]), 2)
+            for p in result.paragraphs[1:]:
+                self.assertEqual(p.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+                for run in p.runs:
+                    if run.text:
+                        self.assertEqual(run.font.name, 'Times New Roman')
+                        self.assertEqual(run.font.size, Pt(12))
+                        self.assertEqual(run._r.rPr.rFonts.get(qn('w:eastAsia')), 'Times New Roman')
 
     def test_headers_footers_and_nested_tables_round_trip(self):
         doc = Document()
