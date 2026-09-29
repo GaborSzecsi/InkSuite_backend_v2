@@ -485,7 +485,7 @@ def _get_value_from_memo(memo: dict, dotted: str) -> str:
         "author_phone_number": ["authorPhoneNumber"],
         "author_phone_country_code": ["authorPhoneCountryCode"],
 
-        "illustrator_name": ["illustrator.name", "illustratorName"],
+        "illustrator_name": ["illustrator.name", "illustrator.display_name", "illustrator.displayName", "illustratorName"],
         "illustrator_email": ["illustrator.email", "illustratorEmail"],
         "illustrator_phone_number": ["illustrator.phoneNumber", "illustratorPhoneNumber"],
 
@@ -527,7 +527,9 @@ def _get_value_from_memo(memo: dict, dotted: str) -> str:
             "authorAgent.email",
             "author_agent.email",
         ],
-        "agency_email": ["agencyEmail"],
+        "agency_email": ["agencyEmail", "agency.agency_email"],
+        "agency_phone_number": ["agencyPhoneNumber", "agency.agency_phone_number"],
+        "agent_phone_number": ["agentPhoneNumber", "authorAgent.phoneNumber", "author_agent.phoneNumber"],
         "agency_website": [
             "agencyWebsite",
             "authorAgent.website",
@@ -590,7 +592,7 @@ def _get_value_from_memo(memo: dict, dotted: str) -> str:
 def _default_mapping(role: str) -> dict[str, str]:
     is_illustrator = (role == "illustrator")
 
-    return {
+    mapping = {
         "Author_Name": "illustrator_name" if is_illustrator else "author",
         "Author_Email": "illustrator_email" if is_illustrator else "author_email",
         "Author_Phone": "illustrator_phone_number" if is_illustrator else "author_phone_number",
@@ -681,6 +683,48 @@ def _default_mapping(role: str) -> dict[str, str]:
         "Manuscript_Delivery_Block": "__MANUSCRIPT_DELIVERY_BLOCK__",
         "MANUSCRIPT_DELIVERY_BLOCK": "__MANUSCRIPT_DELIVERY_BLOCK__",
     }
+
+    # Accept the exact tags emitted by the field mapper, plus legacy spellings.
+    for suffix, field in {
+        "Name": "illustrator_name", "Email": "illustrator_email",
+        "Phone": "illustrator_phone_number", "Street_Address": "illustrator_address.street",
+        "City": "illustrator_address.city", "State": "illustrator_address.state",
+        "Zip": "illustrator_address.zip", "Country": "illustrator_address.country",
+    }.items():
+        token = f"Illustrator_{suffix}"
+        mapping[token] = field
+        mapping[token.upper()] = field
+    for token, field in list(mapping.items()):
+        if token.startswith(("Agent ", "Agency ")):
+            mapping[token.replace(" ", "_")] = field
+    for party in ("Agency", "Agent"):
+        for token in (f"{party}_Phone", f"{party.upper()}_PHONE", f"{party} Phone"):
+            mapping[token] = f"{party.lower()}_phone_number"
+    return mapping
+
+
+def _iter_contract_paragraphs(doc):
+    """Visit body, nested tables and defined headers/footers once (including linked ones)."""
+    seen = set()
+
+    def walk(container):
+        for paragraph in container.paragraphs:
+            if paragraph._p not in seen:
+                seen.add(paragraph._p)
+                yield paragraph
+        for table in container.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell._tc not in seen:
+                        seen.add(cell._tc)
+                        yield from walk(cell)
+
+    yield from walk(doc)
+    for section in doc.sections:
+        for story in (section.header, section.first_page_header, section.even_page_header,
+                      section.footer, section.first_page_footer, section.even_page_footer):
+            if not story.is_linked_to_previous:
+                yield from walk(story)
 
 
 def _load_index() -> List[dict]:
@@ -1596,13 +1640,8 @@ def generate_contract(req: GenerateRequest):
 
             _replace_inline_tokens(p, values)
 
-        for p in list(doc.paragraphs):
+        for p in list(_iter_contract_paragraphs(doc)):
             replace_in_paragraph(p)
-        for tbl in doc.tables:
-            for row in tbl.rows:
-                for cell in row.cells:
-                    for p in list(cell.paragraphs):
-                        replace_in_paragraph(p)
 
         out_uid = str(memo.get("uid") or uuid.uuid4().hex[:12])
         safe_title = (str(memo.get("title") or memo.get("name") or "Contract").strip() or "Contract").replace(" ", "_")

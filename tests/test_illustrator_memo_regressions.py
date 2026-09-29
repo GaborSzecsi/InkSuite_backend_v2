@@ -102,6 +102,25 @@ class IllustratorRegressions(unittest.TestCase):
         self.assertEqual(schedule[0]["amountType"], "amount")
         self.assertEqual(schedule[0]["trigger"], "Signing")
 
+    def test_reopened_memo_keeps_selected_agent(self):
+        agency = {"agents": [
+            {"agent_party_id": "primary", "agent_name": "Primary Agent", "is_primary": True},
+            {"agent_party_id": "selected", "agent_name": "Selected Agent",
+             "agent_email": "selected@example.test", "is_primary": False},
+        ]}
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(drafts, "_get_agency_detail", return_value=agency))
+            for name in ("_hydrate_advance_schedule", "_hydrate_deal_memo_contributors"):
+                stack.enter_context(patch.object(drafts, name, return_value=[]))
+            stack.enter_context(patch.object(drafts, "_hydrate_royalties", return_value={}))
+            for agent_id, expected in (("selected", "Selected Agent"), (None, "Primary Agent")):
+                result = drafts._row_to_draft(MagicMock(), "tenant", {
+                    "id": "draft", "agency_party_id": "agency", "agent_party_id": agent_id})
+                self.assertEqual(result["agent_name"], expected)
+                self.assertEqual(result["author_agent_name"], expected)
+                if agent_id:
+                    self.assertEqual(result["agent_email"], "selected@example.test")
+
     def test_save_and_reopen_illustrator_fields(self):
         contributor = {"role_code": "A12", "role_label": "Illustrator", "display_name": "Illustrator Name", "name": "Illustrator Name", "email": "person@example.test", "address": {"street": "1 Test St"}}
         body = {"uid": "memo-test", "title": "Same Book", "contributorRole": "illustrator",

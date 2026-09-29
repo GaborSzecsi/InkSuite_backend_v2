@@ -1592,20 +1592,26 @@ def _row_to_draft(cur, tenant_id: str, row: dict) -> dict:
                 "country": _s(agency.get("agency_country")),
             }
 
-            primary = next((a for a in agency.get("agents", []) if a.get("is_primary")), None)
-            if primary:
-                out["agent_name"] = _s(primary.get("agent_name"))
-                out["agent_email"] = _s(primary.get("agent_email"))
-                out["agent_phone_country_code"] = _s(primary.get("agent_phone_country_code"))
-                out["agent_phone_number"] = _s(primary.get("agent_phone_number"))
+            agents = agency.get("agents", [])
+            selected_agent_id = row.get("agent_party_id")
+            if selected_agent_id:
+                selected_agent = next((a for a in agents
+                                       if str(a.get("agent_party_id")) == str(selected_agent_id)), None)
+            else:
+                selected_agent = next((a for a in agents if a.get("is_primary")), None)
+            if selected_agent:
+                out["agent_name"] = _s(selected_agent.get("agent_name"))
+                out["agent_email"] = _s(selected_agent.get("agent_email"))
+                out["agent_phone_country_code"] = _s(selected_agent.get("agent_phone_country_code"))
+                out["agent_phone_number"] = _s(selected_agent.get("agent_phone_number"))
 
                 # legacy aliases used by AuthorAgencyCard
-                out["author_agent_name"] = _s(primary.get("agent_name"))
-                out["author_agent_email"] = _s(primary.get("agent_email"))
-                out["author_agent_phone_country_code"] = _s(primary.get("agent_phone_country_code"))
-                out["authors_agent_phone_country_code"] = _s(primary.get("agent_phone_country_code"))
-                out["author_agent_phone_number"] = _s(primary.get("agent_phone_number"))
-                out["authors_agent_phone_number"] = _s(primary.get("agent_phone_number"))
+                out["author_agent_name"] = _s(selected_agent.get("agent_name"))
+                out["author_agent_email"] = _s(selected_agent.get("agent_email"))
+                out["author_agent_phone_country_code"] = _s(selected_agent.get("agent_phone_country_code"))
+                out["authors_agent_phone_country_code"] = _s(selected_agent.get("agent_phone_country_code"))
+                out["author_agent_phone_number"] = _s(selected_agent.get("agent_phone_number"))
+                out["authors_agent_phone_number"] = _s(selected_agent.get("agent_phone_number"))
 
             out["authors_agent"] = True
             out["author_has_agency"] = True
