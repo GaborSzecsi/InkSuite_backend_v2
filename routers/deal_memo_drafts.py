@@ -41,11 +41,18 @@ def _jsonable(v: Any) -> Any:
 
 def _person_name(v: Any) -> str:
     if isinstance(v, str):
-        return v.strip()
+        text = v.strip()
+        # Older saves accidentally stringified an agency-only object as a name.
+        if text.startswith("{") and text.endswith("}"):
+            return ""
+        return text
     if isinstance(v, dict):
-        return _s(v.get("name")) or " ".join(
-            [x for x in (_s(v.get("first_name")), _s(v.get("last_name"))) if x]
-        ).strip()
+        for key in ("display_name", "displayName", "name", "corporate_name"):
+            value = v.get(key)
+            if isinstance(value, str) and _person_name(value):
+                return _person_name(value)
+        return " ".join(_person_name(v.get(key)) for key in ("first_name", "last_name")
+                        if isinstance(v.get(key), str)).strip()
     return ""
 
 
@@ -1400,9 +1407,9 @@ def _hydrate_deal_memo_contributors(cur, tenant_id: str, draft_id: str) -> List[
             "sequenceNumber": int(row.get("sequence_number") or 1),
             "contributor_type": _s(row.get("contributor_type")) or "person",
             "contributorType": _s(row.get("contributor_type")) or "person",
-            "display_name": _s(row.get("display_name")),
-            "displayName": _s(row.get("display_name")),
-            "name": _s(row.get("display_name")),
+            "display_name": _person_name(row.get("display_name")),
+            "displayName": _person_name(row.get("display_name")),
+            "name": _person_name(row.get("display_name")),
             "titles_before_names": _s(row.get("titles_before_names")),
             "titlesBeforeNames": _s(row.get("titles_before_names")),
             "names_before_key": _s(row.get("names_before_key")),
@@ -1491,7 +1498,7 @@ def _row_to_draft(cur, tenant_id: str, row: dict) -> dict:
         "agency_party_id": _s(row.get("agency_party_id")),
         "agent_party_id": _s(row.get("agent_party_id")),
 
-        "author": _s(row.get("author")),
+        "author": _person_name(row.get("author")),
         "author_email": _s(row.get("author_email")),
         "author_website": _s(row.get("author_website")),
         "author_phone_country_code": _s(row.get("author_phone_country_code")),
@@ -1648,6 +1655,21 @@ def _row_to_draft(cur, tenant_id: str, row: dict) -> dict:
         out["illustrator_identifiers"] = illustrator_contributor.get("identifiers") or []
         out["illustrator_contributor_identifiers"] = illustrator_contributor.get("identifiers") or []
 
+    # UI aliases must round-trip with the canonical database fields. Otherwise
+    # reopening an illustrator memo defaults to Author and shows the wrong terms.
+    role = out["contributor_role"]
+    active = illustrator_contributor if role == "illustrator" else author_contributor
+    if role == "other":
+        active = next((c for c in contributors if c.get("role_code") not in ("A01", "A02", "A12")), None)
+    out["contributorRole"] = role
+    out["contributor_role_code"] = (active or {}).get("role_code") or ("A12" if role == "illustrator" else "Z99" if role == "other" else "A01")
+    out["contributor_role_label"] = (active or {}).get("role_label") or ("Illustrator" if role == "illustrator" else "Contributor" if role == "other" else "Author")
+    out["selectedTemplate"] = out["selected_template_id"]
+    out["selected_work_id"] = out["work_id"]
+    out["selected_work_title"] = out["title"] if out["work_id"] else ""
+    if role == "illustrator" and not illustrator_contributor:
+        out["illustrator"] = {"name": out["illustrator_name"], "email": out["illustrator_email"],
+                              "address": out["illustrator_address"]}
     out["payment_instructions"] = row.get("payment_instructions")
     return out
 
@@ -1926,7 +1948,7 @@ def upsert_deal_memo(
     uid = _s(body.get("uid")) or _rand_uid()
     title = _s(body.get("title"))
     name = _s(body.get("name")) or title or "Untitled Deal Memo"
-    contributor_role = _s(body.get("contributor_role") or body.get("contributorRole") or "author").lower()
+    contributor_role = _s(body.get("contributorRole") or body.get("contributor_role") or "author").lower()
     if contributor_role not in ("author", "illustrator", "other"):
         contributor_role = "author"
 
@@ -2069,14 +2091,14 @@ def upsert_deal_memo(
                     title,
                     _s(body.get("status") or "draft"),
                     contributor_role,
-                    _s(body.get("selected_template_id") or body.get("selectedTemplateId")),
+                    _s(body.get("selectedTemplate", body.get("selected_template_id", body.get("selectedTemplateId")))),
 
-                    _s(body.get("work_id")) or None,
+                    _s(body.get("selected_work_id", body.get("work_id"))) or None,
                     _s(body.get("contributor_party_id")) or None,
                     _s(body.get("agency_party_id")) or None,
                     _s(body.get("agent_party_id")) or None,
 
-                    _person_name(author_obj) or _s(body.get("author")),
+                    _person_name(author_obj) or _person_name(body.get("author_name")),
                     _person_email(author_obj, body.get("author_email")),
                     _person_website(author_obj, body.get("author_website")),
                     _person_phone_cc(author_obj, body.get("author_phone_country_code")),

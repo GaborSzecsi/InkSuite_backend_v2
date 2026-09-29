@@ -158,6 +158,60 @@ _LEGACY = re.compile(r'\{\{\s*(Hardcover_[^}]+|Paperback_[^}]+|Boardbook_[^}]+|E
 _BLOCK = re.compile(r'^\s*\{\{\s*ROYALTIES_BLOCK\s*\}\}\s*$', re.I)
 
 
+def _replace_clause_span(paragraph, start, end, replacement):
+    """Replace a matched sentence without clearing the surrounding paragraph."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.text.run import Run
+    nodes = []
+    offset = 0
+    for node in paragraph._p.iter():
+        if node.tag == qn("w:t"):
+            text = node.text or ""
+        elif node.tag == qn("w:tab"):
+            text = "\t"
+        elif node.tag in (qn("w:br"), qn("w:cr")):
+            text = "\n"
+        else:
+            continue
+        if offset < end and offset + len(text) > start:
+            nodes.append((node, offset, offset + len(text)))
+        offset += len(text)
+    if not nodes:
+        return
+    first, first_start, _ = nodes[0]
+    anchor = first.getparent()
+    if first.tag != qn("w:t") or anchor.tag != qn("w:r"):
+        raise RoyaltyValidationError('Put the no-royalty discount sentence in ordinary document text.')
+    inner = start - first_start
+    for node, node_start, node_end in nodes:
+        if node.tag == qn("w:t"):
+            text = node.text or ""
+            node.text = text[:max(0, start-node_start)] + text[min(node_end, end)-node_start:]
+            node.set(qn("xml:space"), "preserve")
+        else:
+            node.getparent().remove(node)
+    tail = OxmlElement("w:r")
+    if anchor.rPr is not None:
+        tail.append(deepcopy(anchor.rPr))
+    remainder = (first.text or "")[inner:]
+    first.text = (first.text or "")[:inner]
+    if remainder:
+        t = deepcopy(first)
+        t.text = remainder
+        tail.append(t)
+    for child in list(anchor)[list(anchor).index(first)+1:]:
+        tail.append(child)
+    inserted = OxmlElement("w:r")
+    if anchor.rPr is not None:
+        inserted.append(deepcopy(anchor.rPr))
+    anchor.addnext(inserted)
+    inserted.addnext(tail)
+    run = Run(inserted, paragraph)
+    run.text = replacement
+    run.font.color.rgb = RGBColor(255, 0, 0)
+
+
 def render_royalty_sections(doc, memo, party='author', insert_block=None):
     """Keep paragraph properties; preserve prose following the ebook rate sentence."""
     cutoff_clause = _no_royalty_clause(memo, party)
@@ -172,22 +226,29 @@ def render_royalty_sections(doc, memo, party='author', insert_block=None):
                     yield from tables(cell)
     containers.extend(tables(doc))
     if cutoff_clause:
-        # Match the dedicated exemption paragraph, never unrelated discount prose.
+        # Existing author templates use a standalone sentence. Illustrator
+        # templates may append the equivalent sentence to other exemptions.
         cutoff_pattern = re.compile(r'^On copies of any format sold at or higher than \d+(?:\.\d+)?% discounts\.$', re.I)
+        inline_pattern = re.compile(
+            r'(?<!\w)No\s+royalties(?:\s+shall\s+be\s+payable)?\s+on\s+copies\s+'
+            r'sold\s+at\s+a\s+discount\s+at\s*,?\s*(?:or\s+)?'
+            r'(?:greater\s+than|higher\s+than|above)\s+\d+(?:\.\d+)?\s*%(?:[ \t]*[;.])?(?=\s|$)', re.I)
         targets = {}
         for container in containers:
             for p in container.paragraphs:
-                if cutoff_pattern.fullmatch(p.text.strip()) or p.text.strip() == '{{NO_ROYALTY_DISCOUNT_BLOCK}}':
-                    targets[p._p] = p
+                text = p.text
+                if cutoff_pattern.fullmatch(text.strip()) or text.strip() == '{{NO_ROYALTY_DISCOUNT_BLOCK}}':
+                    left = len(text) - len(text.lstrip())
+                    targets[p._p] = (p, [(left, len(text.rstrip()), cutoff_clause)])
+                else:
+                    matches = list(inline_pattern.finditer(text))
+                    if matches:
+                        targets[p._p] = (p, [(m.start(), m.end(), cutoff_clause.rstrip('.') + (';' if m.group().rstrip().endswith(';') else '.')) for m in matches])
         if not targets:
             raise RoyaltyValidationError('Template needs a NO_ROYALTY_DISCOUNT_BLOCK placeholder in its no-royalty section to include the discount cutoff.')
-        for p in targets.values():
-            props = deepcopy(p.runs[0]._r.rPr) if p.runs and p.runs[0]._r.rPr is not None else None
-            p.clear()
-            run = p.add_run(cutoff_clause)
-            if props is not None:
-                run._r.insert(0, props)
-            run.font.color.rgb = RGBColor(255, 0, 0)
+        for p, spans in targets.values():
+            for start, end, replacement in reversed(spans):
+                _replace_clause_span(p, start, end, replacement)
     seen_containers = set()
     for container in containers:
         element = getattr(container, '_tc', doc._element)
