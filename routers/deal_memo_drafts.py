@@ -1632,6 +1632,7 @@ def _row_to_draft(cur, tenant_id: str, row: dict) -> dict:
         out["illustrator_identifiers"] = illustrator_contributor.get("identifiers") or []
         out["illustrator_contributor_identifiers"] = illustrator_contributor.get("identifiers") or []
 
+    out["payment_instructions"] = row.get("payment_instructions")
     return out
 
 
@@ -2118,6 +2119,22 @@ def upsert_deal_memo(
 
             draft_id = str(cur.fetchone()["id"])
             _clear_children(cur, draft_id)
+            if "payment_instructions" in body:
+                import json
+                from .payment_instructions import Instruction
+                from pydantic import ValidationError
+                payment = body.get("payment_instructions")
+                if payment is not None:
+                    try:
+                        validated = Instruction.model_validate({**payment, "contributor_party_id": "00000000-0000-0000-0000-000000000001"})
+                    except ValidationError as exc:
+                        raise HTTPException(422, "Invalid deal memo payment instructions: " + str(exc))
+                    payment = validated.model_dump(mode="json", exclude={"contributor_party_id"})
+                    if validated.agency_party_id:
+                        cur.execute("SELECT id FROM parties WHERE id=%s AND tenant_id=%s AND party_type='org'", (validated.agency_party_id, tenant_id))
+                        if not cur.fetchone():
+                            raise HTTPException(422, "Agency does not belong to this publisher")
+                cur.execute("UPDATE deal_memo_drafts SET payment_instructions=%s::jsonb WHERE id=%s AND tenant_id=%s", (json.dumps(payment) if payment is not None else None, draft_id, tenant_id))
             _save_advance_schedule(cur, tenant_id, draft_id, body)
             _save_royalties(cur, tenant_id, draft_id, body)
             _save_deal_memo_contributors(cur, tenant_id, draft_id, body)

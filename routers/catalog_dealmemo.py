@@ -1270,6 +1270,11 @@ def _create_or_update_from_author_deal_memo(
         note=_draft_title(draft),
     )
 
+    if draft.get("payment_instructions"):
+        from .payment_instructions import Instruction, persist_instruction
+        payment = Instruction.model_validate({**draft["payment_instructions"], "contributor_party_id": author_party_id})
+        persist_instruction(cur, tenant_id, work_id, "author", payment)
+
     return work_id
 
 
@@ -1371,6 +1376,11 @@ def _apply_illustrator_deal_memo_to_existing_work(
         amount=draft.get("illustrator_advance"),
         note=_draft_title(draft),
     )
+
+    if draft.get("payment_instructions"):
+        from .payment_instructions import Instruction, persist_instruction
+        payment = Instruction.model_validate({**draft["payment_instructions"], "contributor_party_id": illustrator_party_id})
+        persist_instruction(cur, tenant_id, work_id, "illustrator", payment)
 
     return work_id
 

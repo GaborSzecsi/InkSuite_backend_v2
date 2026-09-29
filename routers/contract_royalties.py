@@ -90,7 +90,10 @@ def _no_royalty_clause(memo, party):
             raise RoyaltyValidationError(f"{row.get('format')}: enter one no-royalty discount cutoff.")
         if caps:
             cap = caps.pop()
-            groups.setdefault(cap, []).append(str(row.get('format')).lower())
+            names = groups.setdefault(cap, [])
+            name = str(row.get('format')).lower()
+            if name not in names:
+                names.append(name)
             count += 1
     if not groups:
         return None
@@ -106,15 +109,11 @@ def _no_royalty_clause(memo, party):
 
 def build_royalty_clauses(memo, party='author', *, separate_discount_caps=False):
     rows = ((memo.get('royalties') or {}).get(party) or {}).get('first_rights') or []
-    result = []
-    seen = set()
+    grouped = {}
     for row in rows:
         name = str(row.get('format') or '').strip()
         if not name:
             raise RoyaltyValidationError('A royalty format is missing.')
-        if _key(name) in seen:
-            raise RoyaltyValidationError(f'{name}: combine duplicate format rows before generating.')
-        seen.add(_key(name))
         tiers = row.get('tiers') or []
         tiered = row.get('escalating') or row.get('mode') == 'tiered' or len(tiers) > 1
         if tiered and not tiers:
@@ -142,10 +141,16 @@ def build_royalty_clauses(memo, party='author', *, separate_discount_caps=False)
                 piece += f' ({note})'
             if not (separate_discount_caps and _discount_cap(tier, row)):
                 pieces.append(piece)
-        pieces = [(f'({_roman(i+1)}) ' if len(pieces) > 1 else '') + piece for i, piece in enumerate(pieces)]
-        if not pieces:
-            continue
-        result.append((_key(name), f'On sales of the {name.lower()} edition of the Book: ' + '; '.join(pieces) + '.'))
+        if pieces:
+            group = grouped.setdefault(_key(name), {"name": name, "pieces": []})
+            for piece in pieces:
+                if piece not in group["pieces"]:
+                    group["pieces"].append(piece)
+    result = []
+    for key, group in grouped.items():
+        pieces = group["pieces"]
+        numbered = [(f'({_roman(i+1)}) ' if len(pieces) > 1 else '') + piece for i, piece in enumerate(pieces)]
+        result.append((key, f"On sales of the {group['name'].lower()} edition of the Book: " + '; '.join(numbered) + '.'))
     return result
 
 

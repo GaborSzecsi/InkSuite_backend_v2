@@ -720,9 +720,9 @@ def _guess_kind(filename: str) -> str:
         return "author_contract"
     if "illustrator_contract" in f or "__illustrator_contract" in f:
         return "illustrator_contract"
-    if "author_photo" in f or "__author_photo" in f:
+    if "author_photo" in f or "authorphoto" in f:
         return "author_photo"
-    if "illustrator_photo" in f or "__illustrator_photo" in f:
+    if "illustrator_photo" in f or "illustratorphoto" in f:
         return "illustrator_photo"
     if "w9" in f:
         return "w9"
@@ -771,7 +771,7 @@ def _resolve_work(candidate: str) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="bookUid, workId, or book_key is required")
 
     sql = """
-        SELECT id::text AS id, uid::text AS uid, title
+        SELECT id::text AS id, uid::text AS uid, tenant_id::text AS tenant_id, title
         FROM works
         WHERE uid::text = %s OR id::text = %s
         LIMIT 1
@@ -817,6 +817,51 @@ def uploads_health():
         "endpoint": f"https://s3.{AWS_REGION}.amazonaws.com",
         "addressingStyle": "virtual",
     }
+
+def _photo_contributors(work: Dict[str, Any]) -> List[Dict[str, Any]]:
+    from .catalog_shared import _normalize_contributor_role
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("""
+                SELECT p.id::text AS party_id, p.display_name,
+                       wc.contributor_role, t.slug AS tenant_slug
+                FROM work_contributors wc
+                JOIN parties p ON p.id = wc.party_id AND p.tenant_id = wc.tenant_id
+                JOIN tenants t ON t.id = wc.tenant_id
+                WHERE wc.work_id = %s::uuid AND wc.tenant_id = %s::uuid
+                  AND p.party_type <> 'org'
+                ORDER BY wc.sequence_number, wc.id
+            """, (work["id"], work["tenant_id"]))
+            rows = cur.fetchall()
+    for row in rows:
+        row["role"] = _normalize_contributor_role(row["contributor_role"])
+    return [row for row in rows if row["role"] in ("author", "illustrator")]
+
+
+def _contributor_photo_key(person: Dict[str, Any]) -> str:
+    return f"tenants/{person['tenant_slug']}/data/contributors/{person['party_id']}/photo.jpg"
+
+
+def _shared_photo_assets(work: Dict[str, Any]) -> List[Dict[str, Any]]:
+    assets = []
+    s3 = _s3_client()
+    for person in _photo_contributors(work):
+        key = _contributor_photo_key(person)
+        try:
+            meta = s3.head_object(Bucket=S3_BUCKET, Key=key)
+        except ClientError as exc:
+            if str(exc.response.get("Error", {}).get("Code")) in ("404", "NoSuchKey", "NotFound"):
+                continue
+            raise
+        assets.append({
+            "name": f"{person['party_id']}__{person['role']}_photo.jpg",
+            "filename": f"{person['party_id']}__{person['role']}_photo.jpg",
+            "kind": f"{person['role']}_photo",
+            "party_id": person["party_id"], "shared": True,
+            "url": _s3_url_for_key(key), "size": meta["ContentLength"],
+        })
+    return assets
+
 
 @router.get("/book-assets")
 def list_book_assets(bookUid: str = Query(...)):
@@ -875,7 +920,8 @@ def list_book_assets(bookUid: str = Query(...)):
                 else:
                     break
 
-            return {"bookUid": uid, "cover": cover, "files": files}
+            shared = _shared_photo_assets(_resolve_work(uid))
+            return {"bookUid": uid, "cover": cover, "files": shared + files}
 
         except (EndpointConnectionError, NoCredentialsError) as e:
             raise HTTPException(status_code=500, detail=f"S3 auth/connection error: {e}")
@@ -1828,6 +1874,7 @@ async def upload_file(
     workId: str = Form(""),
     editionId: str = Form(""),
     isbn13: str = Form(""),
+    partyId: str = Form(""),
     resourceContentType: str = Form(""),
     resourceMode: str = Form(""),
     resourceForm: str = Form("01"),
@@ -2021,22 +2068,34 @@ async def upload_file(
             workId=resolved_work_id,
         )
 
-    # Upload author/illustrator photos to the title-private S3 folder when S3 is enabled.
+    # A contributor photo is shared across all books linked to this party.
     if kind in ("author_photo", "illustrator_photo") and USE_UPLOADS_S3:
         work = _resolve_work(candidate)
-        uid = (work["uid"] or "").strip()
-        resolved_work_id = (work["id"] or "").strip()
-
-        if not uid:
-            raise HTTPException(status_code=500, detail="Resolved work has empty uid")
-
-        ext, normalized_mime = _ext_for_upload(file.filename or "", mime)
-        if kind == "author_photo":
-            fname = f"{uid}__author_photo{ext}"
+        uid = str(work["uid"])
+        resolved_work_id = str(work["id"])
+        role = "author" if kind == "author_photo" else "illustrator"
+        people = {p["party_id"]: p for p in _photo_contributors(work)
+                  if p["role"] == role and (not partyId or p["party_id"] == partyId)}
+        if len(people) != 1:
+            raise HTTPException(status_code=409, detail="Select one saved contributor before uploading a photo")
+        person = next(iter(people.values()))
+        img = Image.open(io.BytesIO(data))
+        from PIL import ImageOps
+        img = ImageOps.exif_transpose(img)
+        if img.mode in ("RGBA", "LA") or "transparency" in img.info:
+            rgba = img.convert("RGBA")
+            rgb = Image.new("RGB", rgba.size, "white")
+            rgb.paste(rgba, mask=rgba.getchannel("A"))
         else:
-            fname = f"{uid}__illustrator_photo{ext}"
-
-        s3_key = f"{UPLOADS_S3_PREFIX}/{uid}/{fname}"
+            rgb = img.convert("RGB")
+        output = io.BytesIO()
+        rgb.save(output, format="JPEG", quality=95)
+        data = output.getvalue()
+        size = len(data)
+        width, height = rgb.size
+        normalized_mime = "image/jpeg"
+        fname = f"{person['party_id']}__{role}_photo.jpg"
+        s3_key = _contributor_photo_key(person)
 
         try:
             s3 = _s3_client()

@@ -125,55 +125,59 @@ def save_instruction(
         row_factory=dict_row
     ) as cur:
         tenant_id = authorized_tenant(cur, work_id, claims)
-        # The existing table has no unique work/party constraint. Serialize writes
-        # on the existing work row so two initial saves cannot insert duplicates.
-        cur.execute(
-            "SELECT id FROM public.works WHERE id=%s AND tenant_id=%s FOR UPDATE",
-            (work_id, tenant_id),
-        )
-        if not cur.fetchone():
-            raise HTTPException(404, "Book not found.")
-        for party_id, is_agency in [
-            (payload.contributor_party_id, False),
-            (payload.agency_party_id, True),
-        ]:
-            if not party_id:
-                continue
-            cur.execute(
-                "SELECT party_type FROM public.parties WHERE id=%s AND tenant_id=%s",
-                (party_id, tenant_id),
-            )
-            record = cur.fetchone()
-            if not record or (is_agency and record["party_type"] != "org"):
-                raise HTTPException(
-                    422,
-                    "The selected contributor or agency does not belong to this publisher.",
-                )
-        existing = current_instruction(cur, tenant_id, work_id, party)
-        values = (
-            payload.payee_mode,
-            payload.contributor_party_id,
-            payload.agency_party_id,
-            payload.contributor_percent,
-            payload.agency_percent,
-            payload.effective_start,
-            payload.effective_end,
-            payload.notes,
-        )
-        if existing:
-            cur.execute(
-                """UPDATE public.royalty_payment_instructions SET payee_mode=%s,
-                contributor_party_id=%s, agency_party_id=%s, contributor_percent=%s,
-                agency_percent=%s, effective_start=%s, effective_end=%s, notes=%s, updated_at=now()
-                WHERE id=%s AND tenant_id=%s""",
-                (*values, existing["id"], tenant_id),
-            )
-        else:
-            cur.execute(
-                """INSERT INTO public.royalty_payment_instructions
-                (payee_mode, contributor_party_id, agency_party_id, contributor_percent,
-                 agency_percent, effective_start, effective_end, notes, tenant_id, work_id, party)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::roy_party)""",
-                (*values, tenant_id, work_id, party),
-            )
+        persist_instruction(cur, tenant_id, work_id, party, payload)
         return reply(current_instruction(cur, tenant_id, work_id, party))
+
+
+def persist_instruction(cur, tenant_id, work_id, party, payload):
+    # The existing table has no unique work/party constraint. Serialize writes
+    # on the existing work row so two initial saves cannot insert duplicates.
+    cur.execute(
+        "SELECT id FROM public.works WHERE id=%s AND tenant_id=%s FOR UPDATE",
+        (work_id, tenant_id),
+    )
+    if not cur.fetchone():
+        raise HTTPException(404, "Book not found.")
+    for party_id, is_agency in [
+        (payload.contributor_party_id, False),
+        (payload.agency_party_id, True),
+    ]:
+        if not party_id:
+            continue
+        cur.execute(
+            "SELECT party_type FROM public.parties WHERE id=%s AND tenant_id=%s",
+            (party_id, tenant_id),
+        )
+        record = cur.fetchone()
+        if not record or (is_agency and record["party_type"] != "org"):
+            raise HTTPException(
+                422,
+                "The selected contributor or agency does not belong to this publisher.",
+            )
+    existing = current_instruction(cur, tenant_id, work_id, party)
+    values = (
+        payload.payee_mode,
+        payload.contributor_party_id,
+        payload.agency_party_id,
+        payload.contributor_percent,
+        payload.agency_percent,
+        payload.effective_start,
+        payload.effective_end,
+        payload.notes,
+    )
+    if existing:
+        cur.execute(
+            """UPDATE public.royalty_payment_instructions SET payee_mode=%s,
+            contributor_party_id=%s, agency_party_id=%s, contributor_percent=%s,
+            agency_percent=%s, effective_start=%s, effective_end=%s, notes=%s, updated_at=now()
+            WHERE id=%s AND tenant_id=%s""",
+            (*values, existing["id"], tenant_id),
+        )
+    else:
+        cur.execute(
+            """INSERT INTO public.royalty_payment_instructions
+            (payee_mode, contributor_party_id, agency_party_id, contributor_percent,
+             agency_percent, effective_start, effective_end, notes, tenant_id, work_id, party)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::roy_party)""",
+            (*values, tenant_id, work_id, party),
+        )

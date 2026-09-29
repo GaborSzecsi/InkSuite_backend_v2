@@ -24,8 +24,10 @@ from typing import Literal
 import boto3
 import psycopg
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from fastapi import APIRouter, Header, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Depends
+from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from psycopg.rows import dict_row
+from app.auth.dependencies import get_current_user
 
 from routers.contract_invites import (
     _load_smtp_secret,
@@ -150,7 +152,92 @@ class OtpVerify(BaseModel):
     code: str = Field(pattern=r"^\d{6}$")
 
 
+class AgencyDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    agency_name: str = Field(min_length=1, max_length=300)
+    agency_email: EmailStr
+    agency_website: str = Field(default="", max_length=500)
+    agency_phone_number: str = Field(min_length=1, max_length=80)
+    agency_street: str = Field(min_length=1, max_length=500)
+    agency_city: str = Field(min_length=1, max_length=200)
+    agency_state: str = Field(default="", max_length=100)
+    agency_zip: str = Field(default="", max_length=40)
+    agency_country: str = Field(min_length=1, max_length=100)
+    agent_name: str = Field(min_length=1, max_length=300)
+    agent_email: EmailStr
+    agent_phone_number: str = Field(min_length=1, max_length=80)
+
+
+class AgencyRequestCreate(BaseModel):
+    requester_email: EmailStr | None = None
+    contributor_party_id: uuid.UUID
+    recipient_email: EmailStr
+    recipient_name: str = Field(default="", max_length=300)
+
+
+@router.post("/agency-requests/{work_id}")
+def create_agency_request(work_id: uuid.UUID, payload: AgencyRequestCreate, request: Request, claims=Depends(get_current_user)):
+    from .payment_instructions import authorized_tenant
+    token = secrets.token_urlsafe(32)
+    request_id = str(uuid.uuid4())
+    expires = now() + timedelta(days=7)
+    with db() as conn, conn.cursor(row_factory=dict_row) as cur:
+        tenant_id = authorized_tenant(cur, work_id, claims)
+        cur.execute("SELECT slug FROM tenants WHERE id=%s", (tenant_id,))
+        tenant = cur.fetchone()["slug"]
+        cur.execute("SELECT 1 FROM work_contributors WHERE tenant_id=%s AND work_id=%s AND party_id=%s", (tenant_id, work_id, payload.contributor_party_id))
+        if not cur.fetchone():
+            raise HTTPException(422, "Select a contributor linked to this book")
+        cur.execute("""INSERT INTO secure_payments.payment_requests
+            (id,tenant_id,recipient_type,recipient_id,recipient_name,recipient_email,requester_email,token_hash,expires_at)
+            VALUES (%s,%s,'AGENCY',%s,%s,%s,%s,%s,%s)""",
+            (request_id, tenant, request_id, payload.recipient_name, str(payload.recipient_email), str(payload.requester_email) if payload.requester_email else claims.get("email"), digest(token), expires))
+        cur.execute("""INSERT INTO secure_payments.agency_information_requests
+            (request_id,tenant_id,work_id,contributor_party_id) VALUES (%s,%s,%s,%s)""",
+            (request_id,tenant_id,work_id,payload.contributor_party_id))
+        audit(cur, tenant, "AGENCY_INFORMATION_REQUEST_CREATED", request, request_id=request_id)
+    try:
+        send_email(tenant, str(payload.recipient_email), "Agency and secure banking information request",
+            f"Please provide your agency details, agent contact information, and banking information using this secure InkSuite form.\n\n{PUBLIC_APP_URL}/banking#request={token}\n\nThis link expires in 7 days. Do not send banking information by email.", payload.recipient_name)
+    except Exception:
+        with db() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE secure_payments.payment_requests SET revoked_at=now() WHERE id=%s",(request_id,))
+        raise HTTPException(502, "The request email could not be sent. Please try again.")
+    return {"ok": True, "expires_at": expires}
+
+
+@router.get("/agency-requests/{work_id}")
+def agency_request_status(work_id: uuid.UUID, claims=Depends(get_current_user)):
+    from .payment_instructions import authorized_tenant
+    with db() as conn, conn.cursor(row_factory=dict_row) as cur:
+        tenant_id = authorized_tenant(cur, work_id, claims)
+        cur.execute("""SELECT a.contributor_party_id, r.recipient_email, r.used_at,
+            r.expires_at, r.revoked_at FROM secure_payments.agency_information_requests a
+            JOIN secure_payments.payment_requests r ON r.id=a.request_id
+            WHERE a.work_id=%s AND a.tenant_id=%s ORDER BY r.expires_at DESC""", (work_id,tenant_id))
+        requests = cur.fetchall()
+        cur.execute("""SELECT DISTINCT wc.party_id AS contributor_party_id,
+                agency.id AS agency_party_id, agency.display_name AS agency_name,
+                agency.email AS agency_email
+            FROM work_contributors wc
+            JOIN party_representations pr ON pr.tenant_id=wc.tenant_id
+                AND pr.represented_party_id=wc.party_id
+                AND (pr.work_id=wc.work_id OR pr.work_id IS NULL)
+            LEFT JOIN agency_agent_links aal ON aal.tenant_id=pr.tenant_id AND aal.agent_party_id=pr.agent_party_id
+            JOIN parties agency ON agency.tenant_id=pr.tenant_id
+                AND agency.id=COALESCE(aal.agency_party_id,pr.agent_party_id)
+                AND agency.party_type='org'
+            WHERE wc.tenant_id=%s AND wc.work_id=%s
+              AND NULLIF(trim(agency.display_name),'') IS NOT NULL
+              AND (pr.work_id IS NOT NULL OR NOT EXISTS (
+                  SELECT 1 FROM party_representations specific
+                  WHERE specific.tenant_id=wc.tenant_id AND specific.represented_party_id=wc.party_id AND specific.work_id=wc.work_id))
+            """, (tenant_id,work_id))
+        return {"requests": requests, "agency_information":cur.fetchall()}
+
+
 class BankSubmission(BaseModel):
+    agency_details: AgencyDetails | None = None
     payment_method: PaymentMethod = "ACH"
     legal_account_holder_name: str = Field(min_length=1, max_length=300)
     country_code: str = Field(default="US", min_length=2, max_length=2)
@@ -222,7 +309,9 @@ def public_request(x_banking_request_token: str = Header(..., alias="X-Banking-R
     token = x_banking_request_token
     with db() as conn, conn.cursor() as cur:
         row = load_public_request(cur, token)
-    return {"recipient_name": row[4], "expires_at": row[6], "requires_email_verification": True}
+        cur.execute("SELECT 1 FROM secure_payments.agency_information_requests WHERE request_id=%s",(row[0],))
+        agency_required = bool(cur.fetchone())
+    return {"recipient_name": row[4], "expires_at": row[6], "requires_email_verification": True, "agency_required": agency_required}
 
 
 @router.post("/public/otp")
@@ -306,14 +395,14 @@ def submit_bank_account(
         req = load_public_request(cur, token)
 
         cur.execute(
-            """SELECT submit_token_hash,submit_token_expires_at
+            """SELECT submit_token_hash,submit_token_expires_at,used_at,revoked_at
                FROM secure_payments.payment_requests
                WHERE id=%s FOR UPDATE""",
             (req[0],),
         )
-        sh, se = cur.fetchone()
+        sh, se, used_at, revoked_at = cur.fetchone()
         if (
-            not sh
+            used_at is not None or revoked_at is not None or not sh
             or not se
             or se <= now()
             or not hmac.compare_digest(sh, digest(x_banking_submit_token))
@@ -321,6 +410,31 @@ def submit_bank_account(
             raise HTTPException(401, "Verification required")
 
         tenant, recipient_type, recipient_id = req[1], req[2], req[3]
+        # Keep directory updates and encrypted account storage in one transaction.
+        with conn.cursor(row_factory=dict_row) as agency_cur:
+            agency_cur.execute("SELECT * FROM secure_payments.agency_information_requests WHERE request_id=%s", (req[0],))
+            context = agency_cur.fetchone()
+            if context:
+                if payload.agency_details is None:
+                    raise HTTPException(422, "Complete the agency and agent information")
+                from .deal_memo_drafts import _upsert_agency
+                info = payload.agency_details.model_dump()
+                # Preserve the existing approved agency clause, which this form does not edit.
+                agency_cur.execute("SELECT p.id, ap.agency_clause FROM parties p LEFT JOIN agency_profiles ap ON ap.agency_party_id=p.id AND ap.tenant_id=p.tenant_id WHERE p.tenant_id=%s AND p.party_type='org' AND lower(p.display_name)=lower(%s)", (context["tenant_id"],info["agency_name"]))
+                matches = agency_cur.fetchall()
+                if len(matches)>1:
+                    raise HTTPException(409, "Multiple agencies match this name. Please contact the publisher.")
+                if matches:
+                    info.update(agency_party_id=str(matches[0]["id"]),agency_clause=matches[0]["agency_clause"] or "")
+                info.update(contributor_party_id=str(context["contributor_party_id"]), work_id=str(context["work_id"]))
+                result = _upsert_agency(agency_cur, str(context["tenant_id"]), info)
+                recipient_id = result["agency_party_id"]
+                agency_cur.execute("UPDATE parties SET phone_number=%s,updated_at=now() WHERE id=%s AND tenant_id=%s", (info["agency_phone_number"],recipient_id,context["tenant_id"]))
+                agency_cur.execute("UPDATE secure_payments.agency_information_requests SET agency_party_id=%s,agent_party_id=%s WHERE request_id=%s",(recipient_id,result.get("agent_party_id") or None,req[0]))
+                agency_cur.execute("UPDATE secure_payments.payment_requests SET recipient_id=%s,recipient_name=%s WHERE id=%s",(recipient_id,info["agency_name"],req[0]))
+            elif payload.agency_details is not None:
+                raise HTTPException(422, "This link does not request agency information")
+
 
         cur.execute(
             """SELECT id

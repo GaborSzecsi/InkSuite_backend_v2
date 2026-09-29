@@ -546,6 +546,8 @@ def _default_mapping(role: str) -> dict[str, str]:
         "Projected_Publication": "projected_publication_date",
         "Territory": "territories_rights",
         "Right Limitation": "territories_rights",
+        "Right_Limitation": "territories_rights",
+        "RIGHT_LIMITATION": "territories_rights",
 
         "DATE": "effective_date",
         "BOOK_TITLE": "title",
@@ -1477,7 +1479,13 @@ def generate_contract(req: GenerateRequest):
         except RoyaltyValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-        has_boardbook = _populate_royalty_tokens(memo, values)
+        _populate_royalty_tokens(memo, values)
+        royalty_party = "illustrator" if is_illustrator else "author"
+        royalty_rows = ((memo.get("royalties") or {}).get(royalty_party) or {}).get("first_rights") or []
+        has_boardbook = any(
+            re.sub(r"[\s_-]", "", str(row.get("format") or "")).lower() in {"boardbook", "boardbooks"}
+            for row in royalty_rows
+        )
         _populate_subrights(memo, values)
 
         def replace_in_paragraph(p):
@@ -1496,7 +1504,9 @@ def generate_contract(req: GenerateRequest):
                     ):
                         return
 
-            if (not has_boardbook) and ("Boardbook_" in original_text):
+            # Remove only the standalone granted-edition list entry, not other clauses.
+            board_entry = re.fullmatch(r"\s*(?:(?:[ivx]+|\d+|[a-z])[.)]\s*)?board\s*books?\s*[;.,]?\s*", original_text, re.I)
+            if (not has_boardbook) and (("Boardbook_" in original_text) or board_entry):
                 element = p._element
                 parent = element.getparent()
                 if parent is not None:
