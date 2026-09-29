@@ -292,6 +292,76 @@ def _insert_numbered_contract_block(paragraph, text: str, *, advance: bool = Fal
     anchor.getparent().remove(anchor)
     return True
 
+def _replace_inline_tokens(paragraph, values):
+    """Replace only token text, preserving surrounding XML and run properties."""
+    from copy import deepcopy
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.text.run import Run
+
+    # Include hyperlinks; never flatten or reconstruct the paragraph.
+    nodes = []
+    offset = 0
+    for node in paragraph._p.iter():
+        if node.tag == qn("w:t"):
+            text = node.text or ""
+        elif node.tag == qn("w:tab"):
+            text = "\t"
+        elif node.tag in (qn("w:br"), qn("w:cr")):
+            text = "\n"
+        else:
+            continue
+        nodes.append((node, text, offset, offset + len(text)))
+        offset += len(text)
+    original = "".join(text for _, text, _, _ in nodes)
+    for match in reversed(list(TOKEN_RE.finditer(original))):
+        touched = [(node, text, start, end) for node, text, start, end in nodes
+                   if start < match.end() and end > match.start()]
+        # Tokens cannot contain structural characters (tabs/line breaks).
+        if not touched or any(node.tag != qn("w:t") for node, *_ in touched):
+            continue
+        first, _, start, _ = touched[0]
+        run = first.getparent()
+        if run.tag != qn("w:r"):
+            continue
+        inner = match.start() - start
+        # Work right-to-left so earlier offsets remain valid.
+        for node, _, node_start, node_end in touched:
+            text = node.text or ""
+            left = max(0, match.start() - node_start)
+            right = min(node_end, match.end()) - node_start
+            node.text = text[:left] + text[right:]
+            node.set(qn("xml:space"), "preserve")
+
+        # Split the anchor run at the insertion point without discarding any
+        # drawings, bookmarks, field codes, tabs, or formatting properties.
+        tail = OxmlElement("w:r")
+        if run.rPr is not None:
+            tail.append(deepcopy(run.rPr))
+        remainder = (first.text or "")[inner:]
+        first.text = (first.text or "")[:inner]
+        if remainder:
+            tail_text = deepcopy(first)
+            tail_text.text = remainder
+            tail.append(tail_text)
+        for sibling in list(run)[list(run).index(first) + 1:]:
+            tail.append(sibling)
+        token_run = OxmlElement("w:r")
+        if run.rPr is not None:
+            token_run.append(deepcopy(run.rPr))
+        run.addnext(token_run)
+        token_run.addnext(tail)
+        value = values.get(_normalize_token_name(match.group(1)), "")
+        replacement = Run(token_run, paragraph)
+        if value == "__DELETED__":
+            replacement.text = "[Deleted]"
+            replacement.italic = True
+            replacement.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
+        else:
+            replacement.text = "" if value is None else str(value)
+            replacement.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+
+
 def _append_text_to_paragraph(p, text: str, color: RGBColor | None = None) -> None:
     text = "" if text is None else str(text)
     parts = text.split("\n")
@@ -1524,64 +1594,7 @@ def generate_contract(req: GenerateRequest):
                                 parent.remove(element)
                             return
 
-            had_token = False
-            START = "\uE000"
-            END = "\uE001"
-
-            def repl(m):
-                nonlocal had_token
-                had_token = True
-                tok = _normalize_token_name(m.group(1))
-                val = values.get(tok, "") or ""
-                return f"{START}{val}{END}"
-
-            new_text = TOKEN_RE.sub(repl, original_text)
-
-            if not had_token:
-                return
-
-            p.runs[0].text = ""
-            for r in p.runs[1:]:
-                r.text = ""
-
-            buf: list[str] = []
-            in_token = False
-
-            def flush_normal():
-                nonlocal buf
-                if buf:
-                    _append_text_to_paragraph(p, "".join(buf), color=None)
-                    buf = []
-
-            def flush_token():
-                nonlocal buf
-                if buf:
-                    text_val = "".join(buf)
-
-                    if text_val == "__DELETED__":
-                        run = p.add_run("[Deleted]")
-                        run.italic = True
-                        run.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
-                    else:
-                        _append_text_to_paragraph(p, text_val, color=RGBColor(0xFF, 0x00, 0x00))
-
-                    buf = []
-
-            for ch in new_text:
-                if ch == START:
-                    flush_normal()
-                    in_token = True
-                elif ch == END:
-                    flush_token()
-                    in_token = False
-                else:
-                    buf.append(ch)
-
-            if buf:
-                if in_token:
-                    flush_token()
-                else:
-                    flush_normal()
+            _replace_inline_tokens(p, values)
 
         for p in list(doc.paragraphs):
             replace_in_paragraph(p)

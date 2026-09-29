@@ -241,15 +241,11 @@ def _upload_docx_from_path(key: str, path: str) -> None:
 
 # ---- Insert token helpers ----
 def _clone_run_format(src_run, dst_run):
-    sf, df = src_run.font, dst_run.font
-    df.name = sf.name
-    df.size = sf.size
-    df.bold = sf.bold
-    df.italic = sf.italic
-    df.underline = sf.underline
-    df.color.rgb = getattr(sf.color, "rgb", None)
-    df.all_caps = sf.all_caps
-    df.small_caps = sf.small_caps
+    from copy import deepcopy
+    if dst_run._r.rPr is not None:
+        dst_run._r.remove(dst_run._r.rPr)
+    if src_run._r.rPr is not None:
+        dst_run._r.insert(0, deepcopy(src_run._r.rPr))
 
 
 def _normalize_text(s: str) -> str:
