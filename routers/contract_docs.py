@@ -474,6 +474,12 @@ def _load_deal_memo_db_fields(uid: str) -> dict[str, Any]:
 
 
 def _get_value_from_memo(memo: dict, dotted: str) -> str:
+    if dotted == "agency_address":
+        fields = [_get_value_from_memo(memo, "agency_" + field).strip()
+                  for field in ("street", "city", "state", "zip", "country")]
+        street, city, state, postal, country = fields
+        region = " ".join(part for part in (state, postal) if part)
+        return ", ".join(part for part in (street, city, region, country) if part)
     val = _dig(memo, dotted)
     if val not in (None, ""):
         return "" if val is None else str(val)
@@ -481,7 +487,7 @@ def _get_value_from_memo(memo: dict, dotted: str) -> str:
     aliases = {
         "contributor_role": ["contributorRole"],
 
-        "author_email": ["authorEmail"],
+        "author_email": ["author.email", "authorEmail"],
         "author_phone_number": ["authorPhoneNumber"],
         "author_phone_country_code": ["authorPhoneCountryCode"],
 
@@ -647,7 +653,7 @@ def _default_mapping(role: str) -> dict[str, str]:
         "Agent Email": "agent_email",
         "Agency Email": "agency_email",
         "Agency Website": "agency_website",
-        "Agency Address": "agency_street",
+        "Agency Address": "agency_address",
         "Agency Street": "agency_street",
         "Agency Street Address": "agency_street",
         "Agency City": "agency_city",
@@ -661,7 +667,7 @@ def _default_mapping(role: str) -> dict[str, str]:
         "AGENT_EMAIL": "agent_email",
         "AGENCY_EMAIL": "agency_email",
         "AGENCY_WEBSITE": "agency_website",
-        "AGENCY_ADDRESS": "agency_street",
+        "AGENCY_ADDRESS": "agency_address",
         "AGENCY_STREET": "agency_street",
         "AGENCY_STREET_ADDRESS": "agency_street",
         "AGENCY_CITY": "agency_city",
@@ -680,6 +686,9 @@ def _default_mapping(role: str) -> dict[str, str]:
         "DELIVERY_CLAUSE": "delivery_clause",
         "DELIVERY_DATE": "delivery_date",
 
+        "Art_Delivery_Block": "__ART_DELIVERY_BLOCK__",
+        "ART_DELIVERY_BLOCK": "__ART_DELIVERY_BLOCK__",
+        "Manuscript_Delivery": "__MANUSCRIPT_DELIVERY_BLOCK__",
         "Manuscript_Delivery_Block": "__MANUSCRIPT_DELIVERY_BLOCK__",
         "MANUSCRIPT_DELIVERY_BLOCK": "__MANUSCRIPT_DELIVERY_BLOCK__",
     }
@@ -1163,12 +1172,25 @@ def _build_delivery_follow_on_package() -> str:
     )
 
 
+def _build_art_delivery_block(memo: dict) -> str:
+    clause = str(memo.get("deliveryClause") or memo.get("delivery_clause") or "").strip()
+    if clause:
+        return clause
+    sketches = memo.get("illustratorSketchDate") or memo.get("illustrator_sketch_date")
+    finals = memo.get("illustratorFinalDate") or memo.get("illustrator_final_date")
+    sketch_due = f" by {sketches}" if sketches else ""
+    final_due = f" on or before {finals}" if finals else ""
+    return (f"The Illustrator shall create and furnish sketches to the Publisher{sketch_due}. "
+            f"The Illustrator shall create and furnish to the Publisher{final_due}, "
+            "one (1) complete set of the Artwork in final form.")
+
+
 def _build_manuscript_delivery_block(memo: dict) -> str:
     role = str(memo.get("contributorRole") or memo.get("contributor_role") or "author").lower()
     mode = memo.get("deliveryMode") or memo.get("delivery_mode") or "author_signing"
 
     if role == "illustrator":
-        return (memo.get("deliveryClause") or memo.get("delivery_clause") or "").strip()
+        return _build_art_delivery_block(memo)
 
     if mode == "author_done":
         return "1. Manuscript has been delivered, editorially satisfactory, and accepted."
@@ -1546,6 +1568,8 @@ def generate_contract(req: GenerateRequest):
                 values[norm_token] = advance_installments_block
             elif key == "__ADVANCE_INSTALLMENTS_SENTENCE__":
                 values[norm_token] = advance_installments_sentence
+            elif key == "__ART_DELIVERY_BLOCK__":
+                values[norm_token] = _build_art_delivery_block(memo)
             elif key == "__MANUSCRIPT_DELIVERY_BLOCK__":
                 values[norm_token] = _build_manuscript_delivery_block(memo)
             elif key == "option_clause":
@@ -1603,16 +1627,14 @@ def generate_contract(req: GenerateRequest):
         _populate_subrights(memo, values)
 
         def replace_in_paragraph(p):
-            if not p.runs:
-                return
-
-            original_text = "".join(r.text for r in p.runs)
+            # Word often wraps email tags in hyperlinks, which p.runs omits.
+            original_text = "".join(p._p.xpath(".//w:t/text()"))
 
             block_match = TOKEN_RE.fullmatch(original_text.strip())
             if block_match:
                 block_key = _normalize_token_name(block_match.group(1))
                 compact_key = re.sub(r"[\s_]", "", block_key).lower()
-                if compact_key in {"manuscriptdeliveryblock", "advanceinstallments", "advanceinstallmentsblock"}:
+                if compact_key in {"manuscriptdeliveryblock", "artdeliveryblock", "advanceinstallments", "advanceinstallmentsblock"}:
                     if _insert_numbered_contract_block(
                         p, values.get(block_key, ""), advance=compact_key.startswith("advance")
                     ):

@@ -5,13 +5,16 @@ import re
 import unittest
 from pathlib import Path
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import RGBColor, Pt
 
 SOURCE = Path(__file__).resolve().parents[1] / 'routers' / 'contract_docs.py'
 tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
 ns = {'re': re, 'RGBColor': RGBColor, 'TOKEN_RE': re.compile(r'\{\{\s*([^{}]+?)\s*\}\}')}
 for name in ('_dig', '_first_non_empty', '_normalize_token_name', '_get_value_from_memo',
-             '_default_mapping', '_replace_inline_tokens', '_iter_contract_paragraphs'):
+             '_default_mapping', '_replace_inline_tokens', '_iter_contract_paragraphs',
+             '_build_art_delivery_block', '_build_manuscript_delivery_block'):
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), 'exec'), ns)
 
@@ -43,6 +46,51 @@ class IdentityFields(unittest.TestCase):
             self.assertTrue(p.runs[-1].italic)
         self.assertEqual(ns['_default_mapping']('author')['Author_Name'], 'author')
         self.assertEqual(ns['_get_value_from_memo']({'illustrator': {'display_name': 'Nested Artist'}}, 'illustrator_name'), 'Nested Artist')
+
+    def test_art_delivery_uses_saved_clause_and_date_fallback(self):
+        memo = {"contributorRole": "illustrator", "illustratorSketchDate": "2026-09-29",
+                "illustratorFinalDate": "2026-12-31"}
+        expected = ("The Illustrator shall create and furnish sketches to the Publisher by 2026-09-29. "
+                    "The Illustrator shall create and furnish to the Publisher on or before 2026-12-31, "
+                    "one (1) complete set of the Artwork in final form.")
+        self.assertEqual(ns['_build_art_delivery_block'](memo), expected)
+        self.assertEqual(ns['_build_manuscript_delivery_block'](memo), expected)
+        memo['deliveryClause'] = expected + " Custom approved wording."
+        self.assertEqual(ns['_build_art_delivery_block'](memo), memo['deliveryClause'])
+        self.assertEqual(ns['_build_art_delivery_block']({'delivery_clause': expected}), expected)
+        self.assertEqual(ns['_default_mapping']('illustrator')['ART_DELIVERY_BLOCK'], '__ART_DELIVERY_BLOCK__')
+        self.assertIn('upon signing', ns['_build_manuscript_delivery_block']({'contributorRole': 'author'}))
+
+    def test_agency_full_and_separate_address(self):
+        memo = {'agency_street': '11 Briarwood Lane', 'agency_city': 'West Tisbury',
+                'agency_state': 'MA', 'agency_zip': '02575', 'agency_country': 'USA'}
+        mapping = ns['_default_mapping']('illustrator')
+        self.assertEqual(ns['_get_value_from_memo'](memo, mapping['Agency_Address']),
+                         '11 Briarwood Lane, West Tisbury, MA 02575, USA')
+        self.assertEqual(ns['_get_value_from_memo'](memo, mapping['Agency_Street_Address']), '11 Briarwood Lane')
+        self.assertEqual(ns['_get_value_from_memo']({'agency_city': 'Boston'}, 'agency_address'), 'Boston')
+        self.assertEqual(ns['_get_value_from_memo']({}, 'agency_address'), '')
+
+    def test_email_inside_hyperlink_is_processed_by_generator(self):
+        # Exercise the actual generator's paragraph handler, including its guards.
+        handler = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'replace_in_paragraph')
+        context = dict(ns, has_boardbook=True, SUBRIGHT_TOKENS=[])
+        memo = {'author': {'email': 'author@example.test'}}
+        context['values'] = {'Author_Email': ns['_get_value_from_memo'](memo, 'author_email')}
+        exec(compile(ast.Module(body=[handler], type_ignores=[]), str(SOURCE), 'exec'), context)
+        doc = Document()
+        p = doc.add_paragraph()
+        hyperlink = OxmlElement('w:hyperlink')
+        for text in ('{{Author_', 'Email}}'):
+            run = OxmlElement('w:r')
+            node = OxmlElement('w:t')
+            node.text = text
+            run.append(node)
+            hyperlink.append(run)
+        p._p.append(hyperlink)
+        self.assertFalse(p.runs)
+        context['replace_in_paragraph'](p)
+        self.assertEqual(''.join(p._p.xpath('.//w:t/text()')), 'author@example.test')
 
     def test_headers_footers_and_nested_tables_round_trip(self):
         doc = Document()
