@@ -25,7 +25,7 @@ import boto3
 import psycopg
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Depends
-from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from pydantic import BaseModel, Field, EmailStr, ConfigDict, field_validator
 from psycopg.rows import dict_row
 from app.auth.dependencies import get_current_user
 
@@ -152,7 +152,26 @@ class OtpVerify(BaseModel):
     code: str = Field(pattern=r"^\d{6}$")
 
 
+class AgencyPaymentInstructions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    payee_mode: Literal["contributor_only", "agency_only", "split"]
+    contributor_percent: float = Field(ge=0, le=100, allow_inf_nan=False)
+    agency_percent: float = Field(ge=0, le=100, allow_inf_nan=False)
+    effective_start: str | None = None
+    effective_end: str | None = None
+    notes: str | None = Field(default=None,max_length=10000)
+
+
 class AgencyDetails(BaseModel):
+    royalty_statement_recipient_name: str | None = None
+    royalty_statement_recipient_email: EmailStr | None = None
+
+    @field_validator("royalty_statement_recipient_name", "royalty_statement_recipient_email", mode="before")
+    @classmethod
+    def normalize_statement_contact(cls, value):
+        return str(value).strip() or None if value is not None else None
+
+    agency_clause: str = ""
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     agency_name: str = Field(min_length=1, max_length=300)
     agency_email: EmailStr
@@ -238,6 +257,7 @@ def agency_request_status(work_id: uuid.UUID, claims=Depends(get_current_user)):
 
 class BankSubmission(BaseModel):
     agency_details: AgencyDetails | None = None
+    payment_instructions: AgencyPaymentInstructions | None = None
     payment_method: PaymentMethod = "ACH"
     legal_account_holder_name: str = Field(min_length=1, max_length=300)
     country_code: str = Field(default="US", min_length=2, max_length=2)
@@ -355,6 +375,14 @@ def submit_bank_account(
 ):
     token = x_banking_request_token
 
+    if payload.payment_method in ("ACH", "DOMESTIC_WIRE") and payload.routing_number:
+        digits = [int(n) for n in payload.routing_number]
+        checksum = 3*(digits[0]+digits[3]+digits[6]) + 7*(digits[1]+digits[4]+digits[7]) + digits[2]+digits[5]+digits[8]
+        if not any(digits) or checksum % 10:
+            raise HTTPException(422, "Enter a valid 9-digit routing number.")
+    if not (payload.bank_name or "").strip():
+        raise HTTPException(422, "Enter the bank name. Manual bank details are accepted when lookup is unavailable.")
+
     # Payment-rail-specific validation.
     if payload.payment_method == "ACH":
         if payload.country_code.upper() != "US":
@@ -418,21 +446,36 @@ def submit_bank_account(
                 if payload.agency_details is None:
                     raise HTTPException(422, "Complete the agency and agent information")
                 from .deal_memo_drafts import _upsert_agency
-                info = payload.agency_details.model_dump()
+                info = payload.agency_details.model_dump(exclude_unset=True)
                 # Preserve the existing approved agency clause, which this form does not edit.
                 agency_cur.execute("SELECT p.id, ap.agency_clause FROM parties p LEFT JOIN agency_profiles ap ON ap.agency_party_id=p.id AND ap.tenant_id=p.tenant_id WHERE p.tenant_id=%s AND p.party_type='org' AND lower(p.display_name)=lower(%s)", (context["tenant_id"],info["agency_name"]))
                 matches = agency_cur.fetchall()
                 if len(matches)>1:
                     raise HTTPException(409, "Multiple agencies match this name. Please contact the publisher.")
                 if matches:
-                    info.update(agency_party_id=str(matches[0]["id"]),agency_clause=matches[0]["agency_clause"] or "")
+                    info.update(agency_party_id=str(matches[0]["id"]),agency_clause=info.get("agency_clause") or matches[0]["agency_clause"] or "")
                 info.update(contributor_party_id=str(context["contributor_party_id"]), work_id=str(context["work_id"]))
                 result = _upsert_agency(agency_cur, str(context["tenant_id"]), info)
                 recipient_id = result["agency_party_id"]
+                if payload.payment_instructions is None:
+                    raise HTTPException(422, "Complete the payment instructions")
+                from .payment_instructions import Instruction, persist_instruction
+                from .catalog_shared import _normalize_contributor_role
+                from pydantic import ValidationError
+                agency_cur.execute("SELECT contributor_role FROM work_contributors WHERE tenant_id=%s AND work_id=%s AND party_id=%s", (context["tenant_id"],context["work_id"],context["contributor_party_id"]))
+                roles = {_normalize_contributor_role(row["contributor_role"]) for row in agency_cur.fetchall()} & {"author","illustrator"}
+                if len(roles) != 1:
+                    raise HTTPException(409, "The publisher must confirm which contributor role these payment instructions apply to.")
+                try:
+                    instructions = Instruction.model_validate({**payload.payment_instructions.model_dump(), "contributor_party_id":context["contributor_party_id"], "agency_party_id":recipient_id})
+                except ValidationError:
+                    raise HTTPException(422, "Check payment percentages and effective dates. Split percentages must total 100%.")
+                persist_instruction(agency_cur,context["tenant_id"],context["work_id"],roles.pop(),instructions)
+
                 agency_cur.execute("UPDATE parties SET phone_number=%s,updated_at=now() WHERE id=%s AND tenant_id=%s", (info["agency_phone_number"],recipient_id,context["tenant_id"]))
                 agency_cur.execute("UPDATE secure_payments.agency_information_requests SET agency_party_id=%s,agent_party_id=%s WHERE request_id=%s",(recipient_id,result.get("agent_party_id") or None,req[0]))
                 agency_cur.execute("UPDATE secure_payments.payment_requests SET recipient_id=%s,recipient_name=%s WHERE id=%s",(recipient_id,info["agency_name"],req[0]))
-            elif payload.agency_details is not None:
+            elif payload.agency_details is not None or payload.payment_instructions is not None:
                 raise HTTPException(422, "This link does not request agency information")
 
 

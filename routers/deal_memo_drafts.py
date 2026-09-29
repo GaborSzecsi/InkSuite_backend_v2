@@ -227,13 +227,15 @@ def _get_agency_detail(cur, tenant_id: str, agency_party_id: str) -> dict:
             pa.state AS agency_state,
             pa.zip AS agency_zip,
             pa.country AS agency_country,
-            ap.agency_clause
+            ap.agency_clause,
+            ap.royalty_statement_recipient_name,
+            ap.royalty_statement_recipient_email
         FROM parties p
         LEFT JOIN party_addresses pa
           ON pa.party_id = p.id
          AND pa.label = 'primary'
         LEFT JOIN agency_profiles ap
-          ON ap.agency_party_id = p.id
+          ON ap.agency_party_id = p.id AND ap.tenant_id = p.tenant_id
         WHERE p.tenant_id = %s
           AND p.id = %s
           AND p.party_type = 'org'
@@ -267,6 +269,15 @@ def _upsert_agency(cur, tenant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     agency_email = _s(body.get("agency_email"))
     agency_website = _s(body.get("agency_website"))
     agency_clause = _s(body.get("agency_clause"))
+    recipient_name = _s(body.get("royalty_statement_recipient_name")) or None
+    recipient_email = _s(body.get("royalty_statement_recipient_email")) or None
+    if recipient_email:
+        from pydantic import TypeAdapter, EmailStr, ValidationError
+        try:
+            recipient_email = str(TypeAdapter(EmailStr).validate_python(recipient_email))
+        except ValidationError:
+            raise HTTPException(422, "Enter a valid royalty statement recipient email address.")
+
     agency_street = _s(body.get("agency_street"))
     agency_city = _s(body.get("agency_city"))
     agency_state = _s(body.get("agency_state"))
@@ -413,14 +424,19 @@ def _upsert_agency(cur, tenant_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
     cur.execute(
         """
         INSERT INTO agency_profiles (
-            tenant_id, agency_party_id, agency_clause, notes
+            tenant_id, agency_party_id, agency_clause, notes,
+            royalty_statement_recipient_name, royalty_statement_recipient_email
         )
-        VALUES (%s, %s, %s, '')
+        VALUES (%s, %s, %s, '', %s, %s)
         ON CONFLICT (agency_party_id) DO UPDATE SET
             agency_clause = EXCLUDED.agency_clause,
+            royalty_statement_recipient_name = CASE WHEN %s THEN EXCLUDED.royalty_statement_recipient_name ELSE agency_profiles.royalty_statement_recipient_name END,
+            royalty_statement_recipient_email = CASE WHEN %s THEN EXCLUDED.royalty_statement_recipient_email ELSE agency_profiles.royalty_statement_recipient_email END,
             updated_at = now()
+        WHERE agency_profiles.tenant_id = EXCLUDED.tenant_id
         """,
-        (tenant_id, agency_party_id, agency_clause),
+        (tenant_id, agency_party_id, agency_clause, recipient_name, recipient_email,
+         "royalty_statement_recipient_name" in body, "royalty_statement_recipient_email" in body),
     )
 
     resolved_agent_party_id = ""
@@ -2232,13 +2248,15 @@ def search_agencies(q: str = Query("", min_length=0), tenant_slug: str = Query(D
                     pa.state AS agency_state,
                     pa.zip AS agency_zip,
                     pa.country AS agency_country,
-                    ap.agency_clause
+                    ap.agency_clause,
+            ap.royalty_statement_recipient_name,
+            ap.royalty_statement_recipient_email
                 FROM parties p
                 LEFT JOIN party_addresses pa
                   ON pa.party_id = p.id
                  AND pa.label = 'primary'
                 LEFT JOIN agency_profiles ap
-                  ON ap.agency_party_id = p.id
+                  ON ap.agency_party_id = p.id AND ap.tenant_id = p.tenant_id
                 WHERE p.tenant_id = %s
                   AND p.party_type = 'org'
                   AND (
