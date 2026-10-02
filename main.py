@@ -158,6 +158,10 @@ app.include_router(ingest.router, prefix="/api", tags=["Ingest"])
 
 # Financials: mount under /api so it’s protected and consistent with your frontend URLs
 app.include_router(financials_router, prefix="/api", tags=["Financials"])
+from app.distribution.router import router as distribution_router
+from app.distribution.shopify import public_router as distribution_shopify_router
+app.include_router(distribution_router, prefix="/api")
+app.include_router(distribution_shopify_router)
 from routers.payment_instructions import router as payment_instructions_router
 app.include_router(payment_instructions_router, prefix="/api")
 app.include_router(salesdata_router, prefix="/api")
@@ -218,6 +222,10 @@ async def require_auth_middleware(request, call_next):
         return await call_next(request)
     # public: resolve contract invite by token (agent review link, no login)
     if path.startswith("/api/contracts/invites/") and request.method.upper() == "GET":
+        return await call_next(request)
+
+    # Shopify public endpoints verify HMAC/state themselves; no broader auth exemption.
+    if (path == '/api/distribution/shopify/webhooks' and request.method == 'POST') or (path == '/api/distribution/shopify/callback' and request.method == 'GET'):
         return await call_next(request)
 
     # Always try to resolve token and set user_claims when valid (so routes like contract invites work even when REQUIRE_AUTH=0)

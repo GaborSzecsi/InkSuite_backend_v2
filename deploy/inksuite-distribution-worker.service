@@ -1,0 +1,17 @@
+[Unit]
+Description=InkSuite Distribution Worker (preview only)
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/inksuite/app
+EnvironmentFile=/etc/inksuite-api.env
+ExecStart=/home/ubuntu/inksuite/app/.venv/bin/python -m app.distribution.worker
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
