@@ -27,6 +27,10 @@ from services.royalty_statement_engine import (
     run_generate_statement,
 )
 
+from services.royalty_accounts import (
+    AccountChange, PaymentRecord, tracking_ready, account_state, save_settings, record_payment,
+)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/royalty/statements-engine", tags=["Royalty Statements Engine"])
@@ -1132,6 +1136,112 @@ def _save_statement_pdf_to_book_folder(
         "pdf_s3_key": s3_key,
         "saved": True,
     }
+
+
+def _account_write(request, body, handler):
+    tenant_id = _require_tenant_id(request)
+    claims = getattr(request.state, "user_claims", None) or {}
+    actor = str(claims.get("sub") or claims.get("email") or "")
+    if not actor:
+        raise HTTPException(401, "Please sign in to save royalty account changes.")
+    try:
+        with db_conn() as conn:
+            with conn.transaction():
+                with conn.cursor(row_factory=dict_row) as cur:
+                    return handler(cur, tenant_id, actor, body)
+    except StatementValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/preparation/settings")
+def save_royalty_account_settings(body: AccountChange, request: Request):
+    return _account_write(request, body, save_settings)
+
+
+@router.post("/preparation/payments")
+def record_royalty_account_payment(body: PaymentRecord, request: Request):
+    return _account_write(request, body, record_payment)
+
+
+@router.get("/preparation")
+def royalty_preparation(request: Request, work_id: str, royalty_set_id: str, period_id: str):
+    """Read historical context without generating or modifying a statement."""
+    from dataclasses import asdict
+    from services.royalty_statement_engine import (
+        load_period, assert_work, assert_royalty_set_for_work,
+        load_first_rights_rules, load_tiers_for_rules,
+    )
+    tenant_id = _require_tenant_id(request)
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            try:
+                assert_work(cur, tenant_id, work_id)
+                assert_royalty_set_for_work(cur, tenant_id, royalty_set_id, work_id)
+                period = load_period(cur, tenant_id, period_id)
+            except StatementValidationError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            accounts = []
+            ready = tracking_ready(cur)
+            for party in ("author", "illustrator"):
+                rules = load_first_rights_rules(cur, tenant_id, royalty_set_id, party)
+                if not rules:
+                    continue
+                tiers, conditions = load_tiers_for_rules(cur, tenant_id, [r.id for r in rules])
+                cur.execute("""
+                    SELECT s.id AS statement_id, p.id, p.period_code, p.period_start, p.period_end,
+                           s.earned_this_period, s.payable_this_period, s.closing_recoupment_balance, s.currency,
+                           COALESCE((SELECT SUM(payment.amount) FROM royalty_payments payment
+                                     WHERE payment.tenant_id=s.tenant_id AND payment.statement_id=s.id
+                                       AND payment.currency=s.currency), 0) AS paid_amount
+                    FROM royalty_statements s
+                    JOIN royalty_periods p ON p.id=s.period_id AND p.tenant_id=s.tenant_id
+                    WHERE s.tenant_id=%s::uuid AND p.period_end < %s
+                      AND s.work_id=%s::uuid
+                      AND s.party=%s AND s.status='final'
+                    ORDER BY p.period_end DESC, p.period_start DESC, s.updated_at DESC
+                    LIMIT 3
+                """, (tenant_id, period.period_start, work_id, party))
+                history = [dict(r) for r in cur.fetchall()]
+                latest = history[0] if history else None
+                unpaid_balance = max(0, latest["payable_this_period"] - latest["paid_amount"]) if latest else None
+                cur.execute("""
+                    SELECT l.category_label, SUM(l.net_units) AS net_units
+                    FROM royalty_statement_lines l JOIN royalty_statements s ON s.id=l.statement_id
+                    JOIN royalty_periods rp ON rp.id=s.period_id AND rp.tenant_id=s.tenant_id
+                    WHERE s.tenant_id=%s::uuid AND s.work_id=%s::uuid AND s.party=%s
+                      AND rp.period_end < %s AND s.status='final'
+                      AND l.line_type='first_rights'
+                    GROUP BY l.category_label
+                """, (tenant_id, work_id, party, period.period_start))
+                prior_units = [dict(r) for r in cur.fetchall()]
+                settings = account_state(cur, tenant_id, work_id, party) if ready else None
+                changes = []
+                if ready:
+                    cur.execute("""SELECT id,event_type,reason,before_values,after_values,created_at,actor
+                        FROM royalty_account_events WHERE tenant_id=%s::uuid AND work_id=%s::uuid AND party=%s
+                        ORDER BY created_at DESC LIMIT 30""", (tenant_id,work_id,party))
+                    changes = [dict(row) for row in cur.fetchall()]
+                cur.execute("""SELECT pay.id,pay.payment_date,pay.amount,pay.currency,pay.payee_role,
+                      pay.payment_method,pay.reference_number,p.period_code
+                    FROM royalty_payments pay JOIN royalty_statements s ON s.id=pay.statement_id
+                    JOIN royalty_periods p ON p.id=s.period_id
+                    WHERE pay.tenant_id=%s::uuid AND s.work_id=%s::uuid AND s.party=%s
+                    ORDER BY pay.payment_date DESC,pay.created_at DESC LIMIT 30""",(tenant_id,work_id,party))
+                payments = [dict(row) for row in cur.fetchall()]
+                accounts.append({"party": party, "history": history,
+                    "prior_units": prior_units,
+                    "settings": settings, "changes": changes, "payments": payments,
+                    "unrecouped_balance": max(0, -latest["closing_recoupment_balance"]) if latest else None,
+                    "unpaid_balance": unpaid_balance,
+                    "unpaid_source_period": latest["period_code"] if latest else None,
+                    "unpaid_source_statement_id": str(latest["statement_id"]) if latest else None,
+                    "paid_amount": latest["paid_amount"] if latest else None,
+                    "currency": latest["currency"] if latest else "USD",
+                    "existing_reserve": settings["reserve_held"] if settings else None,
+                    "rules": [{**asdict(r), "tiers": [
+                        {**asdict(t), "conditions": [asdict(c) for c in conditions.get(t.id, [])]}
+                        for t in tiers.get(r.id, [])]} for r in rules]})
+    return {"accounts": accounts, "tracking_ready": ready}
 
 
 @router.post("/generate")
