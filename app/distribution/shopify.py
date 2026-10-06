@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from . import service as s
 from . import secrets
 from .router import router,admin,access,ids
+from . import privacy
 
 public_router=APIRouter(prefix='/api/distribution/shopify',tags=['Distribution Shopify'])
 SCOPES='read_products,read_orders,read_inventory,read_locations,read_merchant_managed_fulfillment_orders'
@@ -142,13 +143,18 @@ async def webhook(request:Request):
     try: payload=json.loads(body)
     except ValueError: raise HTTPException(400,'Invalid webhook JSON.') from None
     if not isinstance(payload,dict): raise HTTPException(400,'Invalid webhook payload.')
+    if topic in privacy.TOPICS and payload.get('shop_domain') != shop: raise HTTPException(400,'Privacy request store mismatch.')
     # Store only identifiers required to retrieve canonical GraphQL records. No customer payload archive.
     minimal={k:payload[k] for k in ('id','admin_graphql_api_id','shop_id') if k in payload}
-    if topic.startswith('customers/'):
-        minimal={'customer_id':(payload.get('customer') or {}).get('id')}
     with s.transaction() as cur:
         install=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE shop=%s',(shop,))
-        if not install: raise HTTPException(404,'Store is not installed.')
+        if not install:
+            if topic in privacy.TOPICS: return {'received':True}
+            raise HTTPException(404,'Store is not installed.')
+        if topic in privacy.TOPICS:
+            try: privacy.receive(cur,install,topic,delivery,payload)
+            except ValueError: raise HTTPException(400,'Invalid privacy request identifiers.') from None
+            return {'received':True}
         if not install['active'] and topic not in ('app/uninstalled','customers/redact','shop/redact'): return {'received':True}
         cur.execute('INSERT INTO distribution_webhooks(tenant_id,installation_id,delivery_id,topic,payload) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(installation_id,delivery_id) DO NOTHING',(install['tenant_id'],install['id'],delivery,topic,Jsonb(minimal)))
         if topic=='app/uninstalled': cur.execute('UPDATE distribution_shopify_installations SET active=false WHERE id=%s',(install['id'],))
@@ -163,8 +169,7 @@ def inbox(ctx=Depends(access)):
         return {'items':cur.fetchall()}
 
 ORDER_QUERY='''query DistributionOrder($id: ID!) {
- order(id:$id) { id name displayFinancialStatus cancelledAt email note
-  shippingAddress { name company address1 address2 city provinceCode zip countryCodeV2 phone }
+ order(id:$id) { id createdAt displayFinancialStatus cancelledAt
   shippingLines(first:10) { nodes { title } pageInfo { hasNextPage } }
   fulfillmentOrders(first:50) { pageInfo { hasNextPage } nodes {
    assignedLocation { location { id } }
@@ -190,6 +195,11 @@ def process_inbox_once():
                 order_id=entry['payload'].get('admin_graphql_api_id') or f'gid://shopify/Order/{entry["payload"].get("id","")}'
                 order=graphql(cur,install,ORDER_QUERY,{'id':order_id})['order']
                 if not order: raise ValueError('ORDER_NOT_AVAILABLE')
+                from datetime import datetime, timezone, timedelta
+                created = datetime.fromisoformat(order['createdAt'].replace('Z','+00:00'))
+                if created < datetime.now(timezone.utc)-timedelta(days=30): raise ValueError('ORDER_OUTSIDE_PREVIEW_RETENTION')
+                privacy.require_ready(cur)
+                if privacy.suppressed(cur,install['tenant_id'],install['shop'],order['id']): raise ValueError('ORDER_REMOVED_FOR_PRIVACY')
                 if order['cancelledAt']: raise ValueError('CANCELLED_SOURCE_ORDER_REQUIRES_REVIEW')
                 if order['displayFinancialStatus']!='PAID': raise ValueError('SOURCE_ORDER_NOT_PAID')
                 if not install['location_id']: raise ValueError('SELECT_SHOPIFY_FULFILLMENT_LOCATION')
@@ -211,14 +221,11 @@ def process_inbox_once():
                 if not groups: raise ValueError('NO_ELIGIBLE_LINES_AT_SELECTED_LOCATION')
                 shipping=order['shippingLines']
                 if shipping['pageInfo']['hasNextPage'] or len(shipping['nodes'])!=1: raise ValueError('SHIPPING_METHOD_REQUIRES_REVIEW')
-                address=order['shippingAddress']
-                if not address: raise ValueError('SHIPPING_ADDRESS_REQUIRED')
-                recipient={'name':address.get('name') or '', 'company':address.get('company') or '', 'address_1':address.get('address1') or '', 'address_2':address.get('address2') or '', 'city':address.get('city') or '', 'state_region':address.get('provinceCode') or '', 'postal_code':address.get('zip') or '', 'country':address.get('countryCodeV2') or '', 'phone':address.get('phone') or '', 'email':order.get('email') or ''}
                 # A savepoint rolls back ALL split previews if any group cannot be normalized.
                 cur.execute('SAVEPOINT normalize_order')
                 try:
                     for connection_id,items in groups.items():
-                        body=OrderIn(connection_id=connection_id,source='SHOPIFY',source_account=install['shop'],external_order_id=order['id'],reference=order['name'],recipient=recipient,shipping_method=shipping['nodes'][0]['title'],delivery_instructions=order.get('note') or '',items=items)
+                        body=OrderIn(connection_id=connection_id,source='SHOPIFY',source_account=install['shop'],external_order_id=order['id'],reference='Shopify '+order['id'].rsplit('/',1)[-1],shipping_method=shipping['nodes'][0]['title'],items=items)
                         s.create_order(cur,install['tenant_id'],body,'shopify-worker')
                 except Exception:
                     cur.execute('ROLLBACK TO SAVEPOINT normalize_order')
@@ -226,7 +233,7 @@ def process_inbox_once():
                 finally: cur.execute('RELEASE SAVEPOINT normalize_order')
                 status='DONE'
             except ValueError as exc:
-                allowed={'ORDER_NOT_AVAILABLE','CANCELLED_SOURCE_ORDER_REQUIRES_REVIEW','SOURCE_ORDER_NOT_PAID','SELECT_SHOPIFY_FULFILLMENT_LOCATION','ORDER_REQUIRES_PAGINATION_REVIEW','UNMATCHED_PRODUCTS','NO_ELIGIBLE_LINES_AT_SELECTED_LOCATION','SHIPPING_METHOD_REQUIRES_REVIEW','SHIPPING_ADDRESS_REQUIRED','NORMALIZATION_REQUIRES_REVIEW'}
+                allowed={'ORDER_OUTSIDE_PREVIEW_RETENTION','ORDER_REMOVED_FOR_PRIVACY','ORDER_NOT_AVAILABLE','CANCELLED_SOURCE_ORDER_REQUIRES_REVIEW','SOURCE_ORDER_NOT_PAID','SELECT_SHOPIFY_FULFILLMENT_LOCATION','ORDER_REQUIRES_PAGINATION_REVIEW','UNMATCHED_PRODUCTS','NO_ELIGIBLE_LINES_AT_SELECTED_LOCATION','SHIPPING_METHOD_REQUIRES_REVIEW','SHIPPING_ADDRESS_REQUIRED','NORMALIZATION_REQUIRES_REVIEW'}
                 code=str(exc) if str(exc) in allowed else 'SHOPIFY_RESPONSE_REQUIRES_REVIEW'
             except Exception: code='SHOPIFY_READ_FAILED'
         cur.execute('UPDATE distribution_webhooks SET status=%s,error_code=%s WHERE id=%s',(status,code,entry['id']))

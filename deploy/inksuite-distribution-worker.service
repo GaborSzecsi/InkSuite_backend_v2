@@ -7,6 +7,7 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/inksuite/app
 EnvironmentFile=/etc/inksuite-api.env
+Environment=DISTRIBUTION_WORKER_ENABLED=true
 ExecStart=/home/ubuntu/inksuite/app/.venv/bin/python -m app.distribution.worker
 Restart=on-failure
 RestartSec=10

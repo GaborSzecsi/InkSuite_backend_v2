@@ -9,7 +9,7 @@ import json
 import traceback
 import base64
 import uuid as uuid_lib
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import os, glob, shutil, subprocess, tempfile
 from pydantic import BaseModel, Field
@@ -370,11 +370,13 @@ def _persist_statement_calculations_to_db(
 # =============================
 
 class SubrightsIncomeItem(BaseModel):
+    id: Optional[str] = None
+    client_row_id: Optional[str] = None
     period_id: str
     work_id: str
     royalty_set_id: str
     subrights_type_id: str
-    income_date: str
+    income_date: date
     publisher_receipts: Decimal = Field(..., ge=0)
 
 
@@ -542,7 +544,7 @@ def _load_subrights_options_for_work(cur, tenant_id: str, work_id: str) -> List[
     return list(grouped.values())
 
 
-def _insert_subrights_income_row(cur, tenant_id: str, item: SubrightsIncomeItem) -> None:
+def _insert_subrights_income_row(cur, tenant_id: str, item: SubrightsIncomeItem) -> str:
     cols = _get_existing_columns(cur, "subrights_income_lines")
 
     insert_cols: List[str] = [
@@ -575,21 +577,79 @@ def _insert_subrights_income_row(cur, tenant_id: str, item: SubrightsIncomeItem)
         insert_cols.append("gross_amount")
         insert_vals.append(item.publisher_receipts)
 
+    if item.client_row_id:
+        insert_cols.append("id")
+        insert_vals.append(item.client_row_id)
     placeholders = ", ".join(["%s"] * len(insert_cols))
     sql = f"""
         INSERT INTO subrights_income_lines ({", ".join(insert_cols)})
-        VALUES ({placeholders})
+        VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING RETURNING id::text
     """
     cur.execute(sql, insert_vals)
+    saved = cur.fetchone()
+    if saved:
+        return str(saved["id"])
+    # Retry the same new UI row using its stable identity, never date/amount matching.
+    if item.client_row_id:
+        return _save_subrights_income_row(cur, tenant_id, item.model_copy(update={"id": item.client_row_id}))
+    raise HTTPException(status_code=409, detail="Could not insert subrights income row.")
+
+
+def _save_subrights_income_row(cur, tenant_id: str, item: SubrightsIncomeItem) -> str:
+    if not item.id:
+        return _insert_subrights_income_row(cur, tenant_id, item)
+    cols = _get_existing_columns(cur, "subrights_income_lines")
+    date_col = "income_date" if "income_date" in cols else "transaction_date"
+    assignments = ["subrights_type_id = %s::uuid", f"{date_col} = %s", "publisher_receipts = %s"]
+    values = [item.subrights_type_id, item.income_date, item.publisher_receipts]
+    if "royalty_set_id" in cols:
+        assignments.append("royalty_set_id = %s::uuid")
+        values.append(item.royalty_set_id)
+    if "gross_amount" in cols:
+        assignments.append("gross_amount = %s")
+        values.append(item.publisher_receipts)
+    if "updated_at" in cols:
+        assignments.append("updated_at = now()")
+    cur.execute(f"""
+        UPDATE subrights_income_lines SET {", ".join(assignments)}
+        WHERE id = %s::uuid AND tenant_id = %s::uuid
+          AND period_id = %s::uuid AND work_id = %s::uuid
+        RETURNING id
+    """, values + [item.id, tenant_id, item.period_id, item.work_id])
+    if not cur.fetchone():
+        raise HTTPException(status_code=404, detail="Saved income row not found for this work and period.")
+    return item.id
+
+
+@router.get("/subrights/income")
+def get_subrights_income(request: Request, period_id: str, work_id: str) -> List[Dict[str, Any]]:
+    tenant_id = _require_tenant(request)
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            _assert_period_exists(cur, tenant_id, period_id)
+            _assert_work_exists(cur, tenant_id, work_id)
+            cols = _get_existing_columns(cur, "subrights_income_lines")
+            date_col = "income_date" if "income_date" in cols else "transaction_date"
+            set_col = "i.royalty_set_id::text" if "royalty_set_id" in cols else "NULL::text"
+            cur.execute(f"""
+                SELECT i.id::text, i.period_id::text, i.work_id::text,
+                       {set_col} AS royalty_set_id, i.subrights_type_id::text,
+                       i.{date_col}::text AS income_date, i.publisher_receipts, st.name
+                FROM subrights_income_lines i
+                LEFT JOIN subrights_types st ON st.id = i.subrights_type_id
+                WHERE i.tenant_id = %s::uuid AND i.period_id = %s::uuid AND i.work_id = %s::uuid
+                ORDER BY i.{date_col}, i.id
+            """, (tenant_id, period_id, work_id))
+            return [dict(row) for row in cur.fetchall()]
 
 
 @router.get("/periods")
-def get_royalty_periods() -> List[Dict[str, Any]]:
+def get_royalty_periods(request: Request) -> List[Dict[str, Any]]:
+    tenant_id = _require_tenant(request)
     try:
         from app.core.db import db_conn
         with db_conn() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
-                tenant_id = _get_tenant_id_for_royalty(cur)
                 cur.execute(
                     """
                     SELECT
@@ -623,7 +683,7 @@ def get_royalty_periods() -> List[Dict[str, Any]]:
 
 
 @router.get("/subrights/options")
-def get_subrights_options(work_id: str = Query(...)) -> List[Dict[str, Any]]:
+def get_subrights_options(request: Request, work_id: str = Query(...)) -> List[Dict[str, Any]]:
     """
     Returns subrights options for the active royalty set on a work.
     Output shape:
@@ -638,11 +698,11 @@ def get_subrights_options(work_id: str = Query(...)) -> List[Dict[str, Any]]:
       illustrator_mode
     }]
     """
+    tenant_id = _require_tenant(request)
     try:
         from app.core.db import db_conn
         with db_conn() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
-                tenant_id = _get_tenant_id_for_royalty(cur)
                 _assert_work_exists(cur, tenant_id, work_id)
                 return _load_subrights_options_for_work(cur, tenant_id, work_id)
     except HTTPException:
@@ -652,7 +712,7 @@ def get_subrights_options(work_id: str = Query(...)) -> List[Dict[str, Any]]:
 
 
 @router.post("/subrights/income")
-def create_subrights_income_rows(body: SubrightsIncomeCreateBody) -> Dict[str, Any]:
+def create_subrights_income_rows(body: SubrightsIncomeCreateBody, request: Request) -> Dict[str, Any]:
     """
     Saves manual subrights receipt rows for a royalty period.
     Input:
@@ -667,6 +727,8 @@ def create_subrights_income_rows(body: SubrightsIncomeCreateBody) -> Dict[str, A
       }]
     }
     """
+    tenant_id = _require_tenant(request)
+    saved_ids = []
     if not body.items:
         raise HTTPException(status_code=400, detail="No subrights income rows were provided.")
 
@@ -677,7 +739,6 @@ def create_subrights_income_rows(body: SubrightsIncomeCreateBody) -> Dict[str, A
             conn.autocommit = False
             try:
                 with conn.cursor(row_factory=dict_row) as cur:
-                    tenant_id = _get_tenant_id_for_royalty(cur)
 
                     for item in body.items:
                         _assert_period_exists(cur, tenant_id, item.period_id)
@@ -699,7 +760,7 @@ def create_subrights_income_rows(body: SubrightsIncomeCreateBody) -> Dict[str, A
                                 detail=f"Subrights type not found: {item.subrights_type_id}",
                             )
 
-                        _insert_subrights_income_row(cur, tenant_id, item)
+                        saved_ids.append(_save_subrights_income_row(cur, tenant_id, item))
 
                 conn.commit()
             except Exception:
@@ -708,7 +769,7 @@ def create_subrights_income_rows(body: SubrightsIncomeCreateBody) -> Dict[str, A
             finally:
                 conn.autocommit = prev_ac
 
-        return {"message": "Saved", "saved_count": len(body.items)}
+        return {"message": "Saved", "saved_count": len(body.items), "ids": saved_ids}
     except HTTPException:
         raise
     except Exception as e:
@@ -824,141 +885,6 @@ def save_book(payload: Dict[str, Any]):
         status_code=410,
         detail="Royalty JSON book storage is removed. Save works via POST /api/catalog/works.",
     )
-
-@router.get("/periods")
-def get_periods(request: Request):
-    tenant_id = _require_tenant(request)
-
-    with db_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("""
-                SELECT
-                    id,
-                    period_code,
-                    period_start,
-                    period_end,
-                    is_closed
-                FROM royalty_periods
-                WHERE tenant_id = %s
-                ORDER BY period_start DESC
-            """, (tenant_id,))
-
-            rows = cur.fetchall() or []
-
-    return rows
-
-@router.get("/subrights/options")
-def get_subrights_options(work_id: str, request: Request):
-    tenant_id = _require_tenant(request)
-
-    with db_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-
-            # get active royalty set
-            cur.execute("""
-                SELECT id
-                FROM royalty_sets
-                WHERE tenant_id = %s
-                  AND work_id = %s
-                  AND is_active = true
-                LIMIT 1
-            """, (tenant_id, work_id))
-
-            rs = cur.fetchone()
-            if not rs:
-                return []
-
-            royalty_set_id = rs["id"]
-
-            # get subrights rules
-            cur.execute("""
-                SELECT
-                    rr.id AS rule_id,
-                    rr.subrights_type_id,
-                    st.name,
-                    rr.base,
-
-                    -- author %
-                    MAX(CASE WHEN rr.party = 'author' THEN rr.percent END) AS author_percent,
-
-                    -- illustrator %
-                    MAX(CASE WHEN rr.party = 'illustrator' THEN rr.percent END) AS illustrator_percent,
-
-                    MAX(CASE WHEN rr.party = 'author' THEN rr.mode END) AS author_mode,
-                    MAX(CASE WHEN rr.party = 'illustrator' THEN rr.mode END) AS illustrator_mode
-
-                FROM royalty_rules rr
-                JOIN subrights_types st
-                  ON st.id = rr.subrights_type_id
-
-                WHERE rr.tenant_id = %s
-                  AND rr.royalty_set_id = %s
-                  AND rr.rights_type = 'subrights'
-
-                GROUP BY rr.id, rr.subrights_type_id, st.name, rr.base
-                ORDER BY st.name
-            """, (tenant_id, royalty_set_id))
-
-            rows = cur.fetchall() or []
-
-    return rows
-
-from pydantic import BaseModel
-from typing import List
-from datetime import date
-
-
-class SubrightsIncomeItem(BaseModel):
-    period_id: str
-    work_id: str
-    royalty_set_id: str
-    subrights_type_id: str
-    income_date: date
-    publisher_receipts: float
-
-
-class SubrightsIncomePayload(BaseModel):
-    items: List[SubrightsIncomeItem]
-
-
-@router.post("/subrights/income")
-def save_subrights_income(payload: SubrightsIncomePayload, request: Request):
-    tenant_id = _require_tenant(request)
-
-    if not payload.items:
-        return {"ok": True, "inserted": 0}
-
-    with db_conn() as conn:
-        with conn.cursor() as cur:
-
-            for item in payload.items:
-                cur.execute("""
-                    INSERT INTO subrights_income_lines (
-                        tenant_id,
-                        period_id,
-                        work_id,
-                        royalty_set_id,
-                        subrights_type_id,
-                        income_date,
-                        publisher_receipts,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now())
-                """, (
-                    tenant_id,
-                    item.period_id,
-                    item.work_id,
-                    item.royalty_set_id,
-                    item.subrights_type_id,
-                    item.income_date,
-                    item.publisher_receipts
-                ))
-
-        conn.commit()
-
-    return {"ok": True, "inserted": len(payload.items)}
-
 
 @router.delete("/books")
 def delete_book(title: str, author: str):

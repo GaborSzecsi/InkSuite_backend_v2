@@ -134,10 +134,12 @@ def listing(connection_id:UUID,edition_id:UUID,body:ListingIn,ctx=Depends(admin)
 
 @router.get('/orders')
 def orders(status:str|None=None,ctx=Depends(access)):
-    tenant,_=ids(ctx)
+    tenant,actor=ids(ctx)
     with s.transaction() as cur:
-        cur.execute("""SELECT o.id,o.reference,o.source,o.status,o.mode,o.created_at,o.error_code,
-            o.recipient->>'name' AS customer,c.display_name AS distributor,
+        from .privacy import audit
+        audit(cur,tenant,actor,'ORDER_LIST_READ')
+        cur.execute("""SELECT o.id,CASE WHEN o.source='SHOPIFY' THEN 'Shopify ' || regexp_replace(o.external_order_id,'^.*/','') ELSE o.reference END AS reference,o.source,o.status,o.mode,o.created_at,o.error_code,
+            CASE WHEN o.source='SHOPIFY' THEN NULL ELSE o.recipient->>'name' END AS customer,c.display_name AS distributor,
             (SELECT SUM(quantity) FROM distribution_order_items i WHERE i.tenant_id=o.tenant_id AND i.order_id=o.id) AS items
             FROM distribution_orders o JOIN distribution_connections c ON c.tenant_id=o.tenant_id AND c.id=o.connection_id
             WHERE o.tenant_id=%s AND (%s::text IS NULL OR o.status=%s) ORDER BY o.created_at DESC LIMIT 200""",(tenant,status,status))
@@ -147,12 +149,12 @@ def orders(status:str|None=None,ctx=Depends(access)):
 @router.post('/orders/preview',status_code=201)
 def preview_order(body:OrderIn,ctx=Depends(admin)):
     tenant,actor=ids(ctx)
-    with s.transaction() as cur: return s.create_order(cur,tenant,body,actor)
+    with s.transaction() as cur: return s.public_order(s.create_order(cur,tenant,body,actor))
 
 
 @router.get('/orders/{order_id}')
 def order_detail(order_id:UUID,ctx=Depends(access)):
-    tenant,_=ids(ctx)
+    tenant,actor=ids(ctx)
     with s.transaction() as cur:
         order=s.one(cur,'SELECT * FROM distribution_orders WHERE tenant_id=%s AND id=%s',(tenant,order_id))
         if not order: raise HTTPException(404,'Order not found.')
@@ -160,15 +162,20 @@ def order_detail(order_id:UUID,ctx=Depends(access)):
         order['items']=cur.fetchall()
         cur.execute('SELECT event,details,created_at FROM distribution_events WHERE tenant_id=%s AND order_id=%s ORDER BY created_at',(tenant,order_id))
         order['events']=cur.fetchall()
-        return order
+        from .privacy import audit
+        audit(cur,tenant,actor,'ORDER_DETAIL_READ',order_id)
+        return s.public_order(order)
 
 
 @router.get('/orders/{order_id}/preview')
 def order_file(order_id:UUID,ctx=Depends(access)):
-    tenant,_=ids(ctx)
+    tenant,actor=ids(ctx)
     with s.transaction() as cur:
         order=s.one(cur,'SELECT * FROM distribution_orders WHERE tenant_id=%s AND id=%s',(tenant,order_id))
         if not order: raise HTTPException(404,'Order not found.')
+        if order['source']=='SHOPIFY': raise HTTPException(409,'Customer delivery data is not stored in InkSuite. Shopify file previews are disabled; details will be retrieved only for an authorized distributor transmission.')
+        from .privacy import audit
+        audit(cur,tenant,actor,'ORDER_FILE_DOWNLOADED',order_id)
         conn=s.connection(cur,tenant,order['connection_id'])
         cur.execute('SELECT * FROM distribution_order_items WHERE tenant_id=%s AND order_id=%s ORDER BY edition_id',(tenant,order_id))
         try: data=adapter_for(conn).render_order(order,cur.fetchall())
@@ -179,7 +186,7 @@ def order_file(order_id:UUID,ctx=Depends(access)):
 @router.post('/orders/{order_id}/cancel')
 def cancel_order(order_id:UUID,ctx=Depends(admin)):
     tenant,actor=ids(ctx)
-    with s.transaction() as cur: return s.cancel(cur,tenant,order_id,actor)
+    with s.transaction() as cur: return s.public_order(s.cancel(cur,tenant,order_id,actor))
 
 
 @router.get('/shopify/mappings')

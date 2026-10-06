@@ -19,3 +19,17 @@ def save(tenant,connection,credentials):
 def read(name):
     if not name.startswith('inksuite/distribution/'): raise ValueError('Invalid distribution secret reference.')
     return json.loads(client().get_secret_value(SecretId=name)['SecretString'])
+
+
+def remove(name):
+    """Schedule only an installation token secret for deletion, with AWS recovery window."""
+    import re
+    if not re.fullmatch(r'inksuite/distribution/[0-9a-f-]{36}/[0-9a-f-]{36}', name or ''):
+        raise ValueError('Invalid installation secret reference.')
+    svc = client()
+    try:
+        detail = svc.describe_secret(SecretId=name)
+        if not detail.get('DeletedDate'):
+            svc.delete_secret(SecretId=name, RecoveryWindowInDays=7)
+    except svc.exceptions.ResourceNotFoundException:
+        pass

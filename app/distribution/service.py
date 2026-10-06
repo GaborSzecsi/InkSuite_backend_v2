@@ -41,6 +41,16 @@ def create_order(cur,tenant,body,actor):
     """Preview ingestion; live ingestion uses the same row locks and reserve function."""
     conn=connection(cur,tenant,body.connection_id,lock=True)
     data=body.model_dump(mode='json')
+    if body.source == 'SHOPIFY':
+        # Customer delivery details are fetched only at a future transmission boundary,
+        # never archived or exposed by the order preview workflow.
+        data['recipient'] = {}
+        data['delivery_instructions'] = ''
+        data['reference'] = 'Shopify ' + body.external_order_id.rsplit('/', 1)[-1]
+        from .privacy import require_ready, suppressed
+        require_ready(cur)
+        if suppressed(cur, tenant, body.source_account, body.external_order_id):
+            raise HTTPException(409, 'This order was removed under the privacy or retention policy.')
     digest=hashlib.sha256(json.dumps(data,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     existing=one(cur,'SELECT * FROM distribution_orders WHERE tenant_id=%s AND source=%s AND source_account=%s AND external_order_id=%s AND connection_id=%s',
                  (tenant,body.source,body.source_account,body.external_order_id,body.connection_id))
@@ -58,7 +68,7 @@ def create_order(cur,tenant,body,actor):
         editions.append((edition_id,qty,ed['isbn13']))
     row=one(cur,"""INSERT INTO distribution_orders(tenant_id,connection_id,source,source_account,external_order_id,reference,request_hash,recipient,shipping_method,delivery_instructions,mode)
         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'preview') RETURNING *""",
-        (tenant,body.connection_id,body.source,body.source_account,body.external_order_id,body.reference,digest,Jsonb(body.recipient.model_dump()),body.shipping_method,body.delivery_instructions))
+        (tenant,body.connection_id,body.source,body.source_account,body.external_order_id,data['reference'],digest,Jsonb(data['recipient']),body.shipping_method,data['delivery_instructions']))
     for ed,qty,isbn in editions:
         cur.execute('INSERT INTO distribution_order_items(tenant_id,order_id,edition_id,isbn,quantity) VALUES(%s,%s,%s,%s,%s)',(tenant,row['id'],ed,isbn,qty))
     event(cur,tenant,conn['id'],actor,'ORDER_PREVIEW_CREATED',row['id'])
@@ -99,3 +109,11 @@ def cancel(cur,tenant,order_id,actor):
     result=one(cur,"UPDATE distribution_orders SET status='CANCELLED',updated_at=now() WHERE tenant_id=%s AND id=%s RETURNING *",(tenant,order_id))
     event(cur,tenant,order['connection_id'],actor,'ORDER_CANCELLED',order_id)
     return result
+
+
+def public_order(row):
+    if row.get('source') != 'SHOPIFY':
+        return row
+    # Defensive protection for legacy rows pending the explicit cleanup command.
+    return {**row, 'reference': 'Shopify ' + row['external_order_id'].rsplit('/', 1)[-1],
+            'recipient': {}, 'delivery_instructions': '', 'tracking': []}

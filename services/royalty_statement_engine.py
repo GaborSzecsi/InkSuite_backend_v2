@@ -838,6 +838,7 @@ def find_existing_statement(
           AND party = %s
           AND period_id = %s::uuid
         LIMIT 1
+        FOR UPDATE
         """,
         (tenant_id, work_id, party, period_id),
     )

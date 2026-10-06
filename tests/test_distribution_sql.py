@@ -68,7 +68,7 @@ class DistributionSQLTests(unittest.TestCase):
    with s.transaction() as cur:s.reserve(cur,self.tenant,order['id'])
   self.assertEqual(rpc('SELECT COUNT(*) AS n FROM distribution_reservations WHERE tenant_id=$1',[self.tenant])['rows'][0]['n'],0)
  def test_changed_duplicate_conflict(self):
-  self.create();new=self.body.model_copy(update={'reference':'changed'})
+  self.create();new=self.body.model_copy(update={'shipping_method':'changed'})
   with self.assertRaises(HTTPException) as err:self.create(new)
   self.assertEqual(err.exception.status_code,409)
  def test_tenant_isolation(self):
@@ -124,7 +124,7 @@ class DistributionSQLTests(unittest.TestCase):
   install=str(uuid4());shop='test-'+self.tenant+'.myshopify.com'
   rpc('INSERT INTO distribution_shopify_installations(id,tenant_id,shop,secret_reference,location_id) VALUES($1,$2,$3,$4,$5)',[install,self.tenant,shop,'not-read','gid://shopify/Location/1'])
   rpc("INSERT INTO distribution_webhooks(tenant_id,installation_id,delivery_id,topic,payload) VALUES($1,$2,'delivery','orders/paid',$3)",[self.tenant,install,{'id':100}])
-  order={'id':'gid://shopify/Order/100','name':'#100','cancelledAt':None,'displayFinancialStatus':'PAID','fulfillmentOrders':{'pageInfo':{'hasNextPage':False},'nodes':[{'assignedLocation':{'location':{'id':'gid://shopify/Location/1'}},'lineItems':{'pageInfo':{'hasNextPage':False},'nodes':[{'remainingQuantity':1,'lineItem':{'id':'line','sku':'unmatched','title':'Test book','variant':{'id':'variant'}}}]}}]}}
+  order={'createdAt':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),'id':'gid://shopify/Order/100','name':'#100','cancelledAt':None,'displayFinancialStatus':'PAID','fulfillmentOrders':{'pageInfo':{'hasNextPage':False},'nodes':[{'assignedLocation':{'location':{'id':'gid://shopify/Location/1'}},'lineItems':{'pageInfo':{'hasNextPage':False},'nodes':[{'remainingQuantity':1,'lineItem':{'id':'line','sku':'unmatched','title':'Test book','variant':{'id':'variant'}}}]}}]}}
   # Restrict queue selection to this test by settling old fixtures first.
   rpc("UPDATE distribution_webhooks SET status='DONE' WHERE tenant_id<>$1",[self.tenant])
   with patch.object(shopify,'graphql',return_value={'order':order}):self.assertTrue(shopify.process_inbox_once())
@@ -143,4 +143,113 @@ class DistributionSQLTests(unittest.TestCase):
   with s.transaction() as cur:
    s.enqueue(cur,self.tenant,self.connection,'TEST');s.enqueue(cur,self.tenant,self.connection,'TEST')
   self.assertEqual(rpc('SELECT COUNT(*) AS n FROM distribution_jobs WHERE tenant_id=$1',[self.tenant])['rows'][0]['n'],1)
+
+ def privacy_install(self):
+  install=str(uuid4());shop=self.body.source_account+'-unused'
+  shop='test-'+self.tenant+'.myshopify.com'
+  rpc('INSERT INTO distribution_shopify_installations(id,tenant_id,shop,secret_reference) VALUES($1,$2,$3,$4)',[install,self.tenant,shop,f'inksuite/distribution/{self.tenant}/{install}'])
+  self.body=self.body.model_copy(update={'source_account':shop})
+  rpc("UPDATE distribution_privacy_requests SET status='DONE' WHERE tenant_id<>$1",[self.tenant])
+  return {'id':install,'tenant_id':self.tenant,'shop':shop}
+ def privacy_request(self,install,topic,ids=None):
+  from app.distribution import privacy
+  payload={'orders_requested':ids or [],'orders_to_redact':ids or [],'customer':{'email':'must-not-store@example.test','phone':'5555555555','id':23}}
+  with s.transaction() as cur:privacy.receive(cur,install,topic,str(uuid4()),payload)
+  return rpc('SELECT * FROM distribution_privacy_requests WHERE tenant_id=$1 ORDER BY created_at DESC',[self.tenant])['rows'][0]
+ def test_shopify_never_persists_delivery_details(self):
+  from app.distribution import shopify
+  body=self.body.model_copy(update={'delivery_instructions':'Private gift note'})
+  row=self.create(body)
+  self.assertEqual(row['recipient'],{});self.assertEqual(row['delivery_instructions'],'')
+  self.assertNotIn('Test Rd',json.dumps(row))
+  with self.assertRaises(RuntimeError):rpc('UPDATE distribution_orders SET recipient=$1 WHERE id=$2',[{'name':'Forbidden'},row['id']])
+  for field in ('shippingAddress','email','phone','note','customer {'):
+   self.assertNotIn(field,shopify.ORDER_QUERY)
+ def test_customer_redaction_scoped_and_blocks_reimport(self):
+  from app.distribution import privacy
+  install=self.privacy_install();row=self.create()
+  unrelated=self.create(self.body.model_copy(update={'external_order_id':'200'}))
+  self.privacy_request(install,'customers/redact',['100'])
+  self.assertTrue(privacy.run_once())
+  self.assertEqual(rpc('SELECT id FROM distribution_orders WHERE id=$1',[row['id']])['rows'],[])
+  self.assertTrue(rpc('SELECT id FROM distribution_orders WHERE id=$1',[unrelated['id']])['rows'])
+  with self.assertRaises(HTTPException):self.create()
+  request=rpc('SELECT * FROM distribution_privacy_requests WHERE tenant_id=$1',[self.tenant])['rows'][0]
+  self.assertEqual(request['status'],'DONE');self.assertEqual(request['payload'],{});self.assertIsNone(request['shop'])
+ def test_data_request_download_and_delivery(self):
+  from app.distribution import privacy
+  install=self.privacy_install();self.create();request=self.privacy_request(install,'customers/data_request',['100'])
+  privacy.run_once()
+  with self.assertRaises(HTTPException):privacy.delivered(request['id'],self.ctx)
+  wrong={**self.ctx,'tenant':{'id':self.other}}
+  with self.assertRaises(HTTPException):privacy.export(request['id'],wrong)
+  result=privacy.export(request['id'],self.ctx)
+  data=json.loads(result.body);self.assertEqual(len(data['orders']),1)
+  self.assertNotIn('recipient',data['orders'][0]);self.assertEqual(result.headers['cache-control'],'no-store')
+  self.assertEqual(privacy.delivered(request['id'],self.ctx),{'completed':True})
+ def test_shop_redaction_removes_scoped_data_and_token(self):
+  from app.distribution import privacy
+  install=self.privacy_install();self.create()
+  rpc('UPDATE distribution_shopify_installations SET active=false WHERE id=$1',[install['id']])
+  self.privacy_request(install,'shop/redact')
+  with patch.object(privacy.secrets,'remove') as remove:
+   privacy.run_once();remove.assert_called_once()
+  self.assertEqual(rpc('SELECT * FROM distribution_orders WHERE tenant_id=$1',[self.tenant])['rows'],[])
+  self.assertEqual(rpc('SELECT * FROM distribution_shopify_installations WHERE tenant_id=$1',[self.tenant])['rows'],[])
+  self.assertTrue(rpc('SELECT * FROM distribution_connections WHERE tenant_id=$1',[self.tenant])['rows'])
+ def test_shop_redact_does_not_remove_reinstalled_store(self):
+  from app.distribution import privacy
+  install=self.privacy_install();self.create();self.privacy_request(install,'shop/redact')
+  with patch.object(privacy.secrets,'remove') as remove:
+   privacy.run_once();remove.assert_not_called()
+  self.assertTrue(rpc('SELECT * FROM distribution_orders WHERE tenant_id=$1',[self.tenant])['rows'])
+  self.assertEqual(rpc('SELECT error_code FROM distribution_privacy_requests WHERE tenant_id=$1',[self.tenant])['rows'][0]['error_code'],'STORE_STILL_ACTIVE')
+ def test_retention_expires_preview_only(self):
+  from app.distribution import privacy
+  self.privacy_install();old=self.create();fresh=self.create(self.body.model_copy(update={'external_order_id':'200'}))
+  live=self.create(self.body.model_copy(update={'external_order_id':'300'}))
+  rpc("UPDATE distribution_orders SET created_at=now()-interval '31 days' WHERE id IN ($1,$2)",[old['id'],live['id']])
+  rpc("UPDATE distribution_orders SET mode='live' WHERE id=$1",[live['id']])
+  privacy.retention_once()
+  rows=rpc('SELECT id FROM distribution_orders WHERE tenant_id=$1',[self.tenant])['rows']
+  self.assertEqual({r['id'] for r in rows},{fresh['id'],live['id']})
+ def test_missing_order_identifiers_requires_review(self):
+  from app.distribution import privacy
+  install=self.privacy_install();self.create();self.privacy_request(install,'customers/redact')
+  privacy.run_once()
+  row=rpc('SELECT status,payload FROM distribution_privacy_requests WHERE tenant_id=$1',[self.tenant])['rows'][0]
+  self.assertEqual(row['status'],'REVIEW_REQUIRED');self.assertEqual(row['payload'],{'order_ids':[]})
+ def test_token_deletion_failure_does_not_claim_completion(self):
+  from app.distribution import privacy
+  install=self.privacy_install();self.create()
+  rpc('UPDATE distribution_shopify_installations SET active=false WHERE id=$1',[install['id']])
+  self.privacy_request(install,'shop/redact')
+  with patch.object(privacy.secrets,'remove',side_effect=RuntimeError('denied')):privacy.run_once()
+  self.assertTrue(rpc('SELECT * FROM distribution_orders WHERE tenant_id=$1',[self.tenant])['rows'])
+  self.assertEqual(rpc('SELECT error_code FROM distribution_privacy_requests WHERE tenant_id=$1',[self.tenant])['rows'][0]['error_code'],'TOKEN_DELETION_FAILED')
+ def test_privacy_webhook_signed_minimal_duplicate(self):
+  import base64,hashlib,hmac,os
+  from app.distribution import shopify
+  install=self.privacy_install()
+  app=FastAPI();app.include_router(shopify.public_router);client=TestClient(app)
+  body=json.dumps({'shop_domain':install['shop'],'orders_to_redact':[100],'customer':{'email':'private@example.test','id':11,'phone':'555'}}).encode()
+  headers={'x-shopify-shop-domain':install['shop'],'x-shopify-topic':'customers/redact','x-shopify-webhook-id':'privacy-1','content-type':'application/json'}
+  with patch.dict(os.environ,{'DISTRIBUTION_SHOPIFY_APP_SECRET':'test-only'}),patch.object(shopify,'app_credentials',return_value={'client_secret':'test-secret'}):
+   self.assertEqual(client.post('/api/distribution/shopify/webhooks',content=body,headers=headers).status_code,401)
+   headers['x-shopify-hmac-sha256']=base64.b64encode(hmac.new(b'test-secret',body,hashlib.sha256).digest()).decode()
+   for _ in range(2):self.assertEqual(client.post('/api/distribution/shopify/webhooks',content=body,headers=headers).status_code,200)
+  rows=rpc('SELECT payload FROM distribution_privacy_requests WHERE tenant_id=$1',[self.tenant])['rows']
+  self.assertEqual(len(rows),1);self.assertEqual(rows[0]['payload'],{'order_ids':['100']})
+ def test_legacy_pii_hidden_in_ui_and_file_preview(self):
+  row=self.create()
+  # Simulate a pre-migration legacy row, then restore the NOT VALID write guard.
+  rpc('ALTER TABLE distribution_orders DROP CONSTRAINT distribution_shopify_no_contact_data')
+  rpc('UPDATE distribution_orders SET recipient=$1,delivery_instructions=$2 WHERE id=$3',[{'name':'Hidden','email':'private@example.test'},'Secret note',row['id']])
+  rpc("ALTER TABLE distribution_orders ADD CONSTRAINT distribution_shopify_no_contact_data CHECK(source <> 'SHOPIFY' OR (recipient = '{}'::jsonb AND delivery_instructions = '')) NOT VALID")
+  app=FastAPI();app.include_router(router,prefix='/api');app.dependency_overrides[access]=lambda:self.ctx;app.dependency_overrides[admin]=lambda:self.ctx
+  client=TestClient(app);base='/api/tenants/test/distribution'
+  self.assertNotIn('Hidden',client.get(base+'/orders').text)
+  detail=client.get(base+'/orders/'+row['id']);self.assertNotIn('private@example.test',detail.text)
+  self.assertEqual(client.get(base+'/orders/'+row['id']+'/preview').status_code,409)
+
 if __name__=='__main__':unittest.main()

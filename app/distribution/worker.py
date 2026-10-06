@@ -40,14 +40,23 @@ def run_once():
     return True
 
 if __name__=='__main__':
+    import os
     from dotenv import load_dotenv
     load_dotenv()
     logging.basicConfig(level=logging.INFO)
+    if os.getenv('DISTRIBUTION_WORKER_ENABLED') != 'true':
+        raise SystemExit('Worker disabled. Enable only in the intended service environment; never against the development production tunnel.')
+    from . import privacy
+    last_retention = 0
     while True:
         try:
-            if not run_once():
+            # Privacy work cannot starve behind catalog/order queues.
+            if time.monotonic() - last_retention > 3600:
+                processed = privacy.retention_once()
+                last_retention = time.monotonic() if processed < 100 else 0
+            if not privacy.run_once() and not run_once():
                 from .shopify import process_inbox_once, sync_catalog_once
                 if not process_inbox_once() and not sync_catalog_once(): time.sleep(5)
         except Exception:
-            log.error('Distribution worker unavailable; check database and migration status.')
+            log.error('Distribution worker unavailable; check database and migrations 020/021.')
             time.sleep(15)

@@ -49,6 +49,10 @@ class GenerateStatementBody(BaseModel):
     status: str = Field(default="draft", description="draft | final")
 
 
+class ApproveStatementBody(BaseModel):
+    expected_updated_at: Optional[datetime] = None
+
+
 class BulkSaveBody(BaseModel):
     statement_ids: List[str]
 
@@ -927,7 +931,8 @@ def _fetch_distribution_items(cur, tenant_id: str, period_id: Optional[str] = No
         JOIN royalty_periods rp
           ON rp.id = rs.period_id
         WHERE rs.tenant_id = %s::uuid
-          AND rs.status = 'draft'
+          AND rs.status = 'final'
+          AND rs.sent_at IS NULL
           {period_filter_sql}
     ),
     contributor_candidates AS (
@@ -1033,13 +1038,18 @@ def _fetch_distribution_items(cur, tenant_id: str, period_id: Optional[str] = No
 
 
 def _statement_pdf_bytes(statement_id: str, request: Request) -> tuple[bytes, Dict[str, Any]]:
-    _require_tenant_id(request)
+    tenant_id = _require_tenant_id(request)
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            _statement_recipients(cur, tenant_id, statement_id)
 
     try:
         bundle = run_fetch_statement(statement_id)
     except StatementValidationError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
+    if bundle.get("header", {}).get("status") != "final":
+        raise HTTPException(status_code=409, detail="Approve the statement before saving or sending an official PDF.")
     bundle.setdefault("header", {})
     bundle["header"]["statement_date"] = datetime.now().strftime("%b %d, %Y")
     html = _pdf_html(bundle)
@@ -1274,6 +1284,92 @@ def generate_statement_endpoint(body: GenerateStatementBody, request: Request) -
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+def _approve_statement(cur, tenant_id: str, statement_id: str, expected_updated_at: Optional[datetime] = None) -> Dict[str, Any]:
+    cur.execute("""
+        SELECT id::text AS statement_id, status, updated_at FROM royalty_statements
+        WHERE tenant_id = %s::uuid AND id = %s::uuid FOR UPDATE
+    """, (tenant_id, statement_id))
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Statement not found.")
+    if row["status"] not in ("draft", "final"):
+        raise HTTPException(status_code=409, detail="Only draft statements can be approved.")
+    if row["status"] == "draft":
+        if expected_updated_at is not None and row.get("updated_at") != expected_updated_at:
+            raise HTTPException(status_code=409, detail="This draft changed since you reviewed it. Reopen Review before approving.")
+        cur.execute("""
+            UPDATE royalty_statements SET status = 'final', updated_at = now()
+            WHERE tenant_id = %s::uuid AND id = %s::uuid AND status = 'draft'
+        """, (tenant_id, statement_id))
+    return {"statement_id": statement_id, "status": "final"}
+
+
+@router.post("/{statement_id}/approve")
+def approve_statement_endpoint(statement_id: str, request: Request, body: Optional[ApproveStatementBody] = None) -> Dict[str, Any]:
+    tenant_id = _require_tenant_id(request)
+    with db_conn() as conn:
+        with conn.transaction():
+            with conn.cursor(row_factory=dict_row) as cur:
+                return _approve_statement(cur, tenant_id, statement_id, body.expected_updated_at if body else None)
+
+
+def _fetch_statement_queue(cur, tenant_id: str, period_id: str) -> list[Dict[str, Any]]:
+    cur.execute("""
+        SELECT 1 FROM royalty_periods WHERE tenant_id = %s::uuid AND id = %s::uuid
+    """, (tenant_id, period_id))
+    if not cur.fetchone():
+        raise HTTPException(status_code=404, detail="Royalty period not found.")
+    cur.execute("""
+        WITH active_sets AS (
+            SELECT DISTINCT ON (work_id) id, work_id
+            FROM royalty_sets WHERE tenant_id = %s::uuid AND is_active = true
+            ORDER BY work_id, version DESC, created_at DESC, id DESC
+        ), candidates AS (
+            SELECT DISTINCT s.work_id, s.id AS royalty_set_id, rr.party::text AS party
+            FROM active_sets s JOIN royalty_rules rr ON rr.royalty_set_id = s.id
+            WHERE rr.tenant_id = %s::uuid
+              AND rr.party::text IN ('author', 'illustrator')
+              AND (rr.party::text = 'author' OR COALESCE(rr.flat_rate_percent, rr.percent, 0) > 0
+                   OR EXISTS (SELECT 1 FROM royalty_tiers rt
+                              WHERE rt.rule_id = rr.id AND rt.rate_percent > 0))
+            UNION
+            SELECT rs.work_id, rs.royalty_set_id, rs.party::text
+            FROM royalty_statements rs
+            WHERE rs.tenant_id = %s::uuid AND rs.period_id = %s::uuid
+        )
+        SELECT c.work_id::text, w.title, w.subtitle, c.royalty_set_id::text, c.party,
+               rs.id::text AS statement_id, rs.status, rs.sent_at
+        FROM candidates c JOIN works w ON w.id = c.work_id AND w.tenant_id = %s::uuid
+        LEFT JOIN royalty_statements rs
+          ON rs.tenant_id = %s::uuid AND rs.work_id = c.work_id
+         AND rs.party::text = c.party AND rs.period_id = %s::uuid
+        WHERE rs.id IS NULL OR rs.royalty_set_id IS NOT DISTINCT FROM c.royalty_set_id
+        ORDER BY w.title, c.work_id, c.party
+    """, (tenant_id, tenant_id, tenant_id, period_id, tenant_id, tenant_id, period_id))
+    items = []
+    for row in cur.fetchall():
+        item = dict(row)
+        exists = bool(item.get("statement_id"))
+        final = item.get("status") == "final"
+        complete = final and item.get("sent_at") is not None
+        item.update(statement_exists=exists, needs_generation_review=not final,
+                    awaiting_distribution=final and not complete, complete=complete,
+                    workflow_status=("Complete" if complete else "Approved — awaiting distribution"
+                                     if final else "Draft" if exists else "Not generated"))
+        items.append(item)
+    return items
+
+
+@router.get("/queue")
+def statement_queue_endpoint(request: Request, period_id: str) -> Dict[str, Any]:
+    tenant_id = _require_tenant_id(request)
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            items = _fetch_statement_queue(cur, tenant_id, period_id)
+    return {"period_id": period_id, "items": [item for item in items if not item["complete"]],
+            "complete_count": sum(item["complete"] for item in items)}
+
+
 @router.get("/distribution-queue")
 def distribution_queue_endpoint(request: Request, period_id: Optional[str] = None) -> Dict[str, Any]:
     tenant_id = _require_tenant_id(request)
@@ -1403,6 +1499,8 @@ def send_statement_endpoint(statement_id: str, body: SendStatementBody, request:
         try:
             with conn.cursor(row_factory=dict_row) as cur:
                 recipients = _statement_recipients(cur, tenant_id, statement_id)
+                if recipients.get("status") != "final" or recipients.get("sent_at"):
+                    raise HTTPException(status_code=409, detail="Only approved, unsent statements can be sent.")
                 pdf_bytes, bundle = _statement_pdf_bytes(statement_id, request)
 
                 current_pdf_key = recipients.get("pdf_s3_key")
@@ -1527,7 +1625,10 @@ def get_statement_pdf_endpoint(statement_id: str, request: Request) -> Response:
 
 @router.get("/{statement_id}")
 def get_statement_endpoint(statement_id: str, request: Request) -> Dict[str, Any]:
-    _require_tenant_id(request)
+    tenant_id = _require_tenant_id(request)
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            _statement_recipients(cur, tenant_id, statement_id)
     try:
         return run_fetch_statement(statement_id)
     except StatementValidationError as e:

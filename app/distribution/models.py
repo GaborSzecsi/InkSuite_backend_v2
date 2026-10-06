@@ -1,6 +1,6 @@
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
@@ -36,10 +36,16 @@ class OrderIn(StrictModel):
     source_account: str = Field(min_length=1,max_length=255)
     external_order_id: str = Field(min_length=1,max_length=255)
     reference: str = Field(min_length=1,max_length=100)
-    recipient: ShippingAddress
+    recipient: ShippingAddress | None = None
     shipping_method: str = Field(min_length=1,max_length=100)
     delivery_instructions: str = Field(default='',max_length=1000)
     items: list[OrderItem] = Field(min_length=1,max_length=100)
+
+    @model_validator(mode='after')
+    def marketplace_address_required(self):
+        if self.source == 'MARKETPLACE' and self.recipient is None:
+            raise ValueError('A shipping address is required for Marketplace orders.')
+        return self
 
 class ListingIn(StrictModel):
     enabled: bool
