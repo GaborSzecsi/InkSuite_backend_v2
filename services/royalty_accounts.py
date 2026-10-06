@@ -31,19 +31,19 @@ class PaymentRecord(BaseModel):
 
 
 def tracking_ready(cur):
-    cur.execute("SELECT to_regclass('public.royalty_account_settings') IS NOT NULL AND to_regclass('public.royalty_account_events') IS NOT NULL AS ready")
+    cur.execute("SELECT to_regclass('public.royalty_account_settings') IS NOT NULL AND to_regclass('public.royalty_account_events') IS NOT NULL AND to_regclass('public.royalty_payments') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='royalty_statements' AND column_name='currency') AS ready")
     return bool(cur.fetchone()["ready"])
 
 
 def account_state(cur, tenant_id, work_id, party):
     cur.execute("SELECT * FROM royalty_account_settings WHERE tenant_id=%s::uuid AND work_id=%s::uuid AND party=%s", (tenant_id,work_id,party))
     row = cur.fetchone()
-    return dict(row) if row else {"minimum_payout": Decimal('100'), "reserve_percent": Decimal('0'), "reserve_held": Decimal('0'), "currency": 'USD', "version": 0}
+    return dict(row) if row else {"minimum_payout": Decimal('50'), "reserve_percent": Decimal('0'), "reserve_held": Decimal('0'), "currency": 'USD', "version": 0}
 
 
 def require_tracking(cur):
     if not tracking_ready(cur):
-        raise HTTPException(503, "Account tracking setup is pending. Apply migration 019_royalty_account_tracking.sql first.")
+        raise HTTPException(503, "Account tracking setup is pending. Apply migrations 019_royalty_account_tracking.sql and 024_royalty_payment_tracking.sql first.")
 
 
 def lock_account(cur, tenant_id, work_id, party):
@@ -117,8 +117,8 @@ def record_payment(cur, tenant_id, actor, body):
         if not cur.fetchone():
             raise HTTPException(422, 'The payee does not belong to this tenant.')
     cur.execute("SELECT COALESCE(SUM(amount),0) AS paid FROM royalty_payments WHERE tenant_id=%s::uuid AND statement_id=%s::uuid AND currency=%s", (tenant_id,str(body.statement_id),statement['currency']))
-    paid = cur.fetchone()['paid']
-    remaining = max(Decimal('0'), statement['payable_this_period']-paid)
+    paid = Decimal(str(cur.fetchone()['paid']))
+    remaining = max(Decimal('0'), Decimal(str(statement['payable_this_period']))-paid)
     if body.amount > remaining:
         raise HTTPException(422, 'Payment exceeds the unpaid statement balance.')
     cur.execute("SELECT id FROM royalty_payments WHERE tenant_id=%s::uuid AND statement_id=%s::uuid AND reference_number=%s", (tenant_id,str(body.statement_id),body.reference_number.strip()))

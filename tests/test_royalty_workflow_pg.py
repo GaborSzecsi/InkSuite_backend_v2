@@ -50,6 +50,9 @@ class RoyaltyPostgresTests(unittest.TestCase):
         ''', execute=True)
         cls.rpc((ROOT.parent/'migrations/003_royalty_statements.sql').read_text(encoding='utf-8-sig'),execute=True)
         cls.rpc((ROOT.parent/'migrations/004_royalty_statement_engine.sql').read_text(encoding='utf-8-sig'),execute=True)
+        cls.rpc((ROOT.parent/'migrations/019_royalty_account_tracking.sql').read_text(encoding='utf-8-sig'),execute=True)
+        cls.rpc((ROOT.parent/'migrations/023_royalty_settlement.sql').read_text(encoding='utf-8-sig'),execute=True)
+        cls.rpc((ROOT.parent/'migrations/024_royalty_payment_tracking.sql').read_text(encoding='utf-8-sig'),execute=True)
         cls.rpc('ALTER TABLE royalty_statements DROP CONSTRAINT royalty_statements_party_check; ALTER TABLE royalty_statements ALTER COLUMN party TYPE roy_party USING party::roy_party',execute=True)
         cls.rpc('ALTER TABLE royalty_statements ALTER COLUMN period_start DROP NOT NULL, ALTER COLUMN period_end DROP NOT NULL',execute=True)
         cls.rpc('''ALTER TABLE royalty_statements ADD COLUMN sent_at timestamptz, ADD COLUMN pdf_saved_at timestamptz,
@@ -64,6 +67,7 @@ class RoyaltyPostgresTests(unittest.TestCase):
 
     @classmethod
     def rpc(cls, sql, params=(), execute=False):
+        params=[getattr(value,'obj',value) for value in params]
         cls.proc.stdin.write(json.dumps({'sql':sql,'params':params,'exec':execute},default=str)+'\n')
         cls.proc.stdin.flush()
         result=json.loads(cls.proc.stdout.readline())
@@ -88,6 +92,10 @@ class RoyaltyPostgresTests(unittest.TestCase):
                 VALUES (%s::uuid,%s::uuid,%s::uuid,'author','subrights',%s::uuid,'net_receipts','flat',50)""",
                 (str(uuid4()),self.tenant,work_set,self.stype))
         app=FastAPI()
+        @app.middleware('http')
+        async def signed_in(request, call_next):
+            request.state.user_claims={'sub':'test-accountant'}
+            return await call_next(request)
         app.include_router(royalty.router,prefix='/api')
         app.include_router(royalty_engine.router,prefix='/api')
         self.client=TestClient(app)
@@ -440,6 +448,207 @@ class RoyaltyPostgresTests(unittest.TestCase):
                 cur.execute("UPDATE royalty_rules SET base=%s WHERE royalty_set_id=%s::uuid AND rights_type='subrights'",(bad_basis,self.set_id))
             self.rpc('ROLLBACK TO SAVEPOINT invalid_basis',execute=True)
             self.rpc('RELEASE SAVEPOINT invalid_basis',execute=True)
+
+    def settlement_period(self, code, start, end, receipts):
+        period=str(uuid4())
+        cur=self.cursor()
+        cur.execute('INSERT INTO royalty_periods(id,tenant_id,period_code,period_start,period_end) VALUES (%s::uuid,%s::uuid,%s,%s,%s)',
+            (period,self.tenant,code,start,end))
+        self.assertEqual(self.post_income(period_id=period,income_date=end,publisher_receipts=receipts).status_code,200)
+        return period
+
+    def settlement_draft(self, period):
+        return engine.generate_statement(self.cursor(),tenant_id=self.tenant,work_id=self.work,royalty_set_id=self.set_id,
+            party='author',period_id=period,rebuild=True)
+
+    def approve(self, statement):
+        result=self.client.post(f'/api/royalty/statements-engine/{statement}/approve',headers={'X-Tenant':'marble-press'})
+        self.assertEqual(result.status_code,200,result.text)
+        return result
+
+    def test_threshold_accrual_flows_across_final_statements_and_stays_separate_from_unpaid(self):
+        self.post_income(publisher_receipts='60')
+        first=self.generate()
+        snapshot=first['header']['settlement']
+        self.assertEqual((first['header']['payable_this_period'],snapshot['accrued_carried_forward']),('0.00','30.00'))
+        # Rebuilding does not mutate the saved reserve/account or double the accrual.
+        self.assertEqual(self.generate()['header']['settlement'],snapshot)
+        self.approve(first['statement_id'])
+        second_period=self.settlement_period('2026-H2','2026-07-01','2026-12-31','40')
+        second=self.settlement_draft(second_period)
+        self.assertEqual((second['header']['payable_this_period'],second['header']['settlement']['accrued_brought_forward']),('50.00','30.00'))
+        self.approve(second['statement_id'])
+        third_period=self.settlement_period('2027-H1','2027-01-01','2027-06-30','20')
+        third=self.settlement_draft(third_period)
+        self.assertEqual((third['header']['payable_this_period'],third['header']['settlement']['accrued_brought_forward'],third['header']['settlement']['accrued_carried_forward']),('0.00','0.00','10.00'))
+        # The unpaid $50 belongs to the second statement and is not payable a second time.
+        cur=self.cursor()
+        cur.execute('SELECT payable_this_period FROM royalty_statements WHERE id=%s::uuid',(second['statement_id'],))
+        self.assertEqual(Decimal(str(cur.fetchone()['payable_this_period'])),Decimal('50'))
+
+    def test_reserve_average_changes_automatically_and_approval_is_idempotent(self):
+        cur=self.cursor()
+        cur.execute("""INSERT INTO royalty_account_settings(tenant_id,work_id,party,minimum_payout,reserve_percent,reserve_held,version)
+            VALUES (%s::uuid,%s::uuid,'author',50,10,0,1)""",(self.tenant,self.work))
+        for i,earned in enumerate((100,200,300)):
+            period=self.settlement_period(f'202{i}-H1',f'202{i}-01-01',f'202{i}-06-30',str(earned*2))
+            self.approve(self.settlement_draft(period)['statement_id'])
+        self.post_income(publisher_receipts='200')
+        draft=self.generate()
+        policy=draft['header']['settlement']
+        self.assertEqual((policy['history_count'],policy['reserve_average'],policy['reserve_target'],policy['opening_reserve'],policy['actual_payable']),
+            (3,'200.00','20.00','15.00','95.00'))
+        cur.execute('SELECT reserve_held FROM royalty_account_settings WHERE work_id=%s::uuid',(self.work,))
+        self.assertEqual(Decimal(str(cur.fetchone()['reserve_held'])),Decimal('15'))
+        self.approve(draft['statement_id']); self.approve(draft['statement_id'])
+        cur.execute('SELECT reserve_held,version FROM royalty_account_settings WHERE work_id=%s::uuid',(self.work,))
+        row=cur.fetchone()
+        self.assertEqual((Decimal(str(row['reserve_held'])),row['version']),(Decimal('20'),5))
+        cur.execute("SELECT count(*) AS n FROM royalty_account_events WHERE work_id=%s::uuid AND reason='Automatic reserve settlement on statement approval'",(self.work,))
+        self.assertEqual(cur.fetchone()['n'],4)
+        next_period=self.settlement_period('2026-H2','2026-07-01','2026-12-31','0')
+        next_draft=self.settlement_draft(next_period)
+        next_policy=next_draft['header']['settlement']
+        self.assertEqual((next_policy['reserve_average'],next_policy['reserve_held'],next_policy['reserve_change'],next_policy['accrued_carried_forward']),
+            ('200.00','20.00','0.00','0.00'))
+        self.approve(next_draft['statement_id'])
+        release_period=self.settlement_period('2027-H1','2027-01-01','2027-06-30','0')
+        released=self.settlement_draft(release_period)['header']['settlement']
+        self.assertEqual((released['reserve_average'],released['reserve_target'],released['reserve_change'],released['accrued_carried_forward']),
+            ('133.33','13.33','-6.67','6.67'))
+
+    def test_settings_change_blocks_stale_settlement_approval(self):
+        self.post_income()
+        draft=self.generate()
+        cur=self.cursor()
+        cur.execute("INSERT INTO royalty_account_settings(tenant_id,work_id,party,minimum_payout,version) VALUES (%s::uuid,%s::uuid,'author',100,1)",(self.tenant,self.work))
+        result=self.client.post(f"/api/royalty/statements-engine/{draft['statement_id']}/approve",headers={'X-Tenant':'marble-press'})
+        self.assertEqual(result.status_code,409,result.text)
+        rebuilt=self.generate()
+        self.assertEqual(rebuilt['header']['payable_this_period'],'0.00')
+        self.assertEqual(rebuilt['header']['settlement']['minimum_payout'],'100.00')
+        self.approve(rebuilt['statement_id'])
+
+    def test_settlement_schema_is_additive_and_finals_stay_frozen(self):
+        self.post_income()
+        statement=self.generate()['statement_id']
+        self.approve(statement)
+        cur=self.cursor()
+        cur.execute('SELECT * FROM royalty_statements WHERE id=%s::uuid',(statement,))
+        frozen=cur.fetchone()
+        cur.execute("UPDATE royalty_account_settings SET minimum_payout=100,reserve_percent=20,reserve_held=20,version=version+1 WHERE work_id=%s::uuid",(self.work,))
+        migration=(ROOT.parent/'migrations/023_royalty_settlement.sql').read_text().replace('BEGIN;','',1).replace('COMMIT;','',1)
+        for _ in range(2): self.rpc(migration,execute=True)
+        self.approve(statement)
+        cur.execute('SELECT * FROM royalty_statements WHERE id=%s::uuid',(statement,))
+        self.assertEqual(cur.fetchone(),frozen)
+        cur.execute('SELECT minimum_payout,reserve_held FROM royalty_account_settings WHERE work_id=%s::uuid',(self.work,))
+        settings=cur.fetchone()
+        self.assertEqual((Decimal(str(settings['minimum_payout'])),Decimal(str(settings['reserve_held']))),(Decimal('100'),Decimal('20')))
+        with self.assertRaisesRegex(engine.StatementValidationError,'Final statement already exists'):
+            self.generate()
+
+    def test_later_approval_cannot_silently_rewrite_accrual_history(self):
+        self.post_income(publisher_receipts='60')
+        first=self.generate()
+        later=self.settlement_period('2026-H2','2026-07-01','2026-12-31','40')
+        later_draft=self.settlement_draft(later)
+        self.approve(first['statement_id'])
+        result=self.client.post(f"/api/royalty/statements-engine/{later_draft['statement_id']}/approve",headers={'X-Tenant':'marble-press'})
+        self.assertEqual(result.status_code,409,result.text)
+        rebuilt=self.settlement_draft(later)
+        self.assertEqual(rebuilt['header']['payable_this_period'],'50.00')
+        self.approve(rebuilt['statement_id'])
+        with self.assertRaisesRegex(engine.StatementValidationError,'Generate a draft'):
+            engine.generate_statement(self.cursor(),tenant_id=self.tenant,work_id=self.work2,royalty_set_id=self.set2,
+                party='author',period_id=self.period,status='final')
+
+    def manual_payment(self, statement, amount, reference):
+        return self.client.post('/api/royalty/statements-engine/preparation/payments',headers={'X-Tenant':'marble-press'},json={
+            'request_id':str(uuid4()),'statement_id':statement,'amount':amount,'payment_date':'2026-01-15',
+            'reference_number':reference,'payment_method':'check','payee_role':'contributor'})
+
+    def test_actual_payments_since_2025_h2_reduce_new_statement_prior_unpaid_without_double_counting(self):
+        prior_period=self.settlement_period('2025-H2','2025-07-01','2025-12-31','200')
+        prior=self.settlement_draft(prior_period)
+        self.approve(prior['statement_id'])
+        self.post_income(publisher_receipts='120')
+        current=self.generate()
+        policy=current['header']['settlement']
+        self.assertEqual((policy['prior_unpaid_payable'],policy['actual_payable'],policy['total_payment_due']),('100.00','60.00','160.00'))
+        result=self.manual_payment(prior['statement_id'],'40','partial-prior')
+        self.assertEqual(result.status_code,200,result.text)
+        stale=self.client.post(f"/api/royalty/statements-engine/{current['statement_id']}/approve",headers={'X-Tenant':'marble-press'})
+        self.assertEqual(stale.status_code,409,stale.text)
+        current=self.generate()
+        policy=current['header']['settlement']
+        balance=policy['prior_payment_balances'][0]
+        self.assertEqual((balance['period_code'],balance['paid_amount'],balance['outstanding_amount'],balance['payment_status']),
+            ('2025-H2','40.00','60.00','Partially paid'))
+        self.assertEqual(policy['total_payment_due'],'120.00')
+        self.approve(current['statement_id'])
+        result=self.manual_payment(current['statement_id'],'60','paid-current')
+        self.assertEqual(result.status_code,200,result.text)
+        next_period=self.settlement_period('2026-H2','2026-07-01','2026-12-31','80')
+        next_draft=self.settlement_draft(next_period)
+        policy=next_draft['header']['settlement']
+        self.assertEqual((policy['actual_payable'],policy['accrued_carried_forward'],policy['prior_unpaid_payable'],policy['total_payment_due']),
+            ('0.00','40.00','60.00','60.00'))
+        self.assertEqual(policy['prior_payment_balances'][1]['payment_status'],'Paid')
+        self.approve(next_draft['statement_id'])
+        self.assertEqual(self.manual_payment(prior['statement_id'],'60','paid-prior').status_code,200)
+        future=self.settlement_period('2027-H1','2027-01-01','2027-06-30','20')
+        policy=self.settlement_draft(future)['header']['settlement']
+        self.assertEqual((policy['prior_unpaid_payable'],policy['actual_payable'],policy['total_payment_due']),('0.00','50.00','50.00'))
+        cur=self.cursor()
+        cur.execute('SELECT payable_this_period FROM royalty_statements WHERE id=%s::uuid',(prior['statement_id'],))
+        self.assertEqual(Decimal(str(cur.fetchone()['payable_this_period'])),Decimal('100'))
+
+    def test_payment_balance_start_date_tenant_party_and_current_period_selection(self):
+        from services.royalty_settlement import payment_balances
+        old=self.settlement_period('2025-H1','2025-01-01','2025-06-30','200')
+        self.approve(self.settlement_draft(old)['statement_id'])
+        start=self.settlement_period('2025-H2','2025-07-01','2025-12-31','200')
+        first=self.settlement_draft(start); self.approve(first['statement_id'])
+        self.post_income(publisher_receipts='143.74')
+        second=self.generate(); self.approve(second['statement_id'])
+        balances=payment_balances(self.cursor(),self.tenant,self.work,'author','2026-06-30',include_current=True)
+        self.assertEqual([row['period_code'] for row in balances],['2025-H2','2026-H1'])
+        self.assertEqual(payment_balances(self.cursor(),self.other,self.work,'author','2026-06-30',True),[])
+        self.assertEqual(payment_balances(self.cursor(),self.tenant,self.work,'illustrator','2026-06-30',True),[])
+        self.assertEqual(payment_balances(self.cursor(),self.tenant,self.work2,'author','2026-06-30',True),[])
+        result=self.client.get(f'/api/royalty/statements-engine/preparation?work_id={self.work}&royalty_set_id={self.set_id}&period_id={self.period}',headers={'X-Tenant':'marble-press'})
+        # Preparation only exposes parties with first-rights rules.
+        cur=self.cursor()
+        cur.execute("""INSERT INTO royalty_rules(id,tenant_id,royalty_set_id,party,rights_type,format_label,base,mode,percent)
+            VALUES (%s::uuid,%s::uuid,%s::uuid,'author','first_rights','Hardcover','net_receipts','fixed',10)""",(str(uuid4()),self.tenant,self.set_id))
+        result=self.client.get(f'/api/royalty/statements-engine/preparation?work_id={self.work}&royalty_set_id={self.set_id}&period_id={self.period}',headers={'X-Tenant':'marble-press'})
+        self.assertEqual(result.status_code,200,result.text)
+        account=result.json()['accounts'][0]
+        self.assertEqual([row['statement_id'] for row in account['statement_payment_balances']],[first['statement_id'],second['statement_id']])
+        self.assertEqual(account['total_unpaid_payable'],'171.87')
+
+    def test_manual_fractional_payment_retry_and_migration_preserve_payment_records(self):
+        self.post_income()
+        statement=self.generate()['statement_id']; self.approve(statement)
+        body={'request_id':str(uuid4()),'statement_id':statement,'amount':'25.88','payment_date':'2026-01-15',
+            'reference_number':'actual-check-123','payment_method':'check','payee_role':'contributor'}
+        for _ in range(2):
+            result=self.client.post('/api/royalty/statements-engine/preparation/payments',headers={'X-Tenant':'marble-press'},json=body)
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertEqual(result.json()['unpaid_balance'],'45.99')
+        cur=self.cursor()
+        cur.execute('SELECT * FROM royalty_payments ORDER BY id')
+        records=cur.fetchall(); self.assertEqual(len(records),1)
+        migration=(ROOT.parent/'migrations/024_royalty_payment_tracking.sql').read_text().replace('BEGIN;','',1).replace('COMMIT;','',1)
+        for _ in range(2): self.rpc(migration,execute=True)
+        cur.execute('SELECT * FROM royalty_payments ORDER BY id')
+        self.assertEqual(cur.fetchall(),records)
+        from services.royalty_settlement import payment_balances
+        balance=payment_balances(cur,self.tenant,self.work,'author','2026-06-30',True)[0]
+        self.assertEqual((balance['paid_amount'],balance['outstanding_amount']),('25.88','45.99'))
+        rejected=self.manual_payment(statement,'46','too-much')
+        self.assertEqual(rejected.status_code,422,rejected.text)
 
 
 if __name__ == '__main__':unittest.main()

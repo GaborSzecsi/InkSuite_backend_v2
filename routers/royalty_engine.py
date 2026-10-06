@@ -1,4 +1,5 @@
 from __future__ import annotations
+from decimal import Decimal
 
 import base64
 import logging
@@ -604,6 +605,24 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
       <div class="meta-row"><span class="meta-key">ISBNs</span><span class="meta-value">{'<br/>'.join(_esc(isbn) for isbn in isbns) if isbns else '—'}</span></div>
     """
 
+    policy = header.get('settlement') or {}
+    settlement_rows = ''
+    if policy:
+        for label, key in [
+            ('Royalty after recoupment','gross_available'), ('Minimum payment','minimum_payout'), ('Accrued brought forward','accrued_brought_forward'),
+            ('Opening reserve held','opening_reserve'), ('Prior statement average','reserve_average'),
+            ('Target reserve','reserve_target'), ('Reserve change (increase withheld; decrease released)','reserve_change'),
+            ('Closing reserve held','reserve_held'), ('Available after reserve','available_after_reserve'),
+            ('Accrued carried forward','accrued_carried_forward')]:
+            settlement_rows += f'<tr><td class="summary-label">{label}</td><td class="summary-value">{_money(policy.get(key))}</td></tr>'
+        if policy.get('history_count') == 0:
+            settlement_rows += '<tr><td colspan="2">No prior finalized statements. Opening reserve retained until an average is available.</td></tr>'
+        for balance in policy.get('prior_payment_balances', []):
+            settlement_rows += f'<tr><td class="summary-label">{_esc(balance["period_code"])}: payable / paid / unpaid</td><td class="summary-value">{_money(balance["statement_payable"])} / {_money(balance["paid_amount"])} / {_money(balance["outstanding_amount"])}</td></tr>'
+        if 'prior_unpaid_payable' in policy:
+            settlement_rows += f'<tr><td class="summary-label">Prior statements still unpaid</td><td class="summary-value">{_money(policy["prior_unpaid_payable"])}</td></tr>'
+        settlement_rows += f'<tr><td class="summary-label">Reserve percentage</td><td class="summary-value">{_esc(str(policy.get("reserve_percent", "0")))}%</td></tr>'
+
     return f"""
     <!DOCTYPE html>
     <html>
@@ -889,10 +908,12 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
             <td class="summary-label">Remaining unrecouped balance</td>
             <td class="summary-value">{_money(header.get("closing_recoupment_balance"))}</td>
         </tr>
+        {settlement_rows}
         <tr>
-            <td class="summary-label">Amount payable</td>
+            <td class="summary-label">Current statement payable</td>
             <td class="summary-value">{_money(header.get("payable_this_period"))}</td>
         </tr>
+        {f'<tr><td class="summary-label">Total payment due (current plus prior unpaid)</td><td class="summary-value">{_money(policy["total_payment_due"])}</td></tr>' if 'total_payment_due' in policy else ''}
         </table>
     </div>
     </body>
@@ -1192,6 +1213,8 @@ def royalty_preparation(request: Request, work_id: str, royalty_set_id: str, per
                 raise HTTPException(422, str(exc)) from exc
             accounts = []
             ready = tracking_ready(cur)
+            if not ready:
+                raise HTTPException(503, "Payment tracking setup is pending. Apply migrations 019 and 024 before reviewing account balances.")
             for party in ("author", "illustrator"):
                 rules = load_first_rights_rules(cur, tenant_id, royalty_set_id, party)
                 if not rules:
@@ -1199,7 +1222,7 @@ def royalty_preparation(request: Request, work_id: str, royalty_set_id: str, per
                 tiers, conditions = load_tiers_for_rules(cur, tenant_id, [r.id for r in rules])
                 cur.execute("""
                     SELECT s.id AS statement_id, p.id, p.period_code, p.period_start, p.period_end,
-                           s.earned_this_period, s.payable_this_period, s.closing_recoupment_balance, s.currency,
+                           s.earned_this_period, s.payable_this_period, s.closing_recoupment_balance, s.currency, s.settlement,
                            COALESCE((SELECT SUM(payment.amount) FROM royalty_payments payment
                                      WHERE payment.tenant_id=s.tenant_id AND payment.statement_id=s.id
                                        AND payment.currency=s.currency), 0) AS paid_amount
@@ -1213,7 +1236,7 @@ def royalty_preparation(request: Request, work_id: str, royalty_set_id: str, per
                 """, (tenant_id, period.period_start, work_id, party))
                 history = [dict(r) for r in cur.fetchall()]
                 latest = history[0] if history else None
-                unpaid_balance = max(0, latest["payable_this_period"] - latest["paid_amount"]) if latest else None
+                unpaid_balance = max(Decimal("0"), Decimal(str(latest["payable_this_period"])) - Decimal(str(latest["paid_amount"]))) if latest else None
                 cur.execute("""
                     SELECT l.category_label, SUM(l.net_units) AS net_units
                     FROM royalty_statement_lines l JOIN royalty_statements s ON s.id=l.statement_id
@@ -1238,11 +1261,16 @@ def royalty_preparation(request: Request, work_id: str, royalty_set_id: str, per
                     WHERE pay.tenant_id=%s::uuid AND s.work_id=%s::uuid AND s.party=%s
                     ORDER BY pay.payment_date DESC,pay.created_at DESC LIMIT 30""",(tenant_id,work_id,party))
                 payments = [dict(row) for row in cur.fetchall()]
+                from services.royalty_settlement import payment_balances
+                balances = payment_balances(cur, tenant_id, work_id, party, period.period_end, include_current=True)
                 accounts.append({"party": party, "history": history,
+                    "statement_payment_balances": balances,
+                    "total_unpaid_payable": str(sum((Decimal(row["outstanding_amount"]) for row in balances), Decimal("0"))),
                     "prior_units": prior_units,
                     "settings": settings, "changes": changes, "payments": payments,
-                    "unrecouped_balance": max(0, -latest["closing_recoupment_balance"]) if latest else None,
+                    "unrecouped_balance": max(Decimal("0"), -Decimal(str(latest["closing_recoupment_balance"]))) if latest else None,
                     "unpaid_balance": unpaid_balance,
+                    "accrued_balance": (latest.get("settlement") or {}).get("accrued_carried_forward", "0") if latest else "0",
                     "unpaid_source_period": latest["period_code"] if latest else None,
                     "unpaid_source_statement_id": str(latest["statement_id"]) if latest else None,
                     "paid_amount": latest["paid_amount"] if latest else None,
@@ -1297,6 +1325,8 @@ def _approve_statement(cur, tenant_id: str, statement_id: str, expected_updated_
     if row["status"] == "draft":
         if expected_updated_at is not None and row.get("updated_at") != expected_updated_at:
             raise HTTPException(status_code=409, detail="This draft changed since you reviewed it. Reopen Review before approving.")
+        from services.royalty_settlement import approve_settlement
+        approve_settlement(cur, tenant_id, statement_id)
         cur.execute("""
             UPDATE royalty_statements SET status = 'final', updated_at = now()
             WHERE tenant_id = %s::uuid AND id = %s::uuid AND status = 'draft'

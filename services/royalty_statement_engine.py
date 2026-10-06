@@ -933,6 +933,8 @@ def generate_statement(
     if party not in ("author", "illustrator"):
         raise StatementValidationError("party must be 'author' or 'illustrator'")
 
+    if status != "draft":
+        raise StatementValidationError("Generate a draft and approve the reviewed settlement to finalize it.")
     assert_work(cur, tenant_id, work_id)
     resolved_period_id = resolve_period_id_for_generate(
         cur, tenant_id, period_id, period_start, period_end
@@ -1157,6 +1159,11 @@ def generate_statement(
         opening, _money(earned_total), adjustments_this_period
     )
 
+    from services.royalty_settlement import build_settlement
+    from psycopg.types.json import Jsonb
+    settlement = build_settlement(cur, tenant_id, work_id, party, period.period_start, payable)
+    payable = _d(settlement['actual_payable'])
+
     if existing:
         cur.execute(
             """
@@ -1299,6 +1306,9 @@ def generate_statement(
 
     earned_this_period = _d(earned_total)
 
+    cur.execute("UPDATE royalty_statements SET settlement=%s WHERE tenant_id=%s::uuid AND id=%s::uuid",
+                (Jsonb(settlement), tenant_id, stmt_id))
+
     prior_earned_to_date = _load_prior_earned_to_date(
         cur,
         tenant_id,
@@ -1325,6 +1335,7 @@ def generate_statement(
             "closing_recoupment_balance": str(closing),
             "recouped_this_period": str(recouped),
             "payable_this_period": str(payable),
+            "settlement": settlement,
             "running_balance": str(available_after),
             "status": status,
         },

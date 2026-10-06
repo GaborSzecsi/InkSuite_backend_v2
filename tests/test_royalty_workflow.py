@@ -12,6 +12,8 @@ from services import royalty_statement_engine as engine
 class RoyaltyWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.cur = MagicMock()
+        approval_patch=patch('services.royalty_settlement.approve_settlement')
+        approval_patch.start(); self.addCleanup(approval_patch.stop)
         self.item = royalty.SubrightsIncomeItem(period_id='period', work_id='work',
             royalty_set_id='set', subrights_type_id='type', income_date='2026-06-30',
             publisher_receipts=Decimal('143.74'))
@@ -164,6 +166,7 @@ class RoyaltyWorkflowTests(unittest.TestCase):
 
     def generation_context(self, existing):
         stack = ExitStack()
+        stack.enter_context(patch('services.royalty_settlement.build_settlement',return_value={'actual_payable':'71.87'}))
         mocks = {'assert_work':None, 'assert_royalty_set_for_work':None,
             'resolve_active_royalty_set_id':'set', 'resolve_period_id_for_generate':'period',
             'load_period':engine.PeriodRow('period','2026-H1',date(2026,1,1),date(2026,6,30)),
