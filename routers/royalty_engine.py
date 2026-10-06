@@ -906,9 +906,9 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
 
     <table class="settlement-tiles"><tr>
       <td class="settlement-tile">
-        <h3>Settlement Summary</h3>
-        <table class="summary-table">{summary_rows}</table>
-        <p>Payable after reserve and minimum-payment adjustments.</p>
+        <h3>Minimum Payment</h3>
+        <table class="summary-table">{minimum_rows}</table>
+        {('<p>Below the minimum payment. This amount accrues until the minimum is reached.</p>' if float(policy.get('accrued_carried_forward') or 0) > 0 else '<p>No amount held below the minimum payment.</p>') if policy else '<p>No minimum-payment calculation recorded.</p>'}
       </td>
       <td class="settlement-tile">
         <h3>Reserve</h3>
@@ -916,9 +916,9 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
         {('<p>No prior finalized statements. Opening reserve retained until an average is available.</p>' if policy.get('history_count') == 0 else '') if policy else '<p>No reserve calculation recorded.</p>'}
       </td>
       <td class="settlement-tile">
-        <h3>Minimum Payment</h3>
-        <table class="summary-table">{minimum_rows}</table>
-        {('<p>Below the minimum payment. This amount accrues until the minimum is reached.</p>' if float(policy.get('accrued_carried_forward') or 0) > 0 else '<p>No amount held below the minimum payment.</p>') if policy else '<p>No minimum-payment calculation recorded.</p>'}
+        <h3>Settlement Summary</h3>
+        <table class="summary-table">{summary_rows}</table>
+        <p>Payable after reserve and minimum-payment adjustments.</p>
       </td>
     </tr></table>
     {f'<div class="prior-payment-details"><h3>Prior statement payment details</h3><table>{prior_rows}</table></div>' if prior_rows else ''}
