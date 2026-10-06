@@ -278,8 +278,9 @@ def _insert_royalty_rule(
             st_row = cur.fetchone()
             insert_format_label = _safe_str(st_row.get("name")) if st_row else ""
 
-        if base not in ("net_receipts", "list_price"):
-            base = "net_receipts"
+        # Subrights are always a percentage of publisher net receipts.
+        # Ignore stale client bases rather than saving an invalid agreement.
+        base = "net_receipts"
 
         sub_name = (_safe_str(rule_obj.get("name") or rule_obj.get("subrights_name")) or "").lower()
 
@@ -338,7 +339,9 @@ def _insert_royalty_rule(
             rate = 0.0
 
         tier_base = (_safe_str(tier.get("base")) or base).lower().replace(" ", "_")
-        if tier_base not in ("list_price", "net_receipts"):
+        if rights_type == "subrights":
+            tier_base = "net_receipts"
+        elif tier_base not in ("list_price", "net_receipts"):
             tier_base = base
 
         tier_note = _safe_str(tier.get("note"))
