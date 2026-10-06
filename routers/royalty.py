@@ -416,7 +416,8 @@ def _resolve_active_royalty_set_id(cur, tenant_id: str, work_id: str) -> str:
         FROM royalty_sets
         WHERE tenant_id = %s::uuid
           AND work_id = %s::uuid
-        ORDER BY is_active DESC, version DESC, created_at DESC, id DESC
+          AND is_active = true
+        ORDER BY version DESC, created_at DESC, id DESC
         LIMIT 1
         """,
         (tenant_id, work_id),
@@ -425,7 +426,7 @@ def _resolve_active_royalty_set_id(cur, tenant_id: str, work_id: str) -> str:
     if not row:
         raise HTTPException(
             status_code=404,
-            detail=f"No royalty set found for work_id={work_id}",
+            detail=f"No active royalty set found for work_id={work_id}",
         )
     return str(row["id"])
 
@@ -853,7 +854,8 @@ def get_books(request: Request):
                         FROM royalty_sets rs
                         WHERE rs.tenant_id = %s::uuid
                           AND rs.work_id::text = ANY(%s)
-                        ORDER BY rs.work_id, rs.is_active DESC, rs.version DESC, rs.created_at DESC, rs.id DESC
+                          AND rs.is_active = true
+                        ORDER BY rs.work_id, rs.version DESC, rs.created_at DESC, rs.id DESC
                         """,
                         (tenant_id, work_ids),
                     )

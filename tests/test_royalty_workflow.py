@@ -165,7 +165,7 @@ class RoyaltyWorkflowTests(unittest.TestCase):
     def generation_context(self, existing):
         stack = ExitStack()
         mocks = {'assert_work':None, 'assert_royalty_set_for_work':None,
-            'resolve_period_id_for_generate':'period',
+            'resolve_active_royalty_set_id':'set', 'resolve_period_id_for_generate':'period',
             'load_period':engine.PeriodRow('period','2026-H1',date(2026,1,1),date(2026,6,30)),
             'find_existing_statement':existing,'load_first_rights_rules':[],
             'load_tiers_for_rules':({},{}),'load_subrights_rules':[],

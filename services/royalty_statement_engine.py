@@ -284,6 +284,22 @@ def resolve_period_id_for_generate(
     return str(row["id"])
 
 
+def resolve_active_royalty_set_id(cur, tenant_id: str, work_id: str) -> str:
+    cur.execute(
+        """
+        SELECT id::text FROM royalty_sets
+        WHERE tenant_id = %s::uuid AND work_id = %s::uuid AND is_active = true
+        ORDER BY version DESC, created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (tenant_id, work_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise StatementValidationError(f"No active royalty set found for work_id={work_id}")
+    return str(row["id"])
+
+
 def assert_royalty_set_for_work(cur, tenant_id: str, royalty_set_id: str, work_id: str) -> None:
     cur.execute(
         """
@@ -918,7 +934,6 @@ def generate_statement(
         raise StatementValidationError("party must be 'author' or 'illustrator'")
 
     assert_work(cur, tenant_id, work_id)
-    assert_royalty_set_for_work(cur, tenant_id, royalty_set_id, work_id)
     resolved_period_id = resolve_period_id_for_generate(
         cur, tenant_id, period_id, period_start, period_end
     )
@@ -937,6 +952,10 @@ def generate_statement(
             )
     else:
         stmt_id = str(uuid_lib.uuid4())
+
+    # Client set IDs are advisory for mutable drafts. Check final protection first,
+    # then use the active set for all rules, income, and the atomic header/line rebuild.
+    royalty_set_id = resolve_active_royalty_set_id(cur, tenant_id, work_id)
 
     first_rights_rules = load_first_rights_rules(cur, tenant_id, royalty_set_id, party)
     first_rule_ids = [r.id for r in first_rights_rules]

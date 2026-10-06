@@ -267,5 +267,127 @@ class RoyaltyPostgresTests(unittest.TestCase):
         cur.execute("UPDATE royalty_rules SET percent=10 WHERE party='illustrator'")
         self.assertEqual(sum(row['party']=='illustrator' for row in self.queue()),1)
 
+    def switch_active_set(self):
+        cur = self.cursor()
+        active = str(uuid4())
+        cur.execute('UPDATE royalty_sets SET is_active=false WHERE id=%s::uuid', (self.set_id,))
+        cur.execute("INSERT INTO royalty_sets(id,tenant_id,work_id,version) VALUES (%s::uuid,%s::uuid,%s::uuid,2)",
+            (active,self.tenant,self.work))
+        cur.execute("""INSERT INTO royalty_rules(id,tenant_id,royalty_set_id,party,rights_type,subrights_type_id,base,mode,percent)
+            VALUES (%s::uuid,%s::uuid,%s::uuid,'author','subrights',%s::uuid,'net_receipts','fixed',37)""",
+            (str(uuid4()),self.tenant,active,self.stype))
+        return active
+
+    def test_no_statement_queue_uses_only_current_active_set(self):
+        active = self.switch_active_set()
+        row = next(row for row in self.queue() if row['work_id']==self.work)
+        self.assertEqual(row['royalty_set_id'], active)
+        self.assertIsNone(row['statement_id'])
+        self.assertFalse(row['statement_exists'])
+
+    def test_stale_draft_queue_and_api_rebuild_preserve_identity_and_active_income(self):
+        cur = self.cursor()
+        cur.execute('DELETE FROM royalty_rules WHERE royalty_set_id=%s::uuid', (self.set_id,))
+        for label, receipts, percent in [('E-Book','168.44',25),('Hardcover','392.67',10)]:
+            edition = str(uuid4())
+            cur.execute("""INSERT INTO royalty_rules(id,tenant_id,royalty_set_id,party,rights_type,format_label,base,mode,percent)
+                VALUES (%s::uuid,%s::uuid,%s::uuid,'author','first_rights',%s,'net_receipts','fixed',%s)""",
+                (str(uuid4()),self.tenant,self.set_id,label,percent))
+            cur.execute('INSERT INTO editions VALUES (%s::uuid,%s::uuid,%s::uuid,%s,NULL)',(edition,self.tenant,self.work,label))
+            cur.execute("""INSERT INTO royalty_sales_lines(id,tenant_id,edition_id,period_id,units_sold,publisher_receipts,transaction_date)
+                VALUES (%s::uuid,%s::uuid,%s::uuid,%s::uuid,1,%s,'2026-06-30')""",
+                (str(uuid4()),self.tenant,edition,self.period,receipts))
+        original = self.generate()
+        statement = original['statement_id']
+        self.assertEqual(original['header']['earned_this_period'],'81.38')
+        cur.execute('SELECT id::text FROM royalty_statement_lines WHERE statement_id=%s::uuid',(statement,))
+        old_lines = {row['id'] for row in cur.fetchall()}
+        active = self.switch_active_set()
+        cur.execute("""INSERT INTO royalty_rules(id,tenant_id,royalty_set_id,party,rights_type,format_label,base,mode,percent)
+            SELECT gen_random_uuid(),tenant_id,%s::uuid,party,rights_type,format_label,base,mode,percent
+            FROM royalty_rules WHERE royalty_set_id=%s::uuid""",(active,self.set_id))
+        self.assertEqual(self.post_income(royalty_set_id=active).status_code,200)
+        cur.execute('SELECT * FROM subrights_income_lines WHERE work_id=%s::uuid',(self.work,))
+        income_before = cur.fetchall()
+        queue = [row for row in self.queue() if row['work_id']==self.work]
+        self.assertEqual(len(queue),1)
+        self.assertEqual((queue[0]['statement_id'],queue[0]['royalty_set_id'],queue[0]['status']), (statement,active,'draft'))
+        result = self.client.post('/api/royalty/statements-engine/generate',headers={'X-Tenant':'marble-press'},
+            json={'work_id':self.work,'royalty_set_id':self.set_id,'party':'author','period_id':self.period,'rebuild':True})
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertEqual(result.json()['statement_id'],statement)
+        cur.execute('SELECT royalty_set_id::text,status,earned_this_period FROM royalty_statements WHERE id=%s::uuid',(statement,))
+        head=cur.fetchone()
+        self.assertEqual((head['royalty_set_id'],head['status']),(active,'draft'))
+        self.assertEqual(Decimal(str(head['earned_this_period'])),Decimal('134.56'))
+        cur.execute('SELECT * FROM royalty_statement_lines WHERE statement_id=%s::uuid',(statement,))
+        lines=cur.fetchall()
+        self.assertEqual({row['category_label'] for row in lines},{'E-book','Hardcover','Digital audiobook rights'})
+        self.assertFalse(old_lines.intersection(str(row['id']) for row in lines))
+        audio=next(row for row in lines if row['line_type']=='subrights')
+        self.assertEqual(Decimal(str(audio['basis_amount'])),Decimal('143.74'))
+        self.assertEqual(Decimal(str(audio['royalty_rate'])),Decimal('37'))
+        self.assertEqual(Decimal(str(audio['royalty_amount'])),Decimal('53.18'))
+        cur.execute('SELECT * FROM subrights_income_lines WHERE work_id=%s::uuid',(self.work,))
+        self.assertEqual(cur.fetchall(),income_before)
+
+    def test_new_draft_stale_client_set_resolves_active_and_income_filter_stays_strict(self):
+        self.assertEqual(self.post_income(publisher_receipts='999').status_code,200)
+        active = self.switch_active_set()
+        self.assertEqual(self.post_income(royalty_set_id=active).status_code,200)
+        draft=self.generate()
+        cur=self.cursor()
+        cur.execute('SELECT royalty_set_id::text,earned_this_period FROM royalty_statements WHERE id=%s::uuid',(draft['statement_id'],))
+        row=cur.fetchone()
+        self.assertEqual(row['royalty_set_id'],active)
+        self.assertEqual(Decimal(str(row['earned_this_period'])),Decimal('53.18'))
+
+    def test_historical_final_never_migrates_and_sent_final_is_complete(self):
+        self.post_income()
+        statement=self.generate()['statement_id']
+        cur=self.cursor()
+        cur.execute("UPDATE royalty_statements SET status='final' WHERE id=%s::uuid",(statement,))
+        cur.execute('SELECT * FROM royalty_statement_lines WHERE statement_id=%s::uuid',(statement,))
+        frozen=cur.fetchall()
+        active=self.switch_active_set()
+        row=next(row for row in self.queue() if row['work_id']==self.work)
+        self.assertEqual((row['statement_id'],row['royalty_set_id'],row['status']),(statement,self.set_id,'final'))
+        for submitted in (self.set_id,active):
+            result=self.client.post('/api/royalty/statements-engine/generate',headers={'X-Tenant':'marble-press'},
+                json={'work_id':self.work,'royalty_set_id':submitted,'party':'author','period_id':self.period,'rebuild':True})
+            self.assertEqual(result.status_code,400,result.text)
+            self.assertIn('Final statement already exists',result.text)
+        cur.execute('SELECT royalty_set_id::text,status FROM royalty_statements WHERE id=%s::uuid',(statement,))
+        self.assertEqual(cur.fetchone(),{'royalty_set_id':self.set_id,'status':'final'})
+        cur.execute('SELECT * FROM royalty_statement_lines WHERE statement_id=%s::uuid',(statement,))
+        self.assertEqual(cur.fetchall(),frozen)
+        cur.execute('UPDATE royalty_statements SET sent_at=now() WHERE id=%s::uuid',(statement,))
+        result=self.client.get(f'/api/royalty/statements-engine/queue?period_id={self.period}',headers={'X-Tenant':'marble-press'})
+        self.assertEqual(result.json()['complete_count'],1)
+        self.assertTrue(all(row['work_id']!=self.work for row in result.json()['items']))
+
+    def test_no_active_set_fails_without_modifying_existing_draft(self):
+        statement=self.generate()['statement_id']
+        cur=self.cursor()
+        cur.execute('SELECT * FROM royalty_statements WHERE id=%s::uuid',(statement,))
+        before=cur.fetchone()
+        cur.execute('UPDATE royalty_sets SET is_active=false WHERE id=%s::uuid',(self.set_id,))
+        with self.assertRaisesRegex(engine.StatementValidationError,'No active royalty set'):
+            self.generate()
+        cur.execute('SELECT * FROM royalty_statements WHERE id=%s::uuid',(statement,))
+        self.assertEqual(cur.fetchone(),before)
+        with self.assertRaises(royalty.HTTPException) as error:
+            royalty._resolve_active_royalty_set_id(cur,self.tenant,self.work)
+        self.assertIn('No active royalty set',error.exception.detail)
+        result=self.client.post('/api/royalty/statements-engine/generate',headers={'X-Tenant':'marble-press'},
+            json={'work_id':self.work2,'royalty_set_id':self.set2,'party':'author','period_id':self.period})
+        self.assertEqual(result.status_code,200,result.text)
+        cur.execute('UPDATE royalty_sets SET is_active=false WHERE id=%s::uuid',(self.set2,))
+        cur.execute('DELETE FROM royalty_statements WHERE work_id=%s::uuid',(self.work2,))
+        result=self.client.post('/api/royalty/statements-engine/generate',headers={'X-Tenant':'marble-press'},
+            json={'work_id':self.work2,'royalty_set_id':self.set2,'party':'author','period_id':self.period})
+        self.assertEqual(result.status_code,400,result.text)
+        self.assertIn('No active royalty set',result.text)
+
 
 if __name__ == '__main__':unittest.main()

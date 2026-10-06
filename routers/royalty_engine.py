@@ -38,7 +38,7 @@ router = APIRouter(prefix="/royalty/statements-engine", tags=["Royalty Statement
 
 class GenerateStatementBody(BaseModel):
     work_id: str = Field(..., description="Work UUID")
-    royalty_set_id: str = Field(..., description="Royalty set UUID")
+    royalty_set_id: str = Field(..., description="Advisory royalty set UUID; draft generation resolves the current active set")
     period_id: Optional[str] = Field(None, description="royalty_periods.id")
     period_start: Optional[str] = Field(
         None, description="ISO date; use with period_end if period_id is omitted"
@@ -1325,7 +1325,7 @@ def _fetch_statement_queue(cur, tenant_id: str, period_id: str) -> list[Dict[str
             FROM royalty_sets WHERE tenant_id = %s::uuid AND is_active = true
             ORDER BY work_id, version DESC, created_at DESC, id DESC
         ), candidates AS (
-            SELECT DISTINCT s.work_id, s.id AS royalty_set_id, rr.party::text AS party
+            SELECT DISTINCT s.work_id, rr.party::text AS party
             FROM active_sets s JOIN royalty_rules rr ON rr.royalty_set_id = s.id
             WHERE rr.tenant_id = %s::uuid
               AND rr.party::text IN ('author', 'illustrator')
@@ -1333,17 +1333,18 @@ def _fetch_statement_queue(cur, tenant_id: str, period_id: str) -> list[Dict[str
                    OR EXISTS (SELECT 1 FROM royalty_tiers rt
                               WHERE rt.rule_id = rr.id AND rt.rate_percent > 0))
             UNION
-            SELECT rs.work_id, rs.royalty_set_id, rs.party::text
+            SELECT rs.work_id, rs.party::text
             FROM royalty_statements rs
             WHERE rs.tenant_id = %s::uuid AND rs.period_id = %s::uuid
         )
-        SELECT c.work_id::text, w.title, w.subtitle, c.royalty_set_id::text, c.party,
+        SELECT c.work_id::text, w.title, w.subtitle,
+               (CASE WHEN rs.status = 'final' THEN rs.royalty_set_id ELSE a.id END)::text AS royalty_set_id, c.party,
                rs.id::text AS statement_id, rs.status, rs.sent_at
         FROM candidates c JOIN works w ON w.id = c.work_id AND w.tenant_id = %s::uuid
+        LEFT JOIN active_sets a ON a.work_id = c.work_id
         LEFT JOIN royalty_statements rs
           ON rs.tenant_id = %s::uuid AND rs.work_id = c.work_id
          AND rs.party::text = c.party AND rs.period_id = %s::uuid
-        WHERE rs.id IS NULL OR rs.royalty_set_id IS NOT DISTINCT FROM c.royalty_set_id
         ORDER BY w.title, c.work_id, c.party
     """, (tenant_id, tenant_id, tenant_id, period_id, tenant_id, tenant_id, period_id))
     items = []
