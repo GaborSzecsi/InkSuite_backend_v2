@@ -239,9 +239,10 @@ def _insert_royalty_rule(
     if mode not in ("fixed", "tiered"):
         mode = "fixed"
 
-    base = (_safe_str(rule_obj.get("base")) or "list_price").lower().replace(" ", "_")
+    default_base = "net_receipts" if rights_type == "subrights" else "list_price"
+    base = (_safe_str(rule_obj.get("base")) or default_base).lower().replace(" ", "_")
     if base not in ("list_price", "net_receipts"):
-        base = "list_price"
+        base = default_base
 
     format_label = _safe_str(rule_obj.get("format") or rule_obj.get("format_label"))
     escalating = bool(rule_obj.get("escalating") or False)

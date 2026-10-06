@@ -36,7 +36,7 @@ class RoyaltyPostgresTests(unittest.TestCase):
             CREATE TABLE subrights_types(id uuid PRIMARY KEY, name text);
             CREATE TABLE royalty_rules(id uuid PRIMARY KEY, tenant_id uuid, royalty_set_id uuid, party roy_party, rights_type roy_rights_type,
                 format_label text, subrights_type_id uuid, base text, mode text, escalating boolean DEFAULT false, percent numeric, flat_rate_percent numeric);
-            CREATE TABLE royalty_tiers(id uuid PRIMARY KEY, rule_id uuid, rate_percent numeric);
+            CREATE TABLE royalty_tiers(id uuid PRIMARY KEY, tenant_id uuid, rule_id uuid, tier_order integer, rate_percent numeric, base text, note text);
             CREATE TABLE subrights_income_lines(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id uuid, work_id uuid, period_id uuid, royalty_set_id uuid,
                 subrights_type_id uuid, income_date date, publisher_receipts numeric, gross_amount numeric, created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now());
             CREATE TABLE editions(id uuid PRIMARY KEY, tenant_id uuid, work_id uuid, product_form text, product_form_detail text);
@@ -229,6 +229,24 @@ class RoyaltyPostgresTests(unittest.TestCase):
         self.assertEqual(result.status_code,200,result.text)
         self.assertEqual(result.json()['complete_count'],1)
         self.assertEqual([row['work_id'] for row in result.json()['items']],[self.work2])
+
+    def test_binding_detail_uses_recorded_parent_rule_without_changing_rate(self):
+        cur=self.cursor()
+        edition=str(uuid4())
+        rule=str(uuid4())
+        cur.execute("""INSERT INTO royalty_rules(id,tenant_id,royalty_set_id,party,rights_type,format_label,base,mode,percent)
+            VALUES (%s::uuid,%s::uuid,%s::uuid,'author','first_rights','Hardcover','net_receipts','fixed',10)""",
+            (rule,self.tenant,self.set_id))
+        cur.execute("INSERT INTO editions VALUES (%s::uuid,%s::uuid,%s::uuid,'Hardcover','Paper over boards')",(edition,self.tenant,self.work))
+        cur.execute("""INSERT INTO royalty_sales_lines(id,tenant_id,edition_id,period_id,units_sold,publisher_receipts,transaction_date)
+            VALUES (%s::uuid,%s::uuid,%s::uuid,%s::uuid,1,100,'2026-06-30')""",(str(uuid4()),self.tenant,edition,self.period))
+        draft=self.generate()
+        self.assertEqual(draft['header']['earned_this_period'],'10.00')
+        cur.execute('SELECT * FROM royalty_statement_lines WHERE statement_id=%s::uuid',(draft['statement_id'],))
+        line=cur.fetchone()
+        self.assertEqual(line['category_label'],'Paper over boards')
+        self.assertEqual(line['applied_rule_id'],rule)
+        self.assertEqual(Decimal(str(line['royalty_rate'])),Decimal('10'))
 
     def test_income_batch_rolls_back_on_invalid_work_set(self):
         good=dict(period_id=self.period,work_id=self.work,royalty_set_id=self.set_id,

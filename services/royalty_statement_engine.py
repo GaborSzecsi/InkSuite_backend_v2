@@ -49,6 +49,7 @@ class SalesBucket:
     discount_weighted_num: Decimal
     discount_weight_den: Decimal
     royalty_stream: str = "first_rights"
+    product_form: str = ""
 
 
 @dataclass
@@ -445,6 +446,7 @@ def aggregate_sales_into_buckets(
             buckets[key] = SalesBucket(
                 edition_id=eid,
                 category_label=cat,
+                product_form=_safe_str(r.get("product_form")),
                 units_sold=Decimal("0"),
                 units_returned=Decimal("0"),
                 publisher_receipts=Decimal("0"),
@@ -665,12 +667,20 @@ def load_tiers_for_rules(
     return tiers_by_rule, conds_by_tier
 
 
-def pick_rule_for_category(rules: Sequence[RuleRow], party: str, category_label: str) -> RuleRow:
+def pick_rule_for_category(
+    rules: Sequence[RuleRow], party: str, category_label: str, product_form: Optional[str] = None
+) -> RuleRow:
     ck = _norm_key(category_label)
     matches = [
         r for r in rules
         if _norm_key(r.format_label) == ck and _norm_key(r.party) == _norm_key(party)
     ]
+    if not matches and product_form:
+        # A binding detail may have a specific rule; otherwise use its recorded parent format.
+        # Do not infer format aliases or select a rate from another party.
+        parent = _norm_key(edition_category_label(product_form, None))
+        matches = [r for r in rules
+                   if _norm_key(r.format_label) == parent and _norm_key(r.party) == _norm_key(party)]
     if not matches:
         raise StatementValidationError(
             f"No first_rights royalty rule for party={party!r} format_label matching {category_label!r}"
@@ -969,7 +979,7 @@ def generate_statement(
             else Decimal("0")
         )
 
-        rule = pick_rule_for_category(first_rights_rules, party, b.category_label)
+        rule = pick_rule_for_category(first_rights_rules, party, b.category_label, b.product_form)
         tiers = tiers_by_rule.get(rule.id, [])
         applied_tier, rate_pct, applied_base = select_applied_tier(
             rule, tiers, conds_by_tier, net_u, disc_avg
@@ -1019,7 +1029,7 @@ def generate_statement(
             else Decimal("0")
         )
 
-        rule = pick_rule_for_category(first_rights_rules, party, derived_bucket.category_label)
+        rule = pick_rule_for_category(first_rights_rules, party, derived_bucket.category_label, derived_bucket.product_form)
         tiers = tiers_by_rule.get(rule.id, [])
         applied_tier, us_rate_pct, _applied_base = select_applied_tier(
             rule, tiers, conds_by_tier, net_u, disc_avg
