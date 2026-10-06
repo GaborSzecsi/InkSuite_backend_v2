@@ -606,22 +606,33 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
     """
 
     policy = header.get('settlement') or {}
-    settlement_rows = ''
+    def row(label, value):
+        return f'<tr><td class="summary-label">{_esc(label)}</td><td class="summary-value">{_money(value)}</td></tr>'
+    summary_rows = row('Advance paid', header.get('advance_paid_original'))
+    summary_rows += row('Total royalty this period', header.get('earned_this_period'))
+    if float(header.get('adjustments_this_period') or 0):
+        summary_rows += row('Adjustment this period', header.get('adjustments_this_period'))
+    if float(header.get('closing_recoupment_balance') or 0) < 0:
+        summary_rows += row('Remaining unrecouped balance', abs(float(header['closing_recoupment_balance'])))
+    summary_rows += row('Current statement payable', header.get('payable_this_period'))
+    if 'prior_unpaid_payable' in policy:
+        summary_rows += row('Prior statements still unpaid', policy['prior_unpaid_payable'])
+        summary_rows += row('Total payment due (current plus prior unpaid)', policy['total_payment_due'])
+    reserve_rows = minimum_rows = ''
     if policy:
-        for label, key in [
-            ('Royalty after recoupment','gross_available'), ('Minimum payment','minimum_payout'), ('Accrued brought forward','accrued_brought_forward'),
-            ('Opening reserve held','opening_reserve'), ('Prior statement average','reserve_average'),
-            ('Target reserve','reserve_target'), ('Reserve change (increase withheld; decrease released)','reserve_change'),
-            ('Closing reserve held','reserve_held'), ('Available after reserve','available_after_reserve'),
-            ('Accrued carried forward','accrued_carried_forward')]:
-            settlement_rows += f'<tr><td class="summary-label">{label}</td><td class="summary-value">{_money(policy.get(key))}</td></tr>'
-        if policy.get('history_count') == 0:
-            settlement_rows += '<tr><td colspan="2">No prior finalized statements. Opening reserve retained until an average is available.</td></tr>'
-        for balance in policy.get('prior_payment_balances', []):
-            settlement_rows += f'<tr><td class="summary-label">{_esc(balance["period_code"])}: payable / paid / unpaid</td><td class="summary-value">{_money(balance["statement_payable"])} / {_money(balance["paid_amount"])} / {_money(balance["outstanding_amount"])}</td></tr>'
-        if 'prior_unpaid_payable' in policy:
-            settlement_rows += f'<tr><td class="summary-label">Prior statements still unpaid</td><td class="summary-value">{_money(policy["prior_unpaid_payable"])}</td></tr>'
-        settlement_rows += f'<tr><td class="summary-label">Reserve percentage</td><td class="summary-value">{_esc(str(policy.get("reserve_percent", "0")))}%</td></tr>'
+        reserve_rows += row('Opening reserve held', policy.get('opening_reserve'))
+        reserve_rows += row('Prior statement average', policy.get('reserve_average'))
+        reserve_rows += row(f'Target reserve ({policy.get("reserve_percent", "0")}%)', policy.get('reserve_target'))
+        change = float(policy.get('reserve_change') or 0)
+        reserve_rows += row('Reserve released' if change < 0 else 'Additional reserve withheld', abs(change))
+        reserve_rows += row('Closing reserve held', policy.get('reserve_held'))
+        if float(policy.get('reserve_shortfall') or 0) > 0:
+            reserve_rows += row('Unfunded reserve target', policy['reserve_shortfall'])
+        for label,key in [('Minimum payment','minimum_payout'), ('Accrued brought forward','accrued_brought_forward'),
+                          ('Available after reserve','available_after_reserve'), ('Accrued carried forward','accrued_carried_forward')]:
+            minimum_rows += row(label, policy.get(key))
+    prior_rows = ''.join(f'<tr><td>{_esc(balance["period_code"])}: payable / paid / unpaid</td><td>{_money(balance["statement_payable"])} / {_money(balance["paid_amount"])} / {_money(balance["outstanding_amount"])}</td></tr>'
+        for balance in policy.get('prior_payment_balances', []))
 
     return f"""
     <!DOCTYPE html>
@@ -794,7 +805,7 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
         }}
 
         .summary-table {{
-        width: 360px;
+        width: 100%;
         border-collapse: collapse;
         }}
 
@@ -811,6 +822,14 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
         .summary-value {{
         text-align: right;
         }}
+        .settlement-tiles {{ width: 100%; table-layout: fixed; border-spacing: 8px 0; margin-top: 20px; break-inside: avoid; }}
+        .settlement-tiles > tbody > tr > td, .settlement-tiles > tr > td {{ width: 33.333%; vertical-align: top; border: 1px solid #d1d5db; border-radius: 8px; padding: 10px; }}
+        .settlement-tile h3 {{ font-size: 11px; margin: 0 0 10px; }}
+        .settlement-tile .summary-table {{ font-size: 9px; }}
+        .settlement-tile p {{ font-size: 8px; line-height: 1.4; }}
+        .settlement-tile .summary-label {{ padding-right: 5px; font-weight: 400; }}
+        .settlement-tile .summary-value {{ white-space: nowrap; }}
+        .prior-payment-details {{ margin-top: 14px; font-size: 9px; }}
     </style>
     </head>
     <body>
@@ -885,37 +904,24 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
         </table>
     </div>
 
-    <div class="summary-wrap">
-        <table class="summary-table">
-        <tr>
-            <td class="summary-label">Advance paid</td>
-            <td class="summary-value">{_money(header.get("advance_paid_original"))}</td>
-        </tr>
-        <tr>
-            <td class="summary-label">Total royalty this period</td>
-            <td class="summary-value">{_money(header.get("earned_this_period"))}</td>
-        </tr>
-        <tr>
-            <td class="summary-label">Adjustment this period</td>
-            <td class="summary-value">{_money(header.get("adjustments_this_period"))}</td>
-        </tr>
-
-        <tr>
-            <td class="summary-label">Earned to date</td>
-            <td class="summary-value">{_money(header.get("earned_to_date"))}</td>
-        </tr>
-        <tr>
-            <td class="summary-label">Remaining unrecouped balance</td>
-            <td class="summary-value">{_money(header.get("closing_recoupment_balance"))}</td>
-        </tr>
-        {settlement_rows}
-        <tr>
-            <td class="summary-label">Current statement payable</td>
-            <td class="summary-value">{_money(header.get("payable_this_period"))}</td>
-        </tr>
-        {f'<tr><td class="summary-label">Total payment due (current plus prior unpaid)</td><td class="summary-value">{_money(policy["total_payment_due"])}</td></tr>' if 'total_payment_due' in policy else ''}
-        </table>
-    </div>
+    <table class="settlement-tiles"><tr>
+      <td class="settlement-tile">
+        <h3>Settlement Summary</h3>
+        <table class="summary-table">{summary_rows}</table>
+        <p>Payable after reserve and minimum-payment adjustments.</p>
+      </td>
+      <td class="settlement-tile">
+        <h3>Reserve</h3>
+        <table class="summary-table">{reserve_rows}</table>
+        {('<p>No prior finalized statements. Opening reserve retained until an average is available.</p>' if policy.get('history_count') == 0 else '') if policy else '<p>No reserve calculation recorded.</p>'}
+      </td>
+      <td class="settlement-tile">
+        <h3>Minimum Payment</h3>
+        <table class="summary-table">{minimum_rows}</table>
+        {('<p>Below the minimum payment. This amount accrues until the minimum is reached.</p>' if float(policy.get('accrued_carried_forward') or 0) > 0 else '<p>No amount held below the minimum payment.</p>') if policy else '<p>No minimum-payment calculation recorded.</p>'}
+      </td>
+    </tr></table>
+    {f'<div class="prior-payment-details"><h3>Prior statement payment details</h3><table>{prior_rows}</table></div>' if prior_rows else ''}
     </body>
     </html>
     """
