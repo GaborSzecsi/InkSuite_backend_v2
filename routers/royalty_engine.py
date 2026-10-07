@@ -614,11 +614,13 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
         summary_rows += row('Adjustment this period', header.get('adjustments_this_period'))
     if float(header.get('closing_recoupment_balance') or 0) < 0:
         summary_rows += row('Remaining unrecouped balance', abs(float(header['closing_recoupment_balance'])))
-    summary_rows += row('Current statement payable', header.get('payable_this_period'))
-    if 'prior_unpaid_payable' in policy:
-        summary_rows += row('Prior statements still unpaid', policy['prior_unpaid_payable'])
-        summary_rows += row('Total payment due (current plus prior unpaid)', policy['total_payment_due'])
-    reserve_rows = minimum_rows = ''
+    if policy:
+        summary_rows += row('Accrued brought forward', policy.get('accrued_brought_forward'))
+    summary_rows += f'<tr><td colspan="2"><strong>Payment to issue now: {_money(header.get("payable_this_period"))}</strong></td></tr>'
+    payment_explanation = ''
+    if policy and float(policy.get('accrued_carried_forward') or 0) > 0:
+        payment_explanation = f'<p><em>Below the {_money(policy.get("minimum_payout"))} minimum. {_money(policy.get("accrued_carried_forward"))} is accrued and carried forward, not lost.</em></p>'
+    reserve_rows = ''
     if policy:
         reserve_rows += row('Opening reserve held', policy.get('opening_reserve'))
         reserve_rows += row('Prior statement average', policy.get('reserve_average'))
@@ -628,11 +630,6 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
         reserve_rows += row('Closing reserve held', policy.get('reserve_held'))
         if float(policy.get('reserve_shortfall') or 0) > 0:
             reserve_rows += row('Unfunded reserve target', policy['reserve_shortfall'])
-        for label,key in [('Minimum payment','minimum_payout'), ('Accrued brought forward','accrued_brought_forward'),
-                          ('Available after reserve','available_after_reserve'), ('Accrued carried forward','accrued_carried_forward')]:
-            minimum_rows += row(label, policy.get(key))
-    prior_rows = ''.join(f'<tr><td>{_esc(balance["period_code"])}: payable / paid / unpaid</td><td>{_money(balance["statement_payable"])} / {_money(balance["paid_amount"])} / {_money(balance["outstanding_amount"])}</td></tr>'
-        for balance in policy.get('prior_payment_balances', []))
 
     return f"""
     <!DOCTYPE html>
@@ -823,7 +820,7 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
         text-align: right;
         }}
         .settlement-tiles {{ width: 100%; table-layout: fixed; border-spacing: 8px 0; margin-top: 20px; break-inside: avoid; }}
-        .settlement-tiles > tbody > tr > td, .settlement-tiles > tr > td {{ width: 33.333%; vertical-align: top; border: 1px solid #d1d5db; border-radius: 8px; padding: 10px; }}
+        .settlement-tiles > tbody > tr > td, .settlement-tiles > tr > td {{ width: 50%; vertical-align: top; border: 1px solid #d1d5db; border-radius: 8px; padding: 10px; }}
         .settlement-tile h3 {{ font-size: 11px; margin: 0 0 10px; }}
         .settlement-tile .summary-table {{ font-size: 9px; }}
         .settlement-tile p {{ font-size: 8px; line-height: 1.4; }}
@@ -906,11 +903,6 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
 
     <table class="settlement-tiles"><tr>
       <td class="settlement-tile">
-        <h3>Minimum Payment</h3>
-        <table class="summary-table">{minimum_rows}</table>
-        {('<p>Below the minimum payment. This amount accrues until the minimum is reached.</p>' if float(policy.get('accrued_carried_forward') or 0) > 0 else '<p>No amount held below the minimum payment.</p>') if policy else '<p>No minimum-payment calculation recorded.</p>'}
-      </td>
-      <td class="settlement-tile">
         <h3>Reserve</h3>
         <table class="summary-table">{reserve_rows}</table>
         {('<p>No prior finalized statements. Opening reserve retained until an average is available.</p>' if policy.get('history_count') == 0 else '') if policy else '<p>No reserve calculation recorded.</p>'}
@@ -918,10 +910,9 @@ def _pdf_html(bundle: Dict[str, Any]) -> str:
       <td class="settlement-tile">
         <h3>Settlement Summary</h3>
         <table class="summary-table">{summary_rows}</table>
-        <p>Payable after reserve and minimum-payment adjustments.</p>
+        {payment_explanation}
       </td>
     </tr></table>
-    {f'<div class="prior-payment-details"><h3>Prior statement payment details</h3><table>{prior_rows}</table></div>' if prior_rows else ''}
     </body>
     </html>
     """
@@ -1267,16 +1258,18 @@ def royalty_preparation(request: Request, work_id: str, royalty_set_id: str, per
                     WHERE pay.tenant_id=%s::uuid AND s.work_id=%s::uuid AND s.party=%s
                     ORDER BY pay.payment_date DESC,pay.created_at DESC LIMIT 30""",(tenant_id,work_id,party))
                 payments = [dict(row) for row in cur.fetchall()]
-                from services.royalty_settlement import payment_balances
+                from services.royalty_settlement import payment_balances, unpaid_account_balance
                 balances = payment_balances(cur, tenant_id, work_id, party, period.period_end, include_current=True)
+                account_unpaid, _ = unpaid_account_balance(balances)
+                minimum = Decimal(str(settings["minimum_payout"])) if settings else Decimal("50")
                 accounts.append({"party": party, "history": history,
                     "statement_payment_balances": balances,
-                    "total_unpaid_payable": str(sum((Decimal(row["outstanding_amount"]) for row in balances), Decimal("0"))),
+                    "total_unpaid_payable": str(account_unpaid),
                     "prior_units": prior_units,
                     "settings": settings, "changes": changes, "payments": payments,
                     "unrecouped_balance": max(Decimal("0"), -Decimal(str(latest["closing_recoupment_balance"]))) if latest else None,
                     "unpaid_balance": unpaid_balance,
-                    "accrued_balance": (latest.get("settlement") or {}).get("accrued_carried_forward", "0") if latest else "0",
+                    "accrued_balance": str(account_unpaid if account_unpaid < minimum else Decimal("0")),
                     "unpaid_source_period": latest["period_code"] if latest else None,
                     "unpaid_source_statement_id": str(latest["statement_id"]) if latest else None,
                     "paid_amount": latest["paid_amount"] if latest else None,

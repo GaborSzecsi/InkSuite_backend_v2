@@ -28,7 +28,7 @@ def payment_balances(cur, tenant_id, work_id, party, through_date, include_curre
     # Payment liability stays on its source statement. Sent/delivered is not paid.
     comparison = '<=' if include_current else '<'
     cur.execute(f"""SELECT s.id::text AS statement_id,p.id::text AS period_id,p.period_code,
-        s.currency,s.payable_this_period,
+        s.currency,s.payable_this_period,s.settlement,
         COALESCE((SELECT SUM(pay.amount) FROM royalty_payments pay
             WHERE pay.tenant_id=s.tenant_id AND pay.statement_id=s.id AND pay.currency=s.currency),0) AS paid_amount
         FROM royalty_statements s JOIN royalty_periods p ON p.id=s.period_id AND p.tenant_id=s.tenant_id
@@ -37,12 +37,46 @@ def payment_balances(cur, tenant_id, work_id, party, through_date, include_curre
         ORDER BY p.period_end,p.period_start,s.id""", (tenant_id,work_id,party,through_date,currency))
     balances=[]
     for row in cur.fetchall():
+        snapshot=row.get('settlement') or {}
         payable,paid=money(row['payable_this_period']),money(row['paid_amount'])
         outstanding=max(ZERO,payable-paid)
         balances.append(dict(statement_id=row['statement_id'],period_id=row['period_id'],period_code=row['period_code'],
             currency=row['currency'],statement_payable=str(payable),paid_amount=str(paid),outstanding_amount=str(outstanding),
+            settlement_version=snapshot.get('settlement_version',1),
+            account_balance_carried_forward=snapshot.get('account_balance_carried_forward'),
+            payments_recorded_total=snapshot.get('payments_recorded_total','0'),
+            accrued_carried_forward=snapshot.get('accrued_carried_forward','0'),
             payment_status='No payment due' if payable <= ZERO else 'Paid' if outstanding == ZERO else 'Partially paid' if paid > ZERO else 'Unpaid'))
+    if balances and balances[-1].get('settlement_version') == 2:
+        account_remaining=unpaid_account_balance(balances)[0]
+        for balance in balances:
+            original=money(balance['outstanding_amount'])
+            balance['outstanding_amount']=str(min(original,account_remaining))
+            if original > ZERO and account_remaining == ZERO:
+                balance['payment_status']='Settled through account payments'
     return balances
+
+
+def unpaid_account_balance(balances):
+    paid_total=sum((money(row['paid_amount']) for row in balances), ZERO)
+    if balances and balances[-1].get('settlement_version') == 2:
+        latest=balances[-1]
+        # A new settlement includes the whole unpaid account. Subtract only payments
+        # made since that snapshot; summing rolling statement payables would double debt.
+        unpaid=max(ZERO, money(latest['account_balance_carried_forward']) -
+                   (paid_total-money(latest['payments_recorded_total'])))
+    else:
+        unpaid=sum((money(row['outstanding_amount']) for row in balances), ZERO)
+        if balances:
+            unpaid += money(balances[-1].get('accrued_carried_forward',0))
+    return money(unpaid), money(paid_total)
+
+
+def account_payment_capacity(cur, tenant_id, work_id, party, currency):
+    balances=payment_balances(cur,tenant_id,work_id,party,'9999-12-31',True,currency)
+    if balances and balances[-1].get('settlement_version') == 2:
+        return unpaid_account_balance(balances)[0]
+    return None
 
 
 def build_settlement(cur, tenant_id, work_id, party, period_start, gross):
@@ -61,20 +95,16 @@ def build_settlement(cur, tenant_id, work_id, party, period_start, gross):
         ORDER BY p.period_end DESC, p.period_start DESC, s.id DESC LIMIT 3""",
         (tenant_id, work_id, party, period_start))
     history=cur.fetchall()
-    # Final payable balances stay assigned to their original statement; only threshold
-    # accrual moves forward, so outstanding payments cannot be owed twice.
-    prior=(history[0].get('settlement') or {}) if history else {}
-    accrued=prior.get('accrued_carried_forward', '0')
+    balances=payment_balances(cur,tenant_id,work_id,party,period_start)
+    accrued, paid_total=unpaid_account_balance(balances)
     average=sum((money(r['earned_this_period']) for r in history), ZERO)/len(history) if history else None
     result=calculate_settlement(gross, accrued, settings['reserve_held'], average,
                                 settings['reserve_percent'], settings['minimum_payout'])
     result.update(account_version=settings['version'], history_ids=[r['id'] for r in history],
-                  history_count=len(history))
-    balances=payment_balances(cur,tenant_id,work_id,party,period_start)
-    prior_unpaid=sum((money(row['outstanding_amount']) for row in balances),ZERO)
-    result.update(payment_tracking_start='2025-07-01', prior_payment_balances=balances,
-                  prior_unpaid_payable=str(money(prior_unpaid)),
-                  total_payment_due=str(money(prior_unpaid+money(result['actual_payable']))))
+                  history_count=len(history), settlement_version=2,
+                  account_balance_carried_forward=result['available_after_reserve'],
+                  payments_recorded_total=str(paid_total), payment_tracking_start='2025-07-01',
+                  prior_payment_balances=balances, total_payment_due=result['actual_payable'])
     return result
 
 

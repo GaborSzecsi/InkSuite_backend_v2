@@ -119,6 +119,10 @@ def record_payment(cur, tenant_id, actor, body):
     cur.execute("SELECT COALESCE(SUM(amount),0) AS paid FROM royalty_payments WHERE tenant_id=%s::uuid AND statement_id=%s::uuid AND currency=%s", (tenant_id,str(body.statement_id),statement['currency']))
     paid = Decimal(str(cur.fetchone()['paid']))
     remaining = max(Decimal('0'), Decimal(str(statement['payable_this_period']))-paid)
+    from services.royalty_settlement import account_payment_capacity
+    capacity=account_payment_capacity(cur,tenant_id,str(statement['work_id']),statement['party'],statement['currency'])
+    if capacity is not None:
+        remaining=min(remaining,capacity)
     if body.amount > remaining:
         raise HTTPException(422, 'Payment exceeds the unpaid statement balance.')
     cur.execute("SELECT id FROM royalty_payments WHERE tenant_id=%s::uuid AND statement_id=%s::uuid AND reference_number=%s", (tenant_id,str(body.statement_id),body.reference_number.strip()))

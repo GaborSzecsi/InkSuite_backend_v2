@@ -30,20 +30,13 @@ class SettlementTests(unittest.TestCase):
         row=calculate_settlement(100,0,0,100,'12.3456',50)
         self.assertEqual((row['reserve_percent'],row['reserve_target']),('12.3456','12.35'))
 
-    def test_pdf_shows_frozen_settlement_and_actual_payable(self):
+    def test_pdf_uses_two_tiles_and_a_clear_bold_payment_explanation(self):
         from routers.royalty_engine import _pdf_html
-        policy=calculate_settlement(30,0,10,200,10,50)
+        policy=calculate_settlement('1.91','.88',0,'.84',25,50)
         rendered=_pdf_html({'header':{'settlement':policy,'payable_this_period':policy['actual_payable']},'lines':[]})
-        for label in ('Minimum payment','Accrued brought forward','Closing reserve held','Accrued carried forward','Current statement payable'):
-            self.assertIn(label,rendered)
-        self.assertIn('$50.00',rendered)
-        self.assertIn('$0.00',rendered)
-
-    def test_pdf_shows_prior_payments_and_total_due_without_duplicating_current_payable(self):
-        from routers.royalty_engine import _pdf_html
-        policy=calculate_settlement(30,0,0,0,0,50)
-        policy.update(prior_unpaid_payable='60.00',total_payment_due='60.00',prior_payment_balances=[
-            {'period_code':'2025-H2','statement_payable':'100.00','paid_amount':'40.00','outstanding_amount':'60.00'}])
-        rendered=_pdf_html({'header':{'settlement':policy,'payable_this_period':'0.00'},'lines':[]})
-        for phrase in ('2025-H2: payable / paid / unpaid','$100.00 / $40.00 / $60.00','Prior statements still unpaid','Total payment due (current plus prior unpaid)'):
-            self.assertIn(phrase,rendered)
+        self.assertIn('<strong>Payment to issue now: $0.00</strong>',rendered)
+        self.assertIn('Below the $50.00 minimum. $2.58 is accrued and carried forward, not lost.',rendered)
+        self.assertEqual(rendered.count('class="settlement-tile"'),2)
+        self.assertLess(rendered.index('<h3>Reserve</h3>'),rendered.index('<h3>Settlement Summary</h3>'))
+        self.assertNotIn('<h3>Minimum Payment</h3>',rendered)
+        self.assertNotIn('Total payment due',rendered)

@@ -14,6 +14,8 @@ class AccountTrackingTests(unittest.TestCase):
         self.work = str(uuid4())
         self.period = str(uuid4())
         self.cur = MagicMock()
+        capacity_patch=patch('services.royalty_settlement.account_payment_capacity',return_value=None)
+        capacity_patch.start();self.addCleanup(capacity_patch.stop)
         self.statement = {'id':str(uuid4()), 'tenant_id':self.tenant, 'work_id':self.work,
             'party':'author','period_id':self.period,'status':'final','currency':'USD',
             'payable_this_period':Decimal('125.88')}

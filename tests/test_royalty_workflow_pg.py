@@ -480,8 +480,8 @@ class RoyaltyPostgresTests(unittest.TestCase):
         self.approve(second['statement_id'])
         third_period=self.settlement_period('2027-H1','2027-01-01','2027-06-30','20')
         third=self.settlement_draft(third_period)
-        self.assertEqual((third['header']['payable_this_period'],third['header']['settlement']['accrued_brought_forward'],third['header']['settlement']['accrued_carried_forward']),('0.00','0.00','10.00'))
-        # The unpaid $50 belongs to the second statement and is not payable a second time.
+        self.assertEqual((third['header']['payable_this_period'],third['header']['settlement']['accrued_brought_forward'],third['header']['settlement']['accrued_carried_forward']),('60.00','50.00','0.00'))
+        # The same unpaid $50 is included once in the rolling account balance, not summed again.
         cur=self.cursor()
         cur.execute('SELECT payable_this_period FROM royalty_statements WHERE id=%s::uuid',(second['statement_id'],))
         self.assertEqual(Decimal(str(cur.fetchone()['payable_this_period'])),Decimal('50'))
@@ -515,7 +515,7 @@ class RoyaltyPostgresTests(unittest.TestCase):
         release_period=self.settlement_period('2027-H1','2027-01-01','2027-06-30','0')
         released=self.settlement_draft(release_period)['header']['settlement']
         self.assertEqual((released['reserve_average'],released['reserve_target'],released['reserve_change'],released['accrued_carried_forward']),
-            ('133.33','13.33','-6.67','6.67'))
+            ('133.33','13.33','-6.67','0.00'))
 
     def test_settings_change_blocks_stale_settlement_approval(self):
         self.post_income()
@@ -575,7 +575,7 @@ class RoyaltyPostgresTests(unittest.TestCase):
         self.post_income(publisher_receipts='120')
         current=self.generate()
         policy=current['header']['settlement']
-        self.assertEqual((policy['prior_unpaid_payable'],policy['actual_payable'],policy['total_payment_due']),('100.00','60.00','160.00'))
+        self.assertEqual((policy['accrued_brought_forward'],policy['actual_payable'],policy['total_payment_due']),('100.00','160.00','160.00'))
         result=self.manual_payment(prior['statement_id'],'40','partial-prior')
         self.assertEqual(result.status_code,200,result.text)
         stale=self.client.post(f"/api/royalty/statements-engine/{current['statement_id']}/approve",headers={'X-Tenant':'marble-press'})
@@ -592,14 +592,14 @@ class RoyaltyPostgresTests(unittest.TestCase):
         next_period=self.settlement_period('2026-H2','2026-07-01','2026-12-31','80')
         next_draft=self.settlement_draft(next_period)
         policy=next_draft['header']['settlement']
-        self.assertEqual((policy['actual_payable'],policy['accrued_carried_forward'],policy['prior_unpaid_payable'],policy['total_payment_due']),
-            ('0.00','40.00','60.00','60.00'))
-        self.assertEqual(policy['prior_payment_balances'][1]['payment_status'],'Paid')
+        self.assertEqual((policy['actual_payable'],policy['accrued_carried_forward'],policy['accrued_brought_forward'],policy['total_payment_due']),
+            ('100.00','0.00','60.00','100.00'))
+        self.assertEqual(policy['prior_payment_balances'][1]['payment_status'],'Partially paid')
         self.approve(next_draft['statement_id'])
         self.assertEqual(self.manual_payment(prior['statement_id'],'60','paid-prior').status_code,200)
         future=self.settlement_period('2027-H1','2027-01-01','2027-06-30','20')
         policy=self.settlement_draft(future)['header']['settlement']
-        self.assertEqual((policy['prior_unpaid_payable'],policy['actual_payable'],policy['total_payment_due']),('0.00','50.00','50.00'))
+        self.assertEqual((policy['accrued_brought_forward'],policy['actual_payable'],policy['total_payment_due']),('40.00','50.00','50.00'))
         cur=self.cursor()
         cur.execute('SELECT payable_this_period FROM royalty_statements WHERE id=%s::uuid',(prior['statement_id'],))
         self.assertEqual(Decimal(str(cur.fetchone()['payable_this_period'])),Decimal('100'))
@@ -649,6 +649,39 @@ class RoyaltyPostgresTests(unittest.TestCase):
         self.assertEqual((balance['paid_amount'],balance['outstanding_amount']),('25.88','45.99'))
         rejected=self.manual_payment(statement,'46','too-much')
         self.assertEqual(rejected.status_code,422,rejected.text)
+
+    def test_legacy_small_unpaid_balance_enters_threshold_once_and_combined_payment_clears_it(self):
+        cur=self.cursor()
+        for code,start,end,receipts,payable in [
+            ('2024-H2','2024-07-01','2024-12-31','2','0'),
+            ('2025-H1','2025-01-01','2025-06-30','1.28','0'),
+            ('2025-H2','2025-07-01','2025-12-31','1.76','.88')]:
+            period=self.settlement_period(code,start,end,receipts)
+            statement=self.settlement_draft(period)['statement_id']
+            cur.execute("UPDATE royalty_statements SET status='final',settlement=NULL,payable_this_period=%s WHERE id=%s::uuid",(payable,statement))
+        legacy_statement=statement
+        cur.execute("""INSERT INTO royalty_account_settings(tenant_id,work_id,party,minimum_payout,reserve_percent,reserve_held,version)
+            VALUES (%s::uuid,%s::uuid,'author',50,25,0,1)""",(self.tenant,self.work))
+        self.post_income(publisher_receipts='3.82')
+        draft=self.generate(); policy=draft['header']['settlement']
+        self.assertEqual((policy['accrued_brought_forward'],policy['reserve_average'],policy['reserve_held'],policy['actual_payable'],policy['accrued_carried_forward']),
+            ('0.88','0.84','0.21','0.00','2.58'))
+        self.assertEqual(self.generate()['header']['settlement'],policy)
+        self.approve(draft['statement_id'])
+        next_period=self.settlement_period('2026-H2','2026-07-01','2026-12-31','200')
+        next_draft=self.settlement_draft(next_period); next_policy=next_draft['header']['settlement']
+        self.assertEqual(next_policy['accrued_brought_forward'],'2.58')
+        self.assertEqual(next_policy['actual_payable'],'102.50')
+        self.approve(next_draft['statement_id'])
+        payment=self.manual_payment(next_draft['statement_id'],'102.50','combined-account-payment')
+        self.assertEqual(payment.status_code,200,payment.text)
+        self.assertEqual(self.manual_payment(legacy_statement,'.88','duplicate-old-liability').status_code,422)
+        from services.royalty_settlement import payment_balances
+        balances=payment_balances(cur,self.tenant,self.work,'author','2026-12-31',True)
+        self.assertTrue(all(row['outstanding_amount']=='0.00' for row in balances))
+        future=self.settlement_period('2027-H1','2027-01-01','2027-06-30','0')
+        after=self.settlement_draft(future)['header']['settlement']
+        self.assertEqual(after['accrued_brought_forward'],'0.00')
 
 
 if __name__ == '__main__':unittest.main()
