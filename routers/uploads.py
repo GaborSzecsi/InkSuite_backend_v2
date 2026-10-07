@@ -3,7 +3,7 @@ import os, io, time, pathlib, mimetypes, re
 from typing import Literal, Optional, Any, Dict, List
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Body
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query, Body, Request
 from pydantic import BaseModel
 from PIL import Image
 from psycopg.rows import dict_row
@@ -1867,6 +1867,7 @@ def delete_upload(
 @router.post("", response_model=UploadResponse)
 @router.post("/", response_model=UploadResponse)
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     kind: UploadKind = Form(...),
     book_key: str = Form(""),
@@ -1881,12 +1882,30 @@ async def upload_file(
     caption: str = Form(""),
     customName: str = Form(""),
 ):
+    if kind in {"author_photo", "illustrator_photo"}:
+        from routers.bookdev_email import _ctx_from_bearer, _load_user_and_membership_or_403
+        ctx = _ctx_from_bearer(request)
+        work = _resolve_work((bookUid or workId or book_key or "").strip())
+        with db_conn() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT slug FROM tenants WHERE id = %s::uuid", (work["tenant_id"],))
+                tenant = cur.fetchone()
+        if not tenant:
+            raise HTTPException(404, "Tenant not found")
+        _load_user_and_membership_or_403(tenant_slug=tenant["slug"], ctx=ctx)
+
     allowed = ALLOWED.get(kind, set())
     mime = (file.content_type or "").strip().lower()
     if allowed and mime not in allowed:
         raise HTTPException(status_code=400, detail=f"Unsupported type for {kind}: {mime}")
 
-    data = await file.read()
+    if kind in {"author_photo", "illustrator_photo"}:
+        from app.bookdev_photos import normalize_photo
+        # Run CPU-bound image decoding away from the async event loop.
+        from starlette.concurrency import run_in_threadpool
+        data, _, _ = await run_in_threadpool(normalize_photo, file)
+    else:
+        data = await file.read()
     size = len(data)
     if size == 0:
         raise HTTPException(status_code=400, detail="Empty file")

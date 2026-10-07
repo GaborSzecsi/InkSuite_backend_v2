@@ -178,6 +178,9 @@ app.mount("/static/templates", StaticFiles(directory=str(TEMPLATES_DIR)), name="
 # ---------------------------------------------------------------------
 # Deny-by-default auth: STRICT validation for /api/* (when REQUIRE_AUTH=1)
 # ---------------------------------------------------------------------
+from app.bookdev_body_limit import BookdevBodyLimit
+app.add_middleware(BookdevBodyLimit)
+
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "").strip().lower() in ("1", "true", "yes")
 
 for r in app.routes:
@@ -224,6 +227,16 @@ async def require_auth_middleware(request, call_next):
     if path.startswith("/api/contracts/invites/") and request.method.upper() == "GET":
         return await call_next(request)
 
+    # Only exact recipient-token routes bypass account auth; handlers enforce email proof.
+    from app.bookdev_security import public_request_endpoint
+    if public_request_endpoint(path, request.method.upper()):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     # Shopify public endpoints verify HMAC/state themselves; no broader auth exemption.
     if (path == '/api/distribution/shopify/webhooks' and request.method == 'POST') or (path == '/api/distribution/shopify/callback' and request.method == 'GET'):
         return await call_next(request)
@@ -240,6 +253,9 @@ async def require_auth_middleware(request, call_next):
                 request.state.user_claims = claims
         except Exception:
             pass
+
+    if (path == "/api/uploads" or path.startswith("/api/uploads/")) and request.method.upper() in {"POST", "PUT", "DELETE"} and not getattr(request.state, "user_claims", None):
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 
     # When strict auth is on, require a valid token
     if REQUIRE_AUTH and not getattr(request.state, "user_claims", None):

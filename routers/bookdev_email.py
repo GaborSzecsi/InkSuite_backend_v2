@@ -10,11 +10,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from pydantic import BaseModel, EmailStr, validator
 from psycopg.rows import dict_row
 
 from app.core.db import db_conn
+from app.bookdev_security import ensure_pending, is_verified, require_verified, lock_request, send_code, verify_code, bound_contributor
 from routers.contract_invites import (
     _load_smtp_secret,
     _load_tenant_email_settings_or_400,
@@ -1539,6 +1540,7 @@ def _load_media_questionnaire_prefill(
     tenant_id: str,
     work_id: str,
     party: str,
+    contributor_party_id: str,
 ) -> Dict[str, Any]:
     scope, allowed_roles = _role_match_sql(party)
     empty = {
@@ -1561,10 +1563,11 @@ def _load_media_questionnaire_prefill(
                 WHERE wc.tenant_id = %s::uuid
                   AND wc.work_id = %s::uuid
                   AND upper(COALESCE(wc.contributor_role, '')) = ANY(%s)
+                  AND p.id = %s::uuid
                 ORDER BY wc.sequence_number NULLS LAST, p.created_at NULLS LAST, p.display_name
                 LIMIT 1
                 """,
-                (tenant_id, work_id, list(allowed_roles)),
+                (tenant_id, work_id, list(allowed_roles), contributor_party_id),
             )
             contributor = cur.fetchone()
             if not contributor:
@@ -1873,6 +1876,20 @@ def send_bookdev_request(
     with db_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             work = _load_work_or_404(cur, mctx["tenant_id"], work_id)
+            if not contributor_meta["contributor_party_id"]:
+                _, roles = _role_match_sql(party)
+                cur.execute("""SELECT DISTINCT p.id::text AS party_id, p.email FROM work_contributors wc
+                    JOIN parties p ON p.id = wc.party_id AND p.tenant_id = wc.tenant_id
+                    WHERE wc.tenant_id = %s::uuid AND wc.work_id = %s::uuid
+                    AND upper(COALESCE(wc.contributor_role, '')) = ANY(%s)""",
+                    (mctx["tenant_id"], work_id, list(roles)))
+                candidates = cur.fetchall() or []
+                email_matches = [p for p in candidates if _safe(p.get("email")).lower() == str(payload.recipient_email).lower()]
+                selected = email_matches if email_matches else candidates
+                if len(selected) != 1:
+                    raise HTTPException(409, "Select one saved contributor before sending this request.")
+                contributor_meta["contributor_party_id"] = selected[0]["party_id"]
+            bound_contributor(cur, {"tenant_id": mctx["tenant_id"], "work_id": work_id, "payload_json": contributor_meta})
 
     settings = _load_tenant_email_settings_or_400(tenant_slug)
 
@@ -1896,7 +1913,6 @@ def send_bookdev_request(
         created_by_user_id=mctx["user_id"],
         payload_json={
             "message": payload.message,
-            "form_url": form_url,
             **contributor_meta,
         },
     )
@@ -1955,8 +1971,80 @@ def send_bookdev_request(
     }
 
 
+class VerificationCodeIn(BaseModel):
+    code: str
+
+
+def _pending_request(token: str):
+    row = _get_request_by_token_hash(_token_hash(token))
+    if not row:
+        raise HTTPException(404, "Request not found")
+    ensure_pending(row)
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            bound_contributor(cur, row)
+    return row
+
+
+def _send_recipient_code(row, code):
+    settings = _load_tenant_email_settings_or_400(row["tenant_slug"])
+    username, password = _load_smtp_secret(settings["smtp_secret_id"])
+    try:
+        _send_email_smtp(
+            smtp_host=settings["smtp_host"], smtp_port=settings["smtp_port"], tls_mode=settings["tls_mode"],
+            username=username, password=password, from_email=settings["from_email"], from_name=settings["from_name"],
+            to_email=row["recipient_email"], to_name=row["recipient_name"] or "",
+            subject="Your InkSuite verification code",
+            body_text=f"Your verification code is {code}. It expires in 10 minutes.\n\nDo not forward or share this code. If you did not request it, ignore this email.",
+        )
+    except Exception:
+        raise HTTPException(503, "The verification email could not be sent. Please try again later.")
+
+
+@router.post("/requests/{token}/verification-code")
+def request_recipient_code(token: str, request: Request):
+    return send_code(_pending_request(token), request, _send_recipient_code)
+
+
+@router.post("/requests/{token}/verify")
+def verify_recipient_code(token: str, payload: VerificationCodeIn, request: Request):
+    return verify_code(_pending_request(token), request, payload.code.strip())
+
+
+@router.post("/requests/{token}/photo-upload")
+def upload_request_photo(token: str, request: Request, file: UploadFile = File(...)):
+    from app.bookdev_photos import normalize_photo, save_request_photo
+    row = _pending_request(token)
+    require_verified(row, request)
+    if row["request_type"] not in {"AUTHOR_PHOTO", "ILLUSTRATOR_PHOTO"}:
+        raise HTTPException(400, "This request does not accept a photo.")
+    image, width, height = normalize_photo(file)
+    with db_conn() as conn:
+        with conn.transaction():
+            with conn.cursor(row_factory=dict_row) as cur:
+                lock_request(cur, row, request)
+                party_id = bound_contributor(cur, row)
+                result = save_request_photo(row, party_id, image, width, height)
+                cur.execute("""UPDATE bookdev_requests SET status = 'completed', completed_at = now(),
+                    updated_at = now(), response_json = %s::jsonb WHERE id = %s::uuid""", (json.dumps(result), row["id"]))
+    if row.get("requester_email"):
+        try:
+            settings = _load_tenant_email_settings_or_400(row["tenant_slug"])
+            username, password = _load_smtp_secret(settings["smtp_secret_id"])
+            _send_email_smtp(
+                smtp_host=settings["smtp_host"], smtp_port=settings["smtp_port"], tls_mode=settings["tls_mode"],
+                username=username, password=password, from_email=settings["from_email"], from_name=settings["from_name"],
+                to_email=row["requester_email"], to_name="",
+                subject=f"Completed: Contributor photo – {_work_title(row)}",
+                body_text="The contributor photo request has been completed. You can review the photo in InkSuite.",
+            )
+        except Exception:
+            pass  # Saving the photo must not fail because a notification is unavailable.
+    return {"ok": True, "completed": True, "request_id": row["id"], **result}
+
+
 @router.get("/requests/{token}")
-def resolve_bookdev_request_token(token: str) -> Dict[str, Any]:
+def resolve_bookdev_request_token(token: str, request: Request) -> Dict[str, Any]:
     row = _get_request_by_token_hash(_token_hash(token))
 
     if not row:
@@ -1970,6 +2058,13 @@ def resolve_bookdev_request_token(token: str) -> Dict[str, Any]:
 
     if status in {"revoked", "expired"}:
         raise HTTPException(status_code=410, detail=f"Book development request {status}")
+
+    ensure_pending(row)
+    if not is_verified(row, request):
+        return {"verification_required": True}
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            bound_contributor(cur, row)
 
     request_type = _validate_request_type(row["request_type"])
     party = _validate_party(row["party"], request_type=request_type)
@@ -1988,6 +2083,7 @@ def resolve_bookdev_request_token(token: str) -> Dict[str, Any]:
             tenant_id=row["tenant_id"],
             work_id=row["work_id"],
             party=party,
+            contributor_party_id=_safe(request_payload.get("contributor_party_id")),
         )
 
     return {
@@ -2017,106 +2113,28 @@ def resolve_bookdev_request_token(token: str) -> Dict[str, Any]:
 def submit_photo_request(
     token: str,
     payload: BookDevPhotoSubmitIn,
+    request: Request,
 ) -> Dict[str, Any]:
     row = _get_request_by_token_hash(_token_hash(token))
 
     if not row:
         raise HTTPException(status_code=404, detail="Book development request not found")
 
-    status = _mark_expired_if_needed(
-        request_id=row["id"],
-        expires_at=row["expires_at"],
-        status=row["status"],
-    )
+    require_verified(row, request)
 
-    if status in {"revoked", "expired"}:
-        raise HTTPException(status_code=410, detail=f"Book development request {status}")
-
-    if status == "completed":
-        raise HTTPException(status_code=409, detail="Book development request already completed")
-
-    request_type = _validate_request_type(row["request_type"])
-    if request_type not in {"AUTHOR_PHOTO", "ILLUSTRATOR_PHOTO"}:
-        raise HTTPException(status_code=400, detail="This endpoint only accepts photo requests")
-
-    kind = _safe(payload.kind)
-    expected_kind = "author_photo" if request_type == "AUTHOR_PHOTO" else "illustrator_photo"
-    if kind and kind != expected_kind:
-        raise HTTPException(status_code=400, detail=f"Expected upload kind {expected_kind}")
-
-    response_body = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload.dict()
-    response_body["kind"] = expected_kind
-
-    with db_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                """
-                UPDATE bookdev_requests
-                SET status = 'completed',
-                    completed_at = now(),
-                    response_json = %s::jsonb,
-                    updated_at = now()
-                WHERE id = %s::uuid
-                """,
-                (json.dumps(response_body), row["id"]),
-            )
-        conn.commit()
-
-    requester_email = str(row.get("requester_email") or "").strip().lower()
-    if requester_email:
-        try:
-            settings = _load_tenant_email_settings_or_400(row["tenant_slug"])
-            username, password = _load_smtp_secret(settings["smtp_secret_id"])
-            label = "Author photo" if request_type == "AUTHOR_PHOTO" else "Illustrator photo"
-            subject = f"Completed: {label} – {_work_title(row)}"
-            body_text = f"""Hello,
-
-The {label.lower()} request has been completed.
-
-Title: {_work_title(row)}
-Uploaded file: {payload.filename or payload.key or payload.url or 'Photo uploaded'}
-
-You can now review the uploaded photo in InkSuite.
-
-{settings['from_name']}
-"""
-            _send_email_smtp(
-                smtp_host=settings["smtp_host"],
-                smtp_port=settings["smtp_port"],
-                tls_mode=settings["tls_mode"],
-                username=username,
-                password=password,
-                from_email=settings["from_email"],
-                from_name=settings["from_name"],
-                to_email=requester_email,
-                to_name="",
-                subject=subject,
-                body_text=body_text,
-            )
-        except Exception as e:
-            print("BOOKDEV PHOTO COMPLETION EMAIL FAILED:", repr(e))
-
-    return {
-        "ok": True,
-        "completed": True,
-        "request_id": row["id"],
-        "request_type": request_type,
-        "work_id": row["work_id"],
-        "party": row.get("party") or "",
-    }
-
-
-
-
+    raise HTTPException(400, "Use the verified photo-upload endpoint to upload and submit the photo.")
 @router.post("/requests/{token}/media-questionnaire")
 def submit_media_questionnaire(
     token: str,
     payload: MediaQuestionnaireSubmitIn,
+    request: Request,
 ) -> Dict[str, Any]:
     row = _get_request_by_token_hash(_token_hash(token))
 
     if not row:
         raise HTTPException(status_code=404, detail="Book development request not found")
+
+    require_verified(row, request)
 
     status = _mark_expired_if_needed(
         request_id=row["id"],
@@ -2145,7 +2163,9 @@ def submit_media_questionnaire(
         conn.autocommit = False
         try:
             with conn.cursor(row_factory=dict_row) as cur:
-                party_id = _find_contributor_party_id(cur, tenant_id, work_id, party)
+                lock_request(cur, row, request)
+                bound_contributor(cur, row)
+                party_id = bound_contributor(cur, row)
                 _save_media_questionnaire(cur, tenant_id, party_id, scope, payload)
 
                 cur.execute(
@@ -2213,11 +2233,14 @@ You can now review the updated media questionnaire in InkSuite.
 def submit_contributor_info(
     token: str,
     payload: ContributorInfoSubmitIn,
+    request: Request,
 ) -> Dict[str, Any]:
     row = _get_request_by_token_hash(_token_hash(token))
 
     if not row:
         raise HTTPException(status_code=404, detail="Book development request not found")
+
+    require_verified(row, request)
 
     status = _mark_expired_if_needed(
         request_id=row["id"],
@@ -2278,6 +2301,8 @@ def submit_contributor_info(
 
         try:
             with conn.cursor(row_factory=dict_row) as cur:
+                lock_request(cur, row, request)
+                bound_contributor(cur, row)
                 cur.execute(
                     """
                     SELECT p.id::text AS party_id
@@ -2393,21 +2418,23 @@ def submit_contributor_info(
         "party": party,
     }
 @router.post("/requests/{token}/marketing-profile")
-def submit_marketing_profile(token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def submit_marketing_profile(token: str, payload: Dict[str, Any], request: Request) -> Dict[str, Any]:
     return _submit_questionnaire_like_request(
         token=token,
         payload=payload,
         expected_type="MARKETING_PROFILE",
         response_key="marketing_profile",
+        request=request,
     )
 
 @router.post("/requests/{token}/sales-information")
-def submit_sales_information(token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def submit_sales_information(token: str, payload: Dict[str, Any], request: Request) -> Dict[str, Any]:
     return _submit_questionnaire_like_request(
         token=token,
         payload=payload,
         expected_type="SALES_INFORMATION",
         response_key="sales",
+        request=request,
     )
 
 def _submit_questionnaire_like_request(
@@ -2416,10 +2443,13 @@ def _submit_questionnaire_like_request(
     payload: Dict[str, Any],
     expected_type: str,
     response_key: str,
+    request: Request,
 ) -> Dict[str, Any]:
     row = _get_request_by_token_hash(_token_hash(token))
     if not row:
         raise HTTPException(status_code=404, detail="Book development request not found")
+
+    require_verified(row, request)
 
     status = _mark_expired_if_needed(
         request_id=row["id"],
@@ -2444,19 +2474,23 @@ def _submit_questionnaire_like_request(
     }
 
     with db_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                """
-                UPDATE bookdev_requests
-                SET status = 'completed',
-                    completed_at = now(),
-                    response_json = %s::jsonb,
-                    updated_at = now()
-                WHERE id = %s::uuid
-                """,
-                (json.dumps(response_json), row["id"]),
-            )
+        with conn.transaction():
+            with conn.cursor(row_factory=dict_row) as cur:
+                lock_request(cur, row, request)
+                bound_contributor(cur, row)
+                cur.execute(
+                    """
+                    UPDATE bookdev_requests
+                    SET status = 'completed',
+                        completed_at = now(),
+                        response_json = %s::jsonb,
+                        updated_at = now()
+                    WHERE id = %s::uuid
+                    """,
+                    (json.dumps(response_json), row["id"]),
+                )
         conn.commit()
+
 
     requester_email = str(row.get("requester_email") or "").strip().lower()
     if requester_email:
@@ -2853,8 +2887,9 @@ def _load_public_form_prefill(
     tenant_id: str,
     work_id: str,
     party: str,
+    contributor_party_id: str,
 ) -> Dict[str, Any]:
-    base = _load_media_questionnaire_prefill(tenant_id=tenant_id, work_id=work_id, party=party)
+    base = _load_media_questionnaire_prefill(tenant_id=tenant_id, work_id=work_id, party=party, contributor_party_id=contributor_party_id)
     media = base.get("media") or {}
 
     marketing_profile = {
