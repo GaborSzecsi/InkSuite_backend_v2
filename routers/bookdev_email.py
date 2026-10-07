@@ -459,7 +459,7 @@ def _request_path_for_type(request_type: str, token: str) -> str:
     if request_type == "CONTRIBUTOR_INFO":
         return f"/email-requests/contributor-info/{token}"
     if request_type in {"AUTHOR_PHOTO", "ILLUSTRATOR_PHOTO"}:
-        return f"/email-requests/contributor-photo/{token}"
+        return f"/email-requests/photo-request/{token}"
     if request_type == "MEDIA_QUESTIONNAIRE":
         return f"/email-requests/media-questionnaire/{token}"
     if request_type == "MARKETING_PROFILE":
