@@ -153,14 +153,60 @@ class MediaQuestionnaireSubmitIn(BaseModel):
 
 
 
+class ContributorWebsiteIn(BaseModel):
+    website_role: str = ""
+    website_description: str = ""
+    website_link: str = ""
+
+    @validator("*", pre=True)
+    def trim_website_field(cls, value):
+        return str(value or "").strip()
+
+
+BOOKDEV_CONTRIBUTOR_REPEAT_FIELDS = {
+    "name_identifiers": ("party_name_identifiers", ("name_id_type", "id_type_name", "id_value")),
+    "alternative_names": ("party_alternative_names", ("name_type", "display_name", "person_name_inverted", "names_before_key", "key_names", "corporate_name")),
+    "contributor_places": ("party_contributor_places", ("contributor_place_relator", "country_code", "region_code", "location_name")),
+    "contributor_dates": ("party_contributor_dates", ("contributor_date_role", "date_value")),
+    "professional_affiliations": ("party_professional_affiliations", ("professional_position", "affiliation", "affiliation_id_type", "affiliation_id_type_name", "affiliation_id_value")),
+}
+BOOKDEV_CONTRIBUTOR_IDENTITY_FIELDS = (
+    "titles_before_names", "names_before_key", "prefix_to_key", "key_names", "suffix_to_key",
+    "letters_after_names", "person_name_inverted", "corporate_name", "notes",
+)
+
+
 class ContributorInfoSubmitIn(BaseModel):
     # Public form field names currently sent by the frontend
+    contributor_type: Optional[str] = None
+    titles_before_names: Optional[str] = None
+    names_before_key: Optional[str] = None
+    prefix_to_key: Optional[str] = None
+    key_names: Optional[str] = None
+    suffix_to_key: Optional[str] = None
+    letters_after_names: Optional[str] = None
+    person_name_inverted: Optional[str] = None
+    corporate_name: Optional[str] = None
+    name_identifiers: Optional[List[Dict[str, Any]]] = None
+    alternative_names: Optional[List[Dict[str, Any]]] = None
+    contributor_places: Optional[List[Dict[str, Any]]] = None
+    contributor_dates: Optional[List[Dict[str, Any]]] = None
+    professional_affiliations: Optional[List[Dict[str, Any]]] = None
+    from_languages: Optional[List[str]] = None
+    to_languages: Optional[List[str]] = None
+    contributor_description: Optional[str] = None
+    contributor_role_code: Optional[str] = None
+    contributor_role_label: Optional[str] = None
+    contributor_sequence_number: Optional[int] = None
+
     contributor_name: Optional[str] = None
     contributor_display_name: Optional[str] = None
     contributor_email: Optional[str] = None
     contributor_phone_country_code: Optional[str] = None
     contributor_phone_number: Optional[str] = None
     contributor_website: Optional[str] = None
+    language_code: Optional[str] = None
+    websites: Optional[List[ContributorWebsiteIn]] = None
 
     contributor_address_street: Optional[str] = None
     contributor_address_city: Optional[str] = None
@@ -213,6 +259,19 @@ class ContributorInfoSubmitIn(BaseModel):
             if v == "":
                 return None
         return v
+
+    @validator("contributor_dates")
+    def valid_contributor_dates(cls, rows):
+        for row in rows or []:
+            value = str(row.get("date_value") or "").strip()
+            if value:
+                try:
+                    parsed = datetime.strptime(value, "%Y-%m-%d")
+                    if parsed.strftime("%Y-%m-%d") != value:
+                        raise ValueError()
+                except ValueError:
+                    raise ValueError("Contributor dates must be valid dates in YYYY-MM-DD format")
+        return rows
 
     @validator(
         "contributor_email",
@@ -923,10 +982,22 @@ def _load_contributor_prefill(
                 SELECT
                     p.id::text AS party_id,
                     p.display_name,
+                    p.party_type,
+                    p.titles_before_names,
+                    p.names_before_key,
+                    p.prefix_to_key,
+                    p.key_names,
+                    p.suffix_to_key,
+                    p.letters_after_names,
+                    p.person_name_inverted,
+                    p.corporate_name,
+                    p.notes,
+
                     p.email,
                     p.phone_country_code,
                     p.phone_number,
                     p.website,
+                    p.language_code,
                     p.citizenship,
                     p.birth_date::text AS birth_date,
                     p.birth_city,
@@ -934,6 +1005,9 @@ def _load_contributor_prefill(
                     p.short_bio,
                     p.long_bio,
                     wc.contributor_role,
+                    wc.from_language_codes,
+                    wc.to_language_codes,
+                    wc.contributor_description,
                     wc.sequence_number
                 FROM work_contributors wc
                 JOIN parties p
@@ -960,6 +1034,23 @@ def _load_contributor_prefill(
                 )
 
             contributor_address = _fetch_party_address(cur, tenant_id, contributor_party_id) or {}
+            cur.execute(
+                """SELECT website_role, website_description, website_link, item_order
+                   FROM party_websites WHERE tenant_id = %s::uuid AND party_id = %s::uuid
+                   ORDER BY item_order, id""",
+                (tenant_id, contributor_party_id),
+            )
+            websites = [dict(item) for item in cur.fetchall()]
+            repeat_rows = {}
+            for field, (table, columns) in BOOKDEV_CONTRIBUTOR_REPEAT_FIELDS.items():
+                cur.execute(
+                    f"SELECT {', '.join(columns)}, item_order FROM {table} WHERE tenant_id = %s::uuid AND party_id = %s::uuid ORDER BY item_order, id",
+                    (tenant_id, contributor_party_id),
+                )
+                repeat_rows[field] = [
+                    {key: value.isoformat() if hasattr(value, "isoformat") else value for key, value in dict(item).items()}
+                    for item in cur.fetchall()
+                ]
             socials = _fetch_socials(cur, tenant_id, contributor_party_id)
             rep_data = _fetch_agency_agent_prefill(
                 cur,
@@ -970,12 +1061,20 @@ def _load_contributor_prefill(
 
     return {
         "contributor": {
+            **{key: contributor.get(key) or "" for key in BOOKDEV_CONTRIBUTOR_IDENTITY_FIELDS},
+            **repeat_rows,
+            "contributor_type": contributor.get("party_type") or "person",
+            "from_languages": contributor.get("from_language_codes") or [],
+            "to_languages": contributor.get("to_language_codes") or [],
+            "contributor_description": contributor.get("contributor_description") or "",
             "party_id": contributor_party_id,
             "name": contributor.get("display_name") or "",
             "email": contributor.get("email") or "",
             "phone_country_code": contributor.get("phone_country_code") or "",
             "phone_number": contributor.get("phone_number") or "",
             "website": contributor.get("website") or "",
+            "language_code": contributor.get("language_code") or "",
+            "websites": websites,
             "address_street": contributor_address.get("street") or "",
             "address_city": contributor_address.get("city") or "",
             "address_state": contributor_address.get("state") or "",
@@ -1161,6 +1260,12 @@ def _execute_savepoint(cur, sql: str, params: tuple = ()) -> bool:
         return False
 
 
+def _required_savepoint(cur, sql: str, params: tuple = ()) -> bool:
+    if not _execute_savepoint(cur, sql, params):
+        raise HTTPException(status_code=500, detail="Could not save all contributor information. Please try again or contact the requester.")
+    return True
+
+
 def _fetch_one_savepoint(cur, sql: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
     sp = _sp_name()
     cur.execute(f"SAVEPOINT {sp}")
@@ -1205,7 +1310,7 @@ def _bookdev_get_or_create_agency_party(
 
     if existing and existing.get("id"):
         agency_party_id = str(existing["id"])
-        _execute_savepoint(
+        _required_savepoint(
             cur,
             """
             UPDATE parties
@@ -1250,7 +1355,7 @@ def _bookdev_replace_agency_address(
     if not any([street, city, state, postal, country]):
         return
 
-    _execute_savepoint(
+    _required_savepoint(
         cur,
         "DELETE FROM party_addresses WHERE tenant_id = %s::uuid AND party_id = %s::uuid AND label = 'primary'",
         (tenant_id, agency_party_id),
@@ -1275,7 +1380,7 @@ def _bookdev_replace_agency_address(
     )
 
     if not inserted:
-        _execute_savepoint(
+        _required_savepoint(
             cur,
             """
             INSERT INTO party_addresses (tenant_id, party_id, label, street, city, state, postal_code, country, is_non_us)
@@ -1332,6 +1437,8 @@ def _bookdev_replace_party_representation(
             agency_email,
             agency_website,
         )
+        if not agency_party_id:
+            raise HTTPException(status_code=500, detail="Could not save agency information")
         if agency_party_id:
             _bookdev_replace_agency_address(cur, tenant_id, agency_party_id, payload)
 
@@ -1345,7 +1452,7 @@ def _bookdev_replace_party_representation(
             "person",
         )
         if agent_party_id:
-            _execute_savepoint(
+            _required_savepoint(
                 cur,
                 """
                 UPDATE parties
@@ -1369,9 +1476,9 @@ def _bookdev_replace_party_representation(
 
     representation_target = agent_party_id or agency_party_id
     if not representation_target:
-        return
+        raise HTTPException(status_code=500, detail="Could not save agent information")
 
-    _execute_savepoint(
+    _required_savepoint(
         cur,
         """
         DELETE FROM party_representations
@@ -1395,7 +1502,7 @@ def _bookdev_replace_party_representation(
     )
 
     if not inserted_rep:
-        _execute_savepoint(
+        _required_savepoint(
             cur,
             """
             INSERT INTO party_representations (
@@ -1408,7 +1515,7 @@ def _bookdev_replace_party_representation(
         )
 
     if agency_party_id and agent_party_id:
-        _execute_savepoint(
+        _required_savepoint(
             cur,
             """
             INSERT INTO agency_agent_links (
@@ -1422,6 +1529,63 @@ def _bookdev_replace_party_representation(
             """,
             (tenant_id, agency_party_id, agent_party_id),
         )
+
+
+def _bookdev_update_request_metadata(cur, tenant_id: str, party_id: str, payload: ContributorInfoSubmitIn, work_id: Optional[str] = None) -> None:
+    # Called inside the verified request transaction. Omitted legacy fields
+    # preserve existing values; an explicitly supplied website list replaces it.
+    supplied = getattr(payload, "model_fields_set", getattr(payload, "__fields_set__", set()))
+    for field in BOOKDEV_CONTRIBUTOR_IDENTITY_FIELDS:
+        if field in supplied:
+            cur.execute(
+                f"UPDATE parties SET {field} = %s, updated_at = now() WHERE tenant_id = %s::uuid AND id = %s::uuid",
+                (_safe(getattr(payload, field)), tenant_id, party_id),
+            )
+    if payload.contributor_type is not None:
+        cur.execute(
+            "UPDATE parties SET party_type = %s, updated_at = now() WHERE tenant_id = %s::uuid AND id = %s::uuid",
+            (payload.contributor_type, tenant_id, party_id),
+        )
+    for field, (table, columns) in BOOKDEV_CONTRIBUTOR_REPEAT_FIELDS.items():
+        rows = getattr(payload, field)
+        if rows is None:
+            continue
+        cur.execute(f"DELETE FROM {table} WHERE tenant_id = %s::uuid AND party_id = %s::uuid", (tenant_id, party_id))
+        for index, item in enumerate(rows, 1):
+            values = [_safe(item.get(column)) for column in columns]
+            if not any(values) or (field == "contributor_dates" and not values[1]):
+                continue
+            cur.execute(
+                f"INSERT INTO {table} (tenant_id, party_id, {', '.join(columns)}, item_order) VALUES (%s::uuid, %s::uuid, {', '.join(['%s'] * len(columns))}, %s)",
+                (tenant_id, party_id, *values, index),
+            )
+    if work_id:
+        for field, column in (("from_languages", "from_language_codes"), ("to_languages", "to_language_codes"), ("contributor_description", "contributor_description")):
+            if field in supplied:
+                value = getattr(payload, field)
+                cur.execute(
+                    f"UPDATE work_contributors SET {column} = %s WHERE tenant_id = %s::uuid AND work_id = %s::uuid AND party_id = %s::uuid",
+                    (value if value is not None else [] if field in ("from_languages", "to_languages") else "", tenant_id, work_id, party_id),
+                )
+    if payload.language_code is not None:
+        cur.execute(
+            "UPDATE parties SET language_code = %s, updated_at = now() WHERE tenant_id = %s::uuid AND id = %s::uuid",
+            (payload.language_code, tenant_id, party_id),
+        )
+    if payload.websites is not None:
+        cur.execute(
+            "DELETE FROM party_websites WHERE tenant_id = %s::uuid AND party_id = %s::uuid",
+            (tenant_id, party_id),
+        )
+        for index, website in enumerate(payload.websites, 1):
+            if not website.website_link:
+                continue
+            cur.execute(
+                """INSERT INTO party_websites
+                   (tenant_id, party_id, website_role, website_description, website_link, item_order)
+                   VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s)""",
+                (tenant_id, party_id, website.website_role, website.website_description, website.website_link, index),
+            )
 
 
 def _bookdev_update_contributor_core(
@@ -1451,10 +1615,10 @@ def _bookdev_update_contributor_core(
             website = %s,
             phone_country_code = %s,
             phone_number = %s,
-            birth_city = %s,
-            birth_country = %s,
+            birth_city = COALESCE(NULLIF(%s, ''), birth_city),
+            birth_country = COALESCE(NULLIF(%s, ''), birth_country),
             birth_date = NULLIF(%s, '')::date,
-            citizenship = %s,
+            citizenship = COALESCE(NULLIF(%s, ''), citizenship),
             short_bio = %s,
             long_bio = %s,
             updated_at = now()
@@ -1489,7 +1653,7 @@ def _bookdev_update_contributor_core(
 
     # Address is useful, but it must not poison the transaction if this database
     # happens to use zip vs postal_code or has a slightly different shape.
-    _execute_savepoint(
+    _required_savepoint(
         cur,
         "DELETE FROM party_addresses WHERE tenant_id = %s::uuid AND party_id = %s::uuid AND label = 'primary'",
         (tenant_id, party_id),
@@ -1514,7 +1678,7 @@ def _bookdev_update_contributor_core(
     )
 
     if not inserted:
-        _execute_savepoint(
+        _required_savepoint(
             cur,
             """
             INSERT INTO party_addresses (tenant_id, party_id, label, street, city, state, postal_code, country, is_non_us)
@@ -2265,10 +2429,10 @@ def submit_contributor_info(
         "contributor_party_id",
     )
     contributor_role_code = _safe(
-        request_payload.get("contributor_role_code") or party
+        payload.contributor_role_code or request_payload.get("contributor_role_code") or party
     ).upper()
-    contributor_role_label = _safe(request_payload.get("contributor_role_label"))
-    contributor_sequence_number = request_payload.get("contributor_sequence_number")
+    contributor_role_label = _safe(payload.contributor_role_label or request_payload.get("contributor_role_label"))
+    contributor_sequence_number = payload.contributor_sequence_number or request_payload.get("contributor_sequence_number")
 
     if not contributor_party_id:
         raise HTTPException(
@@ -2335,6 +2499,8 @@ def submit_contributor_info(
                     contributor_name,
                     contributor_email,
                 )
+
+                _bookdev_update_request_metadata(cur, tenant_id, contributor_party_id, payload, work_id)
 
                 _ensure_work_contributor(
                     cur,
