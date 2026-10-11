@@ -298,4 +298,38 @@ class DistributionSQLTests(unittest.TestCase):
   detail=client.get(base+'/orders/'+row['id']);self.assertNotIn('private@example.test',detail.text)
   self.assertEqual(client.get(base+'/orders/'+row['id']+'/preview').status_code,409)
 
+ def test_isbn_matching_variants_and_preserved_mapping(self):
+  from app.distribution import shopify as sh
+  install=self.privacy_install()
+  rpc("UPDATE editions SET isbn13='9780306406157' WHERE id=$1",[self.ed])
+  paperback=str(uuid4())
+  rpc("INSERT INTO editions(id,tenant_id,work_id,isbn13,product_form) VALUES($1,$2,$3,'9780140328721','Paperback')",[paperback,self.tenant,self.work])
+  def variant(id,title,barcode,sku=''):
+   return {'id':'gid://shopify/ProductVariant/'+id,'title':title,'barcode':barcode,'sku':sku,'product':{'id':'gid://shopify/Product/1','title':'One book'},'inventoryItem':{'id':'gid://shopify/InventoryItem/'+id}}
+  variants=[variant('1','Hardcover','978-0-306-40615-7'),variant('2','Paperback','','9780140328721'),variant('3','Conflict','9780306406157','9780140328721')]
+  def run():
+   sh.sync_products(install['id'],self.ctx,self.connection)
+   with patch.object(sh,'graphql',return_value={'productVariants':{'nodes':variants,'pageInfo':{'hasNextPage':False,'endCursor':None}}}):self.assertTrue(sh.sync_catalog_once())
+  run()
+  rows=rpc('SELECT * FROM distribution_shopify_variants WHERE installation_id=$1 ORDER BY variant_id',[install['id']])['rows']
+  self.assertEqual([r['edition_id'] for r in rows],[self.ed,paperback,None])
+  self.assertEqual(rows[0]['connection_id'],self.connection)
+  self.assertEqual(rows[2]['catalog_metadata']['match_status'],'CONFLICTING_ISBNS')
+  variants[0]['barcode']='9780140328721'
+  run()
+  row=rpc('SELECT edition_id FROM distribution_shopify_variants WHERE installation_id=$1 AND variant_id=$2',[install['id'],variants[0]['id']])['rows'][0]
+  self.assertEqual(row['edition_id'],self.ed)
+
+ def test_isbn_validation_duplicate_and_tenant_scope(self):
+  from app.distribution import shopify as sh
+  self.assertEqual(sh.normalized_isbn('0-306-40615-2'),'9780306406157')
+  for value in ('9780306406158','SKU9780306406157','1234567890123',''):
+   self.assertIsNone(sh.normalized_isbn(value))
+  rpc("UPDATE editions SET isbn13='9780306406157' WHERE id=$1",[self.ed])
+  with s.transaction() as cur:
+   self.assertEqual(sh.match_isbn(cur,self.other,{'barcode':'9780306406157'})[1],'ISBN_NOT_FOUND')
+   self.assertEqual(sh.match_isbn(cur,self.tenant,{'barcode':'not-isbn','sku':'9780306406157'})[0],self.ed)
+  rpc("INSERT INTO editions(id,tenant_id,work_id,isbn13) VALUES($1,$2,$3,'9780306406157')",[str(uuid4()),self.tenant,self.work])
+  with s.transaction() as cur:self.assertEqual(sh.match_isbn(cur,self.tenant,{'barcode':'9780306406157'})[1],'DUPLICATE_ISBN')
+
 if __name__=='__main__':unittest.main()

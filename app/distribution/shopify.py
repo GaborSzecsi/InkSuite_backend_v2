@@ -274,14 +274,15 @@ def retry_webhook(entry_id:UUID,ctx=Depends(admin)):
         if not row: raise HTTPException(404,'Retryable order event not found.')
     return {'queued':True}
 
-CATALOG_QUERY='''query DistributionCatalog($after:String){productVariants(first:100,after:$after){nodes{id title sku barcode inventoryItem{id} product{title}} pageInfo{hasNextPage endCursor}}}'''
+CATALOG_QUERY='''query DistributionCatalog($after:String){productVariants(first:100,after:$after){nodes{id title sku barcode inventoryItem{id} product{id title}} pageInfo{hasNextPage endCursor}}}'''
 
 @router.post('/shopify/{installation_id}/sync-products',status_code=202)
-def sync_products(installation_id:UUID,ctx=Depends(admin)):
+def sync_products(installation_id:UUID,ctx=Depends(admin),connection_id=None):
     tenant,_=ids(ctx)
     with s.transaction() as cur:
         if not s.one(cur,'SELECT id FROM distribution_shopify_installations WHERE tenant_id=%s AND id=%s AND active',(tenant,installation_id)): raise HTTPException(404,'Active Shopify store not found.')
-        cur.execute('INSERT INTO distribution_shopify_jobs(tenant_id,installation_id) VALUES(%s,%s) ON CONFLICT DO NOTHING',(tenant,installation_id))
+        if connection_id: s.connection(cur,tenant,connection_id)
+        cur.execute('INSERT INTO distribution_shopify_jobs(tenant_id,installation_id,connection_id) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING',(tenant,installation_id,connection_id))
     return {'queued':True}
 
 
@@ -297,17 +298,43 @@ def sync_catalog_once():
         except Exception:
             cur.execute("UPDATE distribution_shopify_jobs SET status='FAILED',error_code='SHOPIFY_READ_FAILED',attempts=attempts+1,updated_at=now() WHERE id=%s",(job['id'],));return True
         for variant in result['nodes']:
-            sku=variant.get('sku') or '';isbn=re.sub(r'[^0-9Xx]','',variant.get('barcode') or sku)
-            edition=None
-            if re.fullmatch(r'[0-9]{13}',isbn):
-                cur.execute("SELECT id FROM editions WHERE tenant_id=%s AND regexp_replace(isbn13,'[^0-9]','','g')=%s",(installation['tenant_id'],isbn))
-                matches=cur.fetchall()
-                if len(matches)==1:edition=matches[0]['id']
-            cur.execute('''INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,sku,title,inventory_item_id,edition_id)
-                VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(tenant_id,installation_id,variant_id)
+            edition, match_status, isbn = match_isbn(cur, installation['tenant_id'], variant)
+            metadata = {'product_id': variant['product'].get('id'), 'product_title': variant['product']['title'],
+                        'variant_title': variant['title'], 'barcode': variant.get('barcode') or '',
+                        'isbn': isbn, 'match_status': match_status}
+            cur.execute("""INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,sku,title,inventory_item_id,edition_id,connection_id,catalog_metadata)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(tenant_id,installation_id,variant_id)
                 DO UPDATE SET sku=excluded.sku,title=excluded.title,inventory_item_id=excluded.inventory_item_id,
-                edition_id=COALESCE(distribution_shopify_variants.edition_id,excluded.edition_id)''',
-                (installation['tenant_id'],installation['id'],variant['id'],sku,variant['product']['title']+' / '+variant['title'],(variant.get('inventoryItem') or {}).get('id'),edition))
+                edition_id=COALESCE(distribution_shopify_variants.edition_id,excluded.edition_id),
+                connection_id=COALESCE(distribution_shopify_variants.connection_id,excluded.connection_id),
+                catalog_metadata=excluded.catalog_metadata""",
+                (installation['tenant_id'],installation['id'],variant['id'],variant.get('sku') or '',
+                 variant['product']['title']+' / '+variant['title'],(variant.get('inventoryItem') or {}).get('id'),
+                 edition,job.get('connection_id'),Jsonb(metadata)))
         page=result['pageInfo']
         cur.execute('UPDATE distribution_shopify_jobs SET status=%s,cursor=%s,error_code=NULL,updated_at=now() WHERE id=%s',('QUEUED' if page['hasNextPage'] else 'DONE',page['endCursor'],job['id']))
     return True
+
+
+def normalized_isbn(value):
+    """Accept only an ISBN, optionally separated by spaces/hyphens; validate checksum."""
+    value = re.sub(r'[\s-]', '', str(value or '')).upper()
+    if re.fullmatch(r'\d{9}[\dX]', value):
+        if sum((10-i)*(10 if ch=='X' else int(ch)) for i,ch in enumerate(value)) % 11: return None
+        prefix = '978' + value[:9]
+        return prefix + str((-sum(int(ch)*(1 if i%2==0 else 3) for i,ch in enumerate(prefix))) % 10)
+    if re.fullmatch(r'97[89]\d{10}', value) and sum(int(ch)*(1 if i%2==0 else 3) for i,ch in enumerate(value)) % 10 == 0:
+        return value
+    return None
+
+
+def match_isbn(cur, tenant, variant):
+    candidates = {v for v in (normalized_isbn(variant.get('barcode')),normalized_isbn(variant.get('sku'))) if v}
+    if not candidates: return None, 'MISSING_ISBN', ''
+    if len(candidates)>1: return None, 'CONFLICTING_ISBNS', ' / '.join(sorted(candidates))
+    isbn = candidates.pop()
+    cur.execute("SELECT id FROM editions WHERE tenant_id=%s AND regexp_replace(isbn13,'[^0-9]','','g')=%s", (tenant,isbn))
+    matches = cur.fetchall()
+    if len(matches)>1: return None, 'DUPLICATE_ISBN', isbn
+    if not matches: return None, 'ISBN_NOT_FOUND', isbn
+    return matches[0]['id'], 'MATCHED_BY_ISBN', isbn

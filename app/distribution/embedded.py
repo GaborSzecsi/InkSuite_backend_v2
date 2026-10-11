@@ -1,5 +1,7 @@
 """Shopify App Bridge authentication; no InkSuite cookies or caller-selected tenant."""
 import hashlib
+import logging
+from botocore.exceptions import ClientError
 import secrets as random
 from uuid import uuid4, UUID
 from urllib.parse import urlparse
@@ -94,7 +96,12 @@ def link(body:LinkIn,auth=Depends(session)):
         existing=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE shop=%s FOR UPDATE',(auth['shop'],))
         if existing and existing['tenant_id']!=code['tenant_id']: raise HTTPException(409,'Store is linked to a different publisher.')
         token=exchange(auth);installation=existing['id'] if existing else uuid4()
-        reference=sh.secrets.save(code['tenant_id'],installation,token)
+        try:
+            reference=sh.secrets.save(code['tenant_id'],installation,token)
+        except ClientError as exc:
+            aws_code=exc.response.get('Error',{}).get('Code','Unknown')
+            logging.getLogger(__name__).error('Shopify installation token storage failed: %s',aws_code)
+            raise HTTPException(503, 'Unable to securely save the Shopify connection. The server administrator must check installation-token Secrets Manager permissions.') from None
         cur.execute('INSERT INTO distribution_shopify_installations(id,tenant_id,shop,secret_reference) VALUES(%s,%s,%s,%s) ON CONFLICT(shop) DO UPDATE SET active=true,secret_reference=excluded.secret_reference',(installation,code['tenant_id'],auth['shop'],reference))
         cur.execute('INSERT INTO distribution_shopify_users(installation_id,subject,user_id) VALUES(%s,%s,%s) ON CONFLICT(installation_id,subject) DO UPDATE SET user_id=excluded.user_id',(installation,auth['sub'],code['user_id']))
         cur.execute('UPDATE distribution_shopify_link_codes SET used_at=now() WHERE code_hash=%s',(code['code_hash'],))
@@ -108,7 +115,7 @@ def workspace(install=Depends(linked)):
         tenant=install['tenant_id']
         cur.execute('SELECT id,display_name FROM distribution_connections WHERE tenant_id=%s ORDER BY display_name',(tenant,));connections=cur.fetchall()
         cur.execute('SELECT e.id,e.isbn13,w.title FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id WHERE e.tenant_id=%s ORDER BY w.title LIMIT 1000',(tenant,));editions=cur.fetchall()
-        cur.execute('SELECT variant_id,title,sku,edition_id,connection_id FROM distribution_shopify_variants WHERE tenant_id=%s AND installation_id=%s ORDER BY title LIMIT 500',(tenant,install['id']));variants=cur.fetchall()
+        cur.execute('SELECT variant_id,title,sku,edition_id,connection_id,catalog_metadata FROM distribution_shopify_variants WHERE tenant_id=%s AND installation_id=%s ORDER BY title LIMIT 500',(tenant,install['id']));variants=cur.fetchall()
         cur.execute("SELECT o.id,o.external_order_id,o.status,o.created_at,COALESCE(sum(l.quantity),0) AS quantity FROM distribution_orders o LEFT JOIN distribution_order_items l ON l.order_id=o.id AND l.tenant_id=o.tenant_id WHERE o.tenant_id=%s AND o.source='SHOPIFY' AND o.source_account=%s GROUP BY o.id ORDER BY o.created_at DESC LIMIT 100",(tenant,install['shop']));orders=cur.fetchall()
         cur.execute('SELECT id,topic,status,error_code FROM distribution_webhooks WHERE tenant_id=%s AND installation_id=%s ORDER BY created_at DESC LIMIT 100',(tenant,install['id']));inbox=cur.fetchall()
         privacy.audit(cur,tenant,str(install['user_id']),'EMBEDDED_WORKSPACE_READ',install['id'])
@@ -132,9 +139,13 @@ def location(body:sh.LocationIn,install=Depends(linked)):
     return sh.set_location(install['id'],body,ctx(install))
 
 
+class ProductImportIn(BaseModel):
+    connection_id:UUID
+
+
 @embedded.post('/products')
-def products(install=Depends(linked)):
-    return sh.sync_products(install['id'],ctx(install))
+def products(body:ProductImportIn,install=Depends(linked)):
+    return sh.sync_products(install['id'],ctx(install),body.connection_id)
 
 
 class MapIn(MappingIn):
