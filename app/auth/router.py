@@ -10,6 +10,7 @@ from pydantic import BaseModel, EmailStr
 from app.auth.dependencies import get_current_user
 from app.auth.service import (
     validate_login,
+    refresh_session,
     get_me_payload_from_claims,
     get_invite_by_token,
     accept_invite,
@@ -49,6 +50,10 @@ class LoginResponse(BaseModel):
 
 class AcceptInviteBody(BaseModel):
     token: str
+
+
+class RefreshBody(BaseModel):
+    refresh_token: str
 
 
 class RegisterAcceptInviteBody(BaseModel):
@@ -187,6 +192,18 @@ async def logout(response: Response):
     response.delete_cookie(key="access_token", path="/")
     response.delete_cookie(key="refresh_token", path="/")
     return {"ok": True}
+
+
+@router.post('/refresh')
+def refresh(body: RefreshBody):
+    try:
+        result = refresh_session(body.refresh_token)
+    except Exception:
+        log.exception('Session renewal unavailable')
+        raise HTTPException(503, 'Session renewal is temporarily unavailable.')
+    if not result:
+        raise HTTPException(401, 'Session expired. Please sign in again.')
+    return result
 
 
 @router.get("/me")

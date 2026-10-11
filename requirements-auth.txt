@@ -1,0 +1,2 @@
+# Cognito GetTokensFromRefreshToken supports both rotating and nonrotating tokens.
+boto3>=1.38,<2

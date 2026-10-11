@@ -162,6 +162,25 @@ def get_memberships_for_user(user_id) -> list[dict]:
         ]
 
 
+def refresh_session(refresh_token: str) -> dict | None:
+    """Exchange the server-held refresh token; supports Cognito token rotation."""
+    params = dict(ClientId=settings.cognito_client_id, RefreshToken=refresh_token)
+    secret = getattr(settings, 'cognito_client_secret', '') or ''
+    if secret:
+        params['ClientSecret'] = secret
+    try:
+        result = _cognito().get_tokens_from_refresh_token(**params)
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') in ('NotAuthorizedException', 'UserNotFoundException'):
+            return None
+        raise
+    tokens = result.get('AuthenticationResult') or {}
+    if not tokens.get('AccessToken'):
+        return None
+    return dict(access_token=tokens['AccessToken'], refresh_token=tokens.get('RefreshToken'),
+                expires_in=tokens.get('ExpiresIn', 3600))
+
+
 def validate_login(email: str, password: str, tenant_slug: str | None = None) -> Optional[dict]:
     """
     Returns dict with access_token (+ refresh_token if returned) on success, else None.
