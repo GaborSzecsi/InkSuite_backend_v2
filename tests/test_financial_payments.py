@@ -217,6 +217,18 @@ class PaymentsPostgresTests(unittest.TestCase):
         cur.execute("INSERT INTO royalty_statements(id,tenant_id,work_id,period_id,party,status,currency,payable_this_period,settlement) VALUES(%s,%s,%s,%s,'author','final','USD',1500,%s)",(statement2,self.tenant,self.work,period2,Jsonb(dict(settlement_version=2,account_balance_carried_forward='1500',payments_recorded_total='0'))))
         items=self.get('payables').json()['items'];self.assertEqual(len(items),1);self.assertEqual(items[0]['outstanding'],'1500.00')
 
+    def test_legacy_prior_debt_is_separate_from_current_payable(self):
+        cur=self.cursor()
+        cur.execute('UPDATE royalty_statements SET payable_this_period=75.84,settlement=NULL WHERE id=%s',(self.statement,))
+        period2,statement2=uuid4(),uuid4()
+        cur.execute("INSERT INTO royalty_periods VALUES(%s,%s,'2026-H2','2026-07-01','2026-12-31')",(period2,self.tenant))
+        cur.execute("INSERT INTO royalty_statements(id,tenant_id,work_id,period_id,party,status,currency,payable_this_period,settlement) VALUES(%s,%s,%s,%s,'author','final','USD',168.88,%s)",
+            (statement2,self.tenant,self.work,period2,Jsonb(dict(actual_payable='168.88',prior_unpaid_payable='75.84',total_payment_due='244.72'))))
+        items=self.get('payables').json()['items']
+        self.assertEqual(len(items),2)
+        self.assertEqual(sorted(r['outstanding'] for r in items),['168.88','75.84'])
+        self.assertEqual(sum(Decimal(r['outstanding']) for r in items),Decimal('244.72'))
+
     def test_dual_approval_and_changed_destination(self):
         self.setup_payment();batch=self.prepare('100');bid=batch.json()['batch']['id']
         self.assertEqual(self.post('batches/'+bid+'/submit-for-approval',{}).status_code,200)
@@ -277,6 +289,18 @@ class PaymentsPostgresTests(unittest.TestCase):
             (Jsonb(dict(settlement_version=2,account_balance_carried_forward='30',payments_recorded_total='0',accrued_carried_forward='30')),self.statement))
         row=self.get('payables').json()['items'][0]
         self.assertEqual(row['outstanding'],'0.00');self.assertFalse(row['eligible'])
+
+    def test_fifty_dollar_minimum_and_partial_payment(self):
+        self.setup_payment()
+        self.assertEqual(self.prepare('49.99').status_code,409)
+        for amount,eligible in [('49.99',False),('50.00',True)]:
+            self.cursor().execute('UPDATE royalty_statements SET payable_this_period=%s,settlement=%s WHERE id=%s',
+                (amount,Jsonb(dict(settlement_version=2,account_balance_carried_forward=amount,payments_recorded_total='0')),self.statement))
+            row=self.get('payables').json()['items'][0]
+            self.assertEqual(row['outstanding'],amount)
+            self.assertEqual(row['eligible'],eligible)
+            result=self.prepare(amount)
+            self.assertEqual(result.status_code,200 if eligible else 409,result.text)
 
     def test_read_only_member_cannot_execute_or_approve(self):
         self.setup_payment();self.single_approval();batch=self.prepare('100');bid=batch.json()['batch']['id']

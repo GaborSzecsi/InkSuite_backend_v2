@@ -206,6 +206,7 @@ def payables(cur, user):
                 if any(not r['destination'] for r in rec): reason='Verify all recipient destinations in simulation before preparing payment.'
             except HTTPException as exc: reason=str(exc.detail)
             if available<=ZERO: reason='No unreserved payable remains in this simulation.'
+            elif available<Decimal('50.00'): reason='Below the $50 minimum payout; balance carries forward until at least $50 accrues.'
             source=fingerprint(dict(head=serial(head),payments=serial(payments)))
             contributor_name=party.title()
             if inst:
@@ -259,6 +260,7 @@ def create_batch(cur,user,body):
     for item in body.items:
         row=by_id.get(item.statement_id)
         if not row or not row['eligible']: raise HTTPException(409,row['reason'] if row else 'Payable is no longer eligible.')
+        if item.amount<Decimal('50.00'): raise HTTPException(409,'Minimum royalty payment is $50. Smaller balances carry forward.')
         if item.amount>row['available_to_schedule']: raise HTTPException(409,'Amount exceeds the unreserved outstanding balance.')
         chosen.append((item,row))
     total=sum((i.amount for i,_ in chosen),ZERO)
@@ -338,6 +340,7 @@ def revalidate(cur,user,detail):
         totals[sid]=totals.get(sid,ZERO)+a['amount']
     for sid,amount in totals.items():
         row=rows[sid]
+        if amount<Decimal('50.00'): raise HTTPException(409,'Minimum royalty payment is $50. Cancel this batch and prepare it again.')
         if amount>row['outstanding']-row['simulated_settled'] or row['active_reservations']>row['outstanding']-row['simulated_settled']:
             raise HTTPException(409,'The batch now exceeds the outstanding royalty account balance.')
 
