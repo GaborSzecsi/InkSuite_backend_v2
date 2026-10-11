@@ -43,7 +43,7 @@ def exchange(auth,offline=True):
         'requested_token_type':'urn:shopify:params:oauth:token-type:offline-access-token' if offline else 'urn:shopify:params:oauth:token-type:online-access-token',
         **({'expiring':'1'} if offline else {}),
     }, auth['credentials'], offline=offline)
-    if not set(sh.SCOPES.split(',')).issubset(set(token.get('scope','').split(','))):
+    if not sh.has_required_scopes(token.get('scope','')):
         raise HTTPException(403, 'Install the current InkSuite app version to grant its required permissions.')
     return token
 

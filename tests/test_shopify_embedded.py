@@ -24,3 +24,14 @@ class ShopifySessionTests(unittest.TestCase):
   for field in ('aud','exp','nbf','iat','iss','dest','sub'):
    claims=self.claims();del claims[field]
    with self.assertRaises(HTTPException):self.validate(claims)
+
+ def test_write_scope_satisfies_product_read_during_exchange(self):
+  token={'scope':em.sh.SCOPES.replace('read_products','write_products')}
+  with patch.object(em.sh,'token_request',return_value=token):
+   self.assertEqual(em.exchange({'shop':'demo.myshopify.com','token':'session','credentials':{}},offline=False),token)
+ def test_missing_unrelated_scope_still_denied(self):
+  with patch.object(em.sh,'token_request',return_value={'scope':'write_products'}):
+   with self.assertRaises(HTTPException) as err:em.exchange({'shop':'demo.myshopify.com','token':'session','credentials':{}})
+   self.assertEqual(err.exception.status_code,403)
+ def test_read_does_not_grant_write(self):
+  self.assertFalse(em.sh.has_required_scopes('read_products','write_products'))

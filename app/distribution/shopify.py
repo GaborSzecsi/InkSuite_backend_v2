@@ -27,6 +27,13 @@ API_VERSION='2026-07'
 TOPICS={'orders/paid','orders/updated','orders/cancelled','app/uninstalled','customers/data_request','customers/redact','shop/redact'}
 
 
+def has_required_scopes(granted, required=SCOPES):
+    scopes = {scope.strip() for scope in (granted or '').split(',') if scope.strip()}
+    # Shopify may omit redundant read grants when the corresponding write grant exists.
+    scopes |= {'read_' + scope[6:] for scope in scopes if scope.startswith('write_')}
+    return all(scope.strip() in scopes for scope in required.split(',') if scope.strip())
+
+
 def shop_domain(value):
     value=(value or '').strip().lower()
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]*\.myshopify\.com',value): raise HTTPException(422,'Enter the store’s myshopify.com domain.')
@@ -96,7 +103,7 @@ def callback(request:Request):
         existing=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE shop=%s',(shop,))
         if existing and str(existing['tenant_id'])!=str(row['tenant_id']): raise HTTPException(409,'Store belongs to another publisher.')
         token=token_request(shop,{'code':q.get('code',''),'expiring':'1'},credentials)
-        if not set(SCOPES.split(',')).issubset(set(token.get('scope','').split(','))): raise HTTPException(403,'Required Shopify read permissions were not granted.')
+        if not has_required_scopes(token.get('scope','')): raise HTTPException(403,'Required Shopify read permissions were not granted.')
         installation_id=existing['id'] if existing else uuid4()
         reference=secrets.save(row['tenant_id'],installation_id,token)
         cur.execute('INSERT INTO distribution_shopify_installations(id,tenant_id,shop,secret_reference) VALUES(%s,%s,%s,%s) ON CONFLICT(shop) DO UPDATE SET secret_reference=excluded.secret_reference,active=true',(installation_id,row['tenant_id'],shop,reference))
