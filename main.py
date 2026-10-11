@@ -158,6 +158,8 @@ app.include_router(ingest.router, prefix="/api", tags=["Ingest"])
 
 # Financials: mount under /api so it’s protected and consistent with your frontend URLs
 app.include_router(financials_router, prefix="/api", tags=["Financials"])
+from routers.financial_payments import router as financial_payments_router
+app.include_router(financial_payments_router, prefix="/api")
 from app.distribution.router import router as distribution_router
 from app.distribution.shopify import public_router as distribution_shopify_router
 app.include_router(distribution_router, prefix="/api")

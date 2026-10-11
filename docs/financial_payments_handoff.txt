@@ -1,0 +1,51 @@
+InkSuite Payments implementation handoff — 2026-10-09
+
+Implemented in the existing local repositories
+Backend: C:/Users/szecs/Documents/InkSuite_backend_v2
+Frontend: C:/Users/szecs/marble-frontend
+Page route: /app/financials/payments
+API prefix: /api/financials/payments
+
+The page uses existing globals.css tokens, panel and control classes, fonts, spacing, and Financials routing. It includes bank summary, actual royalty outstanding totals, explicitly simulated funding/transfer state, payables search/filters/sorting, individual partial and bulk payment review, batch approval/execution, transfer lifecycle controls, settings, and paginated manual/ACH history. The Financials sidebar links to Payments.
+
+The FastAPI router checks Cognito identity against publisher membership for every request. Financials staff may read/prepare; tenant admins configure banks/settings, verify simulated destinations, approve and execute. Dual approval at/above its threshold requires two distinct admins other than the creator. This default needs three admins for the full workflow; a tenant admin can explicitly change the simulation policy in Payment settings. Policy changes cancel unsubmitted batches, so approvals cannot survive changed policy.
+
+Financial integration
+- Reuses finalized royalty statements, existing account settlement/carry-forward logic, recorded manual payments and effective-dated routing instructions.
+- Latest version-2 settlement snapshot is the payable identity for each work/role/currency account. Older rolling snapshots are not summed as separate debts.
+- Reserve and minimum-payout amounts are frozen by the royalty engine; the payments module does not recalculate royalty rates.
+- Decimal split arithmetic with a deterministic cent remainder, no assumed agency percentage.
+- Secure banking uses tenant slug TEXT while the public ledger uses tenant UUID; both are validated explicitly.
+- Recipient accounts reference encrypted secure_payments records and expose masked metadata only. No routing/account numbers or secrets are added to new tables or event payloads.
+- Transaction-level tenant locks and shared royalty-account locks serialize reservations and source changes. Database checks enforce ownership, transfer/recipient mappings, and batch/transfer totals.
+- Immutable allocation/source/instruction snapshots and append-only events, approvals, balance snapshots and shadow reconciliation records.
+- Source, instructions and secure account version revalidated before approval and execution.
+- Pending/submitted transfers reserve capacity; only simulation settlement reduces simulation eligibility. Returns append compensating shadow postings.
+
+Mock banking
+- Deterministic provider transfer identity, explicit user-entered test balance, balances reflecting simulated pending transfers, history, simulated destination verification, submission, processing, settlement, failure and returns.
+- Multiple funding accounts; one default per tenant/currency.
+- Recent balance checks include operating reserve and all prepared/outgoing commitments without subtracting reflected commitments twice.
+- Duplicate event identities deduplicated; conflicting reuse rejected; out-of-order lifecycle updates do not regress terminal state.
+- Simulation and real royalty debt remain separate. Real manual payments continue to use their existing endpoint and appear in history.
+
+Validation
+- 16 new domain/database/API tests pass against disposable PostgreSQL (PGlite), including ownership, authorization, dual approval, partial reservations, insufficient funds, title consolidation, manual payments, rolling carry-forward, minimum accrual, idempotency, return accounting, and immutable history.
+- 33 tests pass including existing royalty account and settlement tests. The pre-existing PDF logo test could not fetch S3 through the restricted network but passed using its fallback; no PDF code was changed.
+- Browser test used the actual React Payments page and FastAPI services with synthetic records in a disposable database, not production. Verified two titles -> four allocations -> two transfers -> authorization -> execution -> settlement -> history. Desktop/mobile screenshots are included.
+- A complete repository TypeScript check still fails on existing errors outside Payments. No errors remain in the new Payments page/proxy or changed sidebar. Full production build is not certified.
+- No production migration, deployment, live bank connection, or actual transfer was performed. Existing data/banking.json changes were already present and were left untouched.
+
+Deployment sequence (pending)
+1. Use the normal migration/deployment process in staging. Apply migrations 019, 023 and 024 if not already present, then 026_financial_payments.sql. The existing secure_payments banking subsystem must already exist.
+2. Migration 026 is additive and creates 14 financial_payments tables, indexes and guard triggers. It seeds no payments or bank balances. Apply it once using the existing migration tracker; it is not intended to be manually reapplied.
+3. Deploy the backend router/services and frontend page, proxy and sidebar update together.
+4. Verify authenticated tenant membership, financial permissions and the mock provider workflow in staging. Configure an explicit test balance and simulate destination verification; no provider secrets are required.
+5. Resolve the frontend’s existing TypeScript errors before treating a production build as passed.
+6. Roll out this simulation-only module. Preserve historical financial tables when disabling or rolling back the UI/router; do not drop financial history.
+7. After the bank supplies its contract/docs/sandbox, add the production connector, credential vault access, real verification, signed bank callbacks/status lookup, uncertain-submission recovery, idempotent real ledger settlement/reversal integration, reconciliation recovery and provider certification. Live enablement requires a reviewed migration replacing the current hard database restrictions and explicit operational approval. Flipping a UI toggle cannot enable live payments.
+
+Useful next tasks
+- Deploy the simulation-only module to staging with migration 026.
+- Address pre-existing frontend TypeScript failures.
+- Implement and certify the bank-specific live connector when the bank package arrives.

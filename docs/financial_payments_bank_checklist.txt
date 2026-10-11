@@ -1,0 +1,66 @@
+InkSuite / Marble Press — bank integration discussion
+Prepared 2026-10-09
+
+What to tell the bank
+
+“We are building royalty payments in InkSuite for Marble Press. We need to send USD ACH credits from our publisher-owned business account to authors, illustrators, and literary agencies, individually and in batches. We also need available/current balances, payment status and settlement notifications, ACH returns, and transaction references for reconciliation. Please connect us with your treasury management / ACH origination and API integration team. Do you support an ACH origination API, or secure file-based NACHA origination? We need documentation, sandbox access, and a technical onboarding contact.”
+
+Explain that InkSuite is a multi-tenant publishing platform: each publisher would authorize its own funding account, with its own limits, approvals, and credential scope. Ask whether the bank supports this platform relationship and what contractual/onboarding requirements apply to each publisher. Do not assume Marble Press’s approval extends to other customers.
+
+Information to request
+
+1. Access and delivery
+- Is ACH credit origination available for this business account?
+- REST API documentation/OpenAPI specification, or NACHA file specification and SFTP delivery/acknowledgment details.
+- Supported individual and batch payments, maximum batch size, supported US recipient account types, and same-day/standard processing.
+- Technical onboarding owner and support escalation contacts.
+
+2. Authentication and secure onboarding
+- Sandbox and production base URLs and onboarding steps.
+- OAuth/client authentication, scopes, mutual TLS/certificates, key rotation, IP allowlisting, and webhook signing requirements.
+- Bank connection/account identifiers and account ownership authorization process.
+- How each publisher independently authorizes access and revokes it.
+- Provide secrets through the bank’s secure onboarding channel; store production credentials in AWS Secrets Manager or equivalent.
+
+3. Balances and funding
+- Available balance and current balance endpoints, refresh frequency, balance timestamps and timezone.
+- Whether pending/accepted ACH payments are included in available balance, and how to identify which commitments are reflected.
+- Transaction activity/statement endpoints, ACH trace IDs, and reconciliation reports.
+- Funding availability, prefunding/reserve requirements, overdraft behavior, and insufficient-funds responses.
+
+4. Payment behavior
+- Required request fields, recipient registration/tokenization and verification options.
+- Appropriate ACH entry classes for individuals and business agencies, company/originator IDs and descriptions, and bank-required authorization records.
+- Idempotency support: key scope, retention duration, request replay behavior, duplicate detection.
+- How to recover after a request timeout: lookup by our request ID and bank transfer ID before retrying.
+- Distinction between accepted, submitted, processing, settled, failed, and returned.
+- Cutoff times and timezone, effective-date rules, banking holidays, cancellation/reversal windows.
+
+5. Notifications and returns
+- Webhooks/callbacks for status and settlement; authentication/signatures, timestamp/replay protection, retry/redelivery policy and stable event IDs.
+- ACH return and notification-of-change codes, timelines, corrected destination workflow, and reconciliation identifiers.
+- Polling endpoints/reports when webhooks are unavailable; event ordering and delayed/duplicate event behavior.
+
+6. Commercial and operational requirements
+- Per-transfer, daily and monthly limits; approval entitlements/dual control; fees and expected onboarding lead time.
+- Required agreements, account eligibility checks, ACH origination approval, and the bank’s assessment of the platform relationship.
+- Certification/UAT plan and production enablement process.
+
+7. Sandbox scenarios required
+- Successful submission and settlement.
+- Insufficient funds, invalid/unverified destination and rejected submission.
+- Duplicate request, timeout after acceptance, delayed/duplicate/out-of-order callbacks.
+- ACH return after settlement and notification of change.
+- Balance freshness and pending commitments reflected/unreflected by available balance.
+
+Bank integration deliverables we need back
+Documentation, supported capabilities, sandbox access, non-secret account/connection IDs, authentication requirements, payment/webhook/return sample payloads, limits/cutoffs/fees, and the technical owner. The live bank connector cannot be completed from an account number and routing number alone.
+
+Current implementation
+The code implements the complete simulated workflow. It does not submit live ACH or decrypt real recipient account details. Mock settlement postings stay in financial_payments and never write public.royalty_payments. Production settlement/reversal posting, signed external webhooks, credential retrieval, provider uncertainty recovery and live destination verification must be implemented and certified with the chosen bank before enabling real transfers. The database currently forbids live enablement.
+
+Primary references checked
+J.P. Morgan Payments API catalog illustrates separate account balances, ACH transactions and notification capabilities (your bank may differ): https://developer.payments.jpmorgan.com/api/home
+J.P. Morgan sandbox quick start: https://developer.payments.jpmorgan.com/docs/quick-start
+J.P. Morgan notification types: https://developer.payments.jpmorgan.com/docs/commerce/optimization-protection/capabilities/notifications/notification-types
+Federal Reserve FedACH service forms cover origination testing, return items and notifications of change: https://www.frbservices.org/forms/fedach-services-forms/
