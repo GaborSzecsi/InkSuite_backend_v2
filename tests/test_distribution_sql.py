@@ -332,4 +332,19 @@ class DistributionSQLTests(unittest.TestCase):
   rpc("INSERT INTO editions(id,tenant_id,work_id,isbn13) VALUES($1,$2,$3,'9780306406157')",[str(uuid4()),self.tenant,self.work])
   with s.transaction() as cur:self.assertEqual(sh.match_isbn(cur,self.tenant,{'barcode':'9780306406157'})[1],'DUPLICATE_ISBN')
 
+ def test_sync_reconciles_deletion_only_after_last_page(self):
+  from app.distribution import shopify as sh
+  install=self.privacy_install()
+  rpc("INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,title) VALUES($1,$2,'old','Deleted book')",[self.tenant,install['id']])
+  sh.sync_products(install['id'],self.ctx,self.connection)
+  page={'productVariants':{'nodes':[],'pageInfo':{'hasNextPage':True,'endCursor':'next'}}}
+  with patch.object(sh,'graphql',return_value=page):sh.sync_catalog_once()
+  self.assertTrue(rpc("SELECT active FROM distribution_shopify_variants WHERE installation_id=$1",[install['id']])['rows'][0]['active'])
+  with patch.object(sh,'graphql',side_effect=RuntimeError('network')):sh.sync_catalog_once()
+  self.assertTrue(rpc("SELECT active FROM distribution_shopify_variants WHERE installation_id=$1",[install['id']])['rows'][0]['active'])
+  sh.sync_products(install['id'],self.ctx,self.connection)
+  page['productVariants']['pageInfo']={'hasNextPage':False,'endCursor':None}
+  with patch.object(sh,'graphql',return_value=page):sh.sync_catalog_once()
+  self.assertFalse(rpc("SELECT active FROM distribution_shopify_variants WHERE installation_id=$1",[install['id']])['rows'][0]['active'])
+
 if __name__=='__main__':unittest.main()

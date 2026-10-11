@@ -56,7 +56,8 @@ if __name__=='__main__':
                 last_retention = time.monotonic() if processed < 100 else 0
             if not privacy.run_once() and not run_once():
                 from .shopify import process_inbox_once, sync_catalog_once
-                if not process_inbox_once() and not sync_catalog_once(): time.sleep(5)
+                from .publishing import run_once as publish_once
+                if not process_inbox_once() and not sync_catalog_once() and not publish_once(): time.sleep(5)
         except Exception:
             log.error('Distribution worker unavailable; check database and migrations 020/021.')
             time.sleep(15)

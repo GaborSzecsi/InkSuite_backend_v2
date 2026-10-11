@@ -302,16 +302,18 @@ def sync_catalog_once():
             metadata = {'product_id': variant['product'].get('id'), 'product_title': variant['product']['title'],
                         'variant_title': variant['title'], 'barcode': variant.get('barcode') or '',
                         'isbn': isbn, 'match_status': match_status}
-            cur.execute("""INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,sku,title,inventory_item_id,edition_id,connection_id,catalog_metadata)
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(tenant_id,installation_id,variant_id)
+            cur.execute("""INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,sku,title,inventory_item_id,edition_id,connection_id,catalog_metadata,seen_job_id)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(tenant_id,installation_id,variant_id)
                 DO UPDATE SET sku=excluded.sku,title=excluded.title,inventory_item_id=excluded.inventory_item_id,
                 edition_id=COALESCE(distribution_shopify_variants.edition_id,excluded.edition_id),
                 connection_id=COALESCE(distribution_shopify_variants.connection_id,excluded.connection_id),
-                catalog_metadata=excluded.catalog_metadata""",
+                catalog_metadata=excluded.catalog_metadata,seen_job_id=excluded.seen_job_id,active=true""",
                 (installation['tenant_id'],installation['id'],variant['id'],variant.get('sku') or '',
                  variant['product']['title']+' / '+variant['title'],(variant.get('inventoryItem') or {}).get('id'),
-                 edition,job.get('connection_id'),Jsonb(metadata)))
+                 edition,job.get('connection_id'),Jsonb(metadata),job['id']))
         page=result['pageInfo']
+        if not page['hasNextPage']:
+            cur.execute('UPDATE distribution_shopify_variants SET active=false WHERE installation_id=%s AND tenant_id=%s AND seen_job_id IS DISTINCT FROM %s',(installation['id'],installation['tenant_id'],job['id']))
         cur.execute('UPDATE distribution_shopify_jobs SET status=%s,cursor=%s,error_code=NULL,updated_at=now() WHERE id=%s',('QUEUED' if page['hasNextPage'] else 'DONE',page['endCursor'],job['id']))
     return True
 

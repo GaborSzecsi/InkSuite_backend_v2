@@ -115,11 +115,13 @@ def workspace(install=Depends(linked)):
         tenant=install['tenant_id']
         cur.execute('SELECT id,display_name FROM distribution_connections WHERE tenant_id=%s ORDER BY display_name',(tenant,));connections=cur.fetchall()
         cur.execute('SELECT e.id,e.isbn13,w.title FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id WHERE e.tenant_id=%s ORDER BY w.title LIMIT 1000',(tenant,));editions=cur.fetchall()
-        cur.execute('SELECT variant_id,title,sku,edition_id,connection_id,catalog_metadata FROM distribution_shopify_variants WHERE tenant_id=%s AND installation_id=%s ORDER BY title LIMIT 500',(tenant,install['id']));variants=cur.fetchall()
+        cur.execute('SELECT variant_id,title,sku,edition_id,connection_id,catalog_metadata FROM distribution_shopify_variants WHERE tenant_id=%s AND installation_id=%s AND active ORDER BY title LIMIT 500',(tenant,install['id']));variants=cur.fetchall()
         cur.execute("SELECT o.id,o.external_order_id,o.status,o.created_at,COALESCE(sum(l.quantity),0) AS quantity FROM distribution_orders o LEFT JOIN distribution_order_items l ON l.order_id=o.id AND l.tenant_id=o.tenant_id WHERE o.tenant_id=%s AND o.source='SHOPIFY' AND o.source_account=%s GROUP BY o.id ORDER BY o.created_at DESC LIMIT 100",(tenant,install['shop']));orders=cur.fetchall()
         cur.execute('SELECT id,topic,status,error_code FROM distribution_webhooks WHERE tenant_id=%s AND installation_id=%s ORDER BY created_at DESC LIMIT 100',(tenant,install['id']));inbox=cur.fetchall()
+        cur.execute('SELECT status,error_code,updated_at FROM distribution_shopify_jobs WHERE installation_id=%s ORDER BY created_at DESC LIMIT 1',(install['id'],));sync=cur.fetchone()
+        cur.execute('SELECT id,work_id,status,message FROM distribution_shopify_publish_jobs WHERE installation_id=%s ORDER BY created_at DESC LIMIT 50',(install['id'],));publishing=cur.fetchall()
         privacy.audit(cur,tenant,str(install['user_id']),'EMBEDDED_WORKSPACE_READ',install['id'])
-    return {'shop':install['shop'],'location_id':install['location_id'],'connections':connections,'editions':editions,'variants':variants,'orders':orders,'inbox':inbox}
+    return {'shop':install['shop'],'location_id':install['location_id'],'connections':connections,'editions':editions,'variants':variants,'orders':orders,'inbox':inbox,'sync':sync,'publishing':publishing}
 
 
 def ctx(install):
@@ -174,3 +176,19 @@ def retry(body:RetryIn,install=Depends(linked)):
         row=s.one(cur,"UPDATE distribution_webhooks SET status='RECEIVED',error_code=NULL WHERE id=%s AND tenant_id=%s AND installation_id=%s AND status='REVIEW_REQUIRED' AND topic IN ('orders/paid','orders/updated','orders/cancelled') RETURNING id",(body.id,install['tenant_id'],install['id']))
         if not row: raise HTTPException(404,'Retryable event not found.')
     return {'queued':True}
+
+
+@embedded.get('/catalog')
+def publisher_catalog(install=Depends(linked)):
+    from .publishing import catalog
+    with s.transaction() as cur:
+        return catalog(cur,install)
+
+class PublishIn(BaseModel):
+    edition_ids:list[UUID]=Field(min_length=1,max_length=100)
+    connection_id:UUID
+
+@embedded.post('/publish',status_code=202)
+def publish_books(body:PublishIn,install=Depends(linked)):
+    from .publishing import enqueue
+    return enqueue(install,body.edition_ids,body.connection_id)
