@@ -86,10 +86,17 @@ def delete_orders(cur, request, rows):
         for table in ('distribution_jobs', 'distribution_events', 'distribution_reservations', 'distribution_order_items'):
             cur.execute(f'DELETE FROM {table} WHERE tenant_id=%s AND order_id=%s', (request['tenant_id'], row['id']))
         cur.execute('DELETE FROM distribution_orders WHERE tenant_id=%s AND id=%s', (request['tenant_id'], row['id']))
-        cur.execute('''DELETE FROM distribution_webhooks w USING distribution_shopify_installations i
-            WHERE w.tenant_id=%s AND i.tenant_id=w.tenant_id AND i.id=w.installation_id AND i.shop=%s
-            AND (w.payload->>'id'=%s OR w.payload->>'admin_graphql_api_id'=%s)''',
-            (request['tenant_id'], request['shop'], numeric_id(row['external_order_id']), 'gid://shopify/Order/'+numeric_id(row['external_order_id'])))
+        delete_order_webhooks(cur, request, numeric_id(row['external_order_id']))
+
+
+def delete_order_webhooks(cur, request, order_id):
+    # Queued identifiers are customer data even before an order is normalized.
+    cur.execute("""DELETE FROM distribution_webhooks w USING distribution_shopify_installations i
+        WHERE w.tenant_id=%s AND i.tenant_id=w.tenant_id AND i.id=w.installation_id AND i.shop=%s
+        AND w.topic IN ('orders/paid','orders/updated','orders/cancelled')
+        AND (w.payload->>'id'=%s OR w.payload->>'admin_graphql_api_id'=%s)""",
+        (request['tenant_id'], request['shop'], order_id, 'gid://shopify/Order/'+order_id))
+
 
 
 def complete(cur, request, status='DONE', code=None):
@@ -129,6 +136,7 @@ def run_once():
                 return True
         delete_orders(cur, request, rows)
         for order_id in request['payload'].get('order_ids', []):
+            delete_order_webhooks(cur, request, order_id)
             suppress(cur, request['tenant_id'], request['shop'], 'order', order_id)
         if request['topic'] == 'shop/redact':
             for table in ('distribution_shopify_jobs', 'distribution_shopify_variants', 'distribution_webhooks'):
@@ -146,6 +154,8 @@ def retention_once():
     with s.transaction() as cur:
         require_ready(cur)
         cur.execute("DELETE FROM distribution_oauth_states WHERE expires_at<now()-interval '1 day'")
+        if s.one(cur, "SELECT to_regclass('public.distribution_shopify_link_codes') AS ready")['ready']:
+            cur.execute('DELETE FROM distribution_shopify_link_codes WHERE expires_at<now()')
         cur.execute('DELETE FROM distribution_privacy_suppressions WHERE expires_at<now()')
         cur.execute("DELETE FROM distribution_access_audit WHERE created_at<now()-interval '365 days'")
         cur.execute("DELETE FROM distribution_privacy_requests WHERE completed_at<now()-interval '365 days'")

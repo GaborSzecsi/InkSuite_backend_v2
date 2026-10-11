@@ -162,6 +162,8 @@ from routers.financial_payments import router as financial_payments_router
 app.include_router(financial_payments_router, prefix="/api")
 from app.distribution.router import router as distribution_router
 from app.distribution.shopify import public_router as distribution_shopify_router
+from app.distribution.embedded import embedded as distribution_embedded_router
+app.include_router(distribution_embedded_router)
 app.include_router(distribution_router, prefix="/api")
 app.include_router(distribution_shopify_router)
 from routers.payment_instructions import router as payment_instructions_router
@@ -238,6 +240,10 @@ async def require_auth_middleware(request, call_next):
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
+
+    # Embedded endpoints validate Shopify JWTs in their own dependency.
+    if path.startswith('/api/distribution/shopify/embedded/'):
+        return await call_next(request)
 
     # Shopify public endpoints verify HMAC/state themselves; no broader auth exemption.
     if (path == '/api/distribution/shopify/webhooks' and request.method == 'POST') or (path == '/api/distribution/shopify/callback' and request.method == 'GET'):

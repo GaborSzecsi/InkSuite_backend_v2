@@ -156,6 +156,27 @@ class DistributionSQLTests(unittest.TestCase):
   payload={'orders_requested':ids or [],'orders_to_redact':ids or [],'customer':{'email':'must-not-store@example.test','phone':'5555555555','id':23}}
   with s.transaction() as cur:privacy.receive(cur,install,topic,str(uuid4()),payload)
   return rpc('SELECT * FROM distribution_privacy_requests WHERE tenant_id=$1 ORDER BY created_at DESC',[self.tenant])['rows'][0]
+ def test_embedded_link_code_is_single_use_and_scoped(self):
+  from app.distribution import embedded as em
+  rpc("INSERT INTO memberships VALUES($1,$2,'tenant_admin')",[self.tenant,self.user])
+  code=em.link_code(self.ctx)['code'];auth={'shop':'embedded-'+self.tenant+'.myshopify.com','sub':'42'}
+  with patch.object(em,'exchange',return_value={'access_token':'test'}),patch.object(em.sh.secrets,'save',return_value='test-reference'):
+   self.assertTrue(em.link(em.LinkIn(code=code),auth)['linked'])
+   with self.assertRaises(HTTPException):em.link(em.LinkIn(code=code),auth)
+  install=em.linked(auth);self.assertEqual(install['tenant_id'],self.tenant)
+  with self.assertRaises(HTTPException):em.linked({**auth,'sub':'43'})
+  with self.assertRaises(HTTPException):em.linked({**auth,'shop':'other.myshopify.com'})
+  rpc("UPDATE memberships SET role='tenant_editor' WHERE tenant_id=$1",[self.tenant])
+  with self.assertRaises(HTTPException):em.linked(auth)
+ def test_embedded_workspace_excludes_other_stores_and_marketplace(self):
+  from app.distribution import embedded as em
+  install=self.privacy_install();install['user_id']=self.user;install['location_id']=None
+  own=self.create()
+  self.create(self.body.model_copy(update={'external_order_id':'999','source_account':'other.myshopify.com'}))
+  self.create(self.body.model_copy(update={'external_order_id':'888','source':'MARKETPLACE'}))
+  data=em.workspace(install)
+  self.assertEqual([o['id'] for o in data['orders']],[own['id']])
+  self.assertNotIn('recipient',data['orders'][0])
  def test_shopify_never_persists_delivery_details(self):
   from app.distribution import shopify
   body=self.body.model_copy(update={'delivery_instructions':'Private gift note'})
@@ -176,6 +197,31 @@ class DistributionSQLTests(unittest.TestCase):
   with self.assertRaises(HTTPException):self.create()
   request=rpc('SELECT * FROM distribution_privacy_requests WHERE tenant_id=$1',[self.tenant])['rows'][0]
   self.assertEqual(request['status'],'DONE');self.assertEqual(request['payload'],{});self.assertIsNone(request['shop'])
+ def test_redaction_removes_unimported_inbox_and_ignores_delayed_delivery(self):
+  import base64,hashlib,hmac,os
+  from app.distribution import privacy,shopify
+  install=self.privacy_install()
+  for order_id in ('100','200'):
+   rpc("INSERT INTO distribution_webhooks(tenant_id,installation_id,delivery_id,topic,payload) VALUES($1,$2,$3,'orders/paid',$4)",[self.tenant,install['id'],order_id,{'id':order_id}])
+  self.privacy_request(install,'customers/redact',['100']);privacy.run_once()
+  self.assertEqual(rpc('SELECT payload FROM distribution_webhooks WHERE tenant_id=$1',[self.tenant])['rows'],[{'payload':{'id':'200'}}])
+  app=FastAPI();app.include_router(shopify.public_router);client=TestClient(app)
+  headers={'x-shopify-shop-domain':install['shop'],'x-shopify-topic':'orders/paid','x-shopify-webhook-id':'delayed','content-type':'application/json'}
+  body=json.dumps({'id':100,'email':'never-store@example.test'}).encode()
+  headers['x-shopify-hmac-sha256']=base64.b64encode(hmac.new(b'test-secret',body,hashlib.sha256).digest()).decode()
+  with patch.dict(os.environ,{'DISTRIBUTION_SHOPIFY_APP_SECRET':'test-only'}),patch.object(shopify,'app_credentials',return_value={'client_secret':'test-secret'}):
+   self.assertEqual(client.post('/api/distribution/shopify/webhooks',content=body,headers=headers).status_code,200)
+  self.assertEqual(rpc('SELECT payload FROM distribution_webhooks WHERE tenant_id=$1',[self.tenant])['rows'],[{'payload':{'id':'200'}}])
+ def test_order_webhook_rejects_non_identifier_payload(self):
+  import base64,hashlib,hmac,os
+  from app.distribution import shopify
+  install=self.privacy_install();app=FastAPI();app.include_router(shopify.public_router);client=TestClient(app)
+  headers={'x-shopify-shop-domain':install['shop'],'x-shopify-topic':'orders/paid','x-shopify-webhook-id':'malformed','content-type':'application/json'}
+  with patch.dict(os.environ,{'DISTRIBUTION_SHOPIFY_APP_SECRET':'test-only'}),patch.object(shopify,'app_credentials',return_value={'client_secret':'test-secret'}):
+   for payload in ({'id':'private@example.test'},{'id':100,'admin_graphql_api_id':'private@example.test'}):
+    body=json.dumps(payload).encode();headers['x-shopify-hmac-sha256']=base64.b64encode(hmac.new(b'test-secret',body,hashlib.sha256).digest()).decode()
+    self.assertEqual(client.post('/api/distribution/shopify/webhooks',content=body,headers=headers).status_code,400)
+  self.assertEqual(rpc('SELECT payload FROM distribution_webhooks WHERE tenant_id=$1',[self.tenant])['rows'],[])
  def test_data_request_download_and_delivery(self):
   from app.distribution import privacy
   install=self.privacy_install();self.create();request=self.privacy_request(install,'customers/data_request',['100'])

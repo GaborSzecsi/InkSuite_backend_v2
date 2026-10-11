@@ -57,14 +57,17 @@ def verify_callback(query,secret):
     return bool(supplied) and hmac.compare_digest(expected,supplied)
 
 
-def token_request(shop,values,credentials):
+def token_request(shop,values,credentials,offline=True):
     try:
         res=requests.post(f'https://{shop_domain(shop)}/admin/oauth/access_token',data={**values,'client_id':credentials['client_id'],'client_secret':credentials['client_secret']},timeout=20,allow_redirects=False)
+        if res.status_code==400 and 'subject_token' in values:
+            raise HTTPException(401, 'Refresh the Shopify session.', headers={'X-Shopify-Retry-Invalid-Session-Request':'1'})
         if res.status_code!=200: raise ValueError()
         value=res.json()
-        if not value.get('access_token') or not value.get('refresh_token'): raise ValueError()
+        if not value.get('access_token') or (offline and not value.get('refresh_token')): raise ValueError()
         value['expires_at']=time.time()+int(value['expires_in'])
         return value
+    except HTTPException: raise
     except Exception: raise HTTPException(502,'Shopify authorization failed. Reconnect the store; no orders were transmitted.') from None
 
 
@@ -72,18 +75,7 @@ class ConnectIn(BaseModel): shop:str
 
 @router.post('/shopify/connect')
 def connect(body:ConnectIn,ctx=Depends(admin)):
-    tenant,user=ids(ctx);shop=shop_domain(body.shop);credentials=app_credentials()
-    base=os.getenv('DISTRIBUTION_PUBLIC_ORIGIN','').rstrip('/')
-    if not base.startswith('https://'): raise HTTPException(503,'Set the public HTTPS callback origin before connecting Shopify.')
-    state=random.token_urlsafe(32)
-    with s.transaction() as cur:
-        existing=s.one(cur,'SELECT tenant_id FROM distribution_shopify_installations WHERE shop=%s',(shop,))
-        if existing and str(existing['tenant_id'])!=str(tenant): raise HTTPException(409,'This Shopify store is linked to another publisher.')
-        cur.execute("INSERT INTO distribution_oauth_states(state_hash,tenant_id,user_id,shop,expires_at) VALUES(%s,%s,%s,%s,now()+interval '10 minutes')",(hashlib.sha256(state.encode()).hexdigest(),tenant,user,shop))
-    url=f'https://{shop}/admin/oauth/authorize?'+urlencode({'client_id':credentials['client_id'],'scope':SCOPES,'redirect_uri':base+'/api/distribution/shopify/callback','state':state})
-    response=JSONResponse({'authorization_url':url})
-    response.set_cookie('distribution_oauth',state,max_age=600,httponly=True,secure=True,samesite='lax',path='/')
-    return response
+    raise HTTPException(410, 'Install InkSuite from Shopify, then link your publisher inside the app.')
 
 
 @public_router.get('/callback')
@@ -145,9 +137,8 @@ async def webhook(request:Request):
     if not isinstance(payload,dict): raise HTTPException(400,'Invalid webhook payload.')
     if topic in privacy.TOPICS and payload.get('shop_domain') != shop: raise HTTPException(400,'Privacy request store mismatch.')
     # Store only identifiers required to retrieve canonical GraphQL records. No customer payload archive.
-    minimal={k:payload[k] for k in ('id','admin_graphql_api_id','shop_id') if k in payload}
     with s.transaction() as cur:
-        install=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE shop=%s',(shop,))
+        install=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE shop=%s FOR UPDATE',(shop,))
         if not install:
             if topic in privacy.TOPICS: return {'received':True}
             raise HTTPException(404,'Store is not installed.')
@@ -156,8 +147,21 @@ async def webhook(request:Request):
             except ValueError: raise HTTPException(400,'Invalid privacy request identifiers.') from None
             return {'received':True}
         if not install['active'] and topic not in ('app/uninstalled','customers/redact','shop/redact'): return {'received':True}
+        if topic.startswith('orders/'):
+            order_id = privacy.numeric_id(payload.get('id'))
+            gid = payload.get('admin_graphql_api_id')
+            if not order_id or (gid is not None and gid != 'gid://shopify/Order/' + order_id):
+                raise HTTPException(400, 'Invalid order identifier.')
+            if privacy.suppressed(cur, install['tenant_id'], shop, order_id):
+                return {'received': True}
+            minimal = {'id': int(order_id)}
+        else:
+            minimal = {}  # Uninstall payloads need no merchant/customer fields.
         cur.execute('INSERT INTO distribution_webhooks(tenant_id,installation_id,delivery_id,topic,payload) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(installation_id,delivery_id) DO NOTHING',(install['tenant_id'],install['id'],delivery,topic,Jsonb(minimal)))
-        if topic=='app/uninstalled': cur.execute('UPDATE distribution_shopify_installations SET active=false WHERE id=%s',(install['id'],))
+        if topic=='app/uninstalled':
+            cur.execute('UPDATE distribution_shopify_installations SET active=false WHERE id=%s',(install['id'],))
+            if s.one(cur, "SELECT to_regclass('public.distribution_shopify_users') AS ready")['ready']:
+                cur.execute('DELETE FROM distribution_shopify_users WHERE installation_id=%s',(install['id'],))
     return {'received':True}
 
 

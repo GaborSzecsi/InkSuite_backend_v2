@@ -2,7 +2,7 @@
 
 ## Existing application inspected (2026-10-02)
 
-Read-only SQL inspection was performed against the database reached through the user's AWS tunnel before preparing migration 020. No distribution migration has been applied there.
+Read-only SQL inspection was performed against the database reached through the user's AWS tunnel before preparing migration 020. Migration 020 was subsequently applied with authorization; see the deployment record below. Migration 021 deployment has not been verified.
 
 - `tenants.id`, `works.id`, `editions.id` are UUIDs. Memberships use `(tenant_id,user_id)` with role and JSON module permissions. New routes use `require_tenant_access` and enforce Financials permission; configuration changes require a tenant administrator.
 - `works` owns title/description metadata. `editions` owns ISBN13, format and cover references. Format display labels (Hardcover, Paperback) and `onix_product_form` (BB, BC) are separate. New tables reference existing editions; no duplicate title metadata.
@@ -54,20 +54,20 @@ Company and phone have no defined position in the observed template. The new ren
 
 This is a preview build, not a production Exporteo replacement. Do not switch fulfillment to it.
 
-- AWS migration 020 is prepared but not applied. No Shopify app is registered/installed, no worker is started, no credentials are extracted, and no live distribution traffic has been sent.
+- AWS migration 020 was applied. The InkSuite-owned Shopify app is registered (details below). Installation, migration 021 and worker activation still require deployment verification. No live distributor sender is implemented.
 - Hachette inventory/acknowledgement/tracking schemas and snapshot reconciliation watermark are missing. Inventory sync fails closed until an adapter can implement them. Scheduling and channel inventory publication depend on that work.
 - SFTP order submission must remain disabled until actual duplicate-recognition/reconciliation semantics and cutover are agreed. Atomic rename alone is not proof of exactly-once delivery after the receiver consumes a file.
 - Fulfilled reservations intentionally remain counted until a confirmed snapshot watermark reconciles them; blind refresh must not release them. This is a conservative gate, not finished stock reconciliation.
 - No Shopify inventory or fulfillment write scopes are requested; outbound quantity/tracking publication is not implemented or enabled.
-- Privacy webhooks are retained as operator-review requests; automatic GDPR deletion/export and data retention policy must be implemented before public app distribution.
+- Shopify-only privacy deletion, administrator exports, suppression and retention are implemented. See PRIVACY_READINESS.md for deployment and security evidence still needed before submission. Marketplace privacy and checkout remain deferred.
 - Automatic order cancellation after transmission, partial shipments, and distributor acknowledgement processing await actual distributor specifications.
 - Stripe checkout/payment, Marketplace checkout/order customer pages, and payment confirmation are explicitly deferred. No public buyer can place a paid order in this build.
 
 ## Deployment prerequisites (do not run automatically)
 
-Review and apply migration 020 separately. Install `requirements-distribution.txt`. Use the existing backend environment and service conventions. `DISTRIBUTION_ALLOWED_HOSTS` must contain only independently approved distributor hosts. Plain FTP is off unless `DISTRIBUTION_ALLOW_PLAIN_FTP=1`; prefer SFTP/FTPS.
+Verify migrations 020 and 021 are installed before starting Shopify ingestion. Install `requirements-distribution.txt`. Use the existing backend environment and service conventions. `DISTRIBUTION_ALLOWED_HOSTS` must contain only independently approved distributor hosts. Plain FTP is off unless `DISTRIBUTION_ALLOW_PLAIN_FTP=1`; prefer SFTP/FTPS.
 
-Create Shopify app credentials in Secrets Manager and set `DISTRIBUTION_SHOPIFY_APP_SECRET` to that secret reference; its JSON must have `client_id` and `client_secret`. Set `DISTRIBUTION_PUBLIC_ORIGIN` to the app's HTTPS origin. OAuth callback is `/api/distribution/shopify/callback`; webhooks are `/api/distribution/shopify/webhooks`. Register the paid/updated/cancelled order and uninstall events only for the preview app. Compliance processing must be completed before public distribution.
+Create Shopify app credentials in Secrets Manager and set `DISTRIBUTION_SHOPIFY_APP_SECRET` to that secret reference; its JSON must have `client_id` and `client_secret`. Set `DISTRIBUTION_PUBLIC_ORIGIN` to the app's HTTPS origin. OAuth callback is `/api/distribution/shopify/callback`; webhooks are `/api/distribution/shopify/webhooks`. Register the paid/updated/cancelled order and uninstall events plus all three mandatory compliance topics. Verify actual deliveries before submitting for public distribution.
 
 Systemd unit supplied but NOT installed. Preview mode is enforced in service order creation and the adapter; there is no UI switch to live mode. Keep Exporteo active throughout preview.
 

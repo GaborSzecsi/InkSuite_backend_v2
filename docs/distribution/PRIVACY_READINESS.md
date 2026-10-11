@@ -49,3 +49,13 @@ Register the three mandatory Shopify compliance webhook subscriptions and test a
 Before answering Shopify's security questionnaire, verify RDS/Cognito/backup settings, implement isolated development credentials/data, adopt incident-response and data-loss-prevention procedures, and execute any required merchant data-processing agreement. No third-party audit or certification has been claimed.
 
 Sources: https://shopify.dev/docs/apps/build/compliance/privacy-law-compliance and https://shopify.dev/docs/apps/launch/protected-customer-data
+
+## Verification update — 2026-10-11
+
+- Public privacy and terms pages respond HTTP 200 and include Shopify disclosures.
+- Live public webhook endpoint rejects an invalid HMAC with HTTP 401. No customer payload or valid mutation was sent by this check.
+- Read-only AWS tunnel inspection confirms privacy request and suppression tables exist (migration 021 objects), zero Shopify contact-bearing orders, and zero active Shopify installations.
+- Worker activation, deployed code revision, all subscription registrations, RDS settings and real installation/delivery remain unverified. Table existence alone is not evidence that the worker runs.
+- 33 synthetic unit/SQL tests pass. Added coverage deletes queued order identifiers before import and rejects malformed identifier payloads. Delayed webhooks for suppressed orders are acknowledged without storing identifiers again.
+- The deletion/ingestion correction is local until deployed. No production rows were changed by this verification.
+- Marketplace checkout remains deferred; this verification does not certify Marketplace privacy readiness.
