@@ -196,6 +196,9 @@ def process_inbox_once():
     with s.transaction() as cur:
         entry=s.one(cur,"SELECT * FROM distribution_webhooks WHERE status='RECEIVED' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1")
         if not entry: return False
+        # Match execution's connection-before-installation lock order for split orders.
+        cur.execute('SELECT id FROM distribution_connections WHERE tenant_id=%s ORDER BY id FOR NO KEY UPDATE',(entry['tenant_id'],))
+        cur.fetchall()
         install=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE tenant_id=%s AND id=%s FOR UPDATE',(entry['tenant_id'],entry['installation_id']))
         code=None;status='REVIEW_REQUIRED'
         if entry['topic']=='app/uninstalled': status='DONE'
@@ -211,7 +214,16 @@ def process_inbox_once():
                 if created < datetime.now(timezone.utc)-timedelta(days=30): raise ValueError('ORDER_OUTSIDE_PREVIEW_RETENTION')
                 privacy.require_ready(cur)
                 if privacy.suppressed(cur,install['tenant_id'],install['shop'],order['id']): raise ValueError('ORDER_REMOVED_FOR_PRIVACY')
-                if order['cancelledAt']: raise ValueError('CANCELLED_SOURCE_ORDER_REQUIRES_REVIEW')
+                if order['cancelledAt']:
+                    cur.execute("SELECT id,status FROM distribution_orders WHERE tenant_id=%s AND source='SHOPIFY' AND source_account=%s AND external_order_id=%s",(install['tenant_id'],install['shop'],order['id']))
+                    review=False
+                    for previous in cur.fetchall():
+                        if previous['status'] in ('RECEIVED','RESERVED','QUEUED','FAILED','CANCELLED'):
+                            s.cancel(cur,install['tenant_id'],previous['id'],'shopify-worker')
+                        else: review=True
+                    if review: raise ValueError('CANCELLED_SOURCE_ORDER_REQUIRES_REVIEW')
+                    cur.execute("UPDATE distribution_webhooks SET status='DONE',error_code=NULL WHERE id=%s",(entry['id'],))
+                    return True
                 if order['displayFinancialStatus']!='PAID': raise ValueError('SOURCE_ORDER_NOT_PAID')
                 if not install['location_id']: raise ValueError('SELECT_SHOPIFY_FULFILLMENT_LOCATION')
                 groups={};pending=False
@@ -230,6 +242,9 @@ def process_inbox_once():
                         groups.setdefault(str(mapping['connection_id']),[]).append({'edition_id':str(mapping['edition_id']),'quantity':item['remainingQuantity']})
                 if pending: raise ValueError('UNMATCHED_PRODUCTS')
                 if not groups: raise ValueError('NO_ELIGIBLE_LINES_AT_SELECTED_LOCATION')
+                cur.execute("SELECT connection_id FROM distribution_orders WHERE tenant_id=%s AND source='SHOPIFY' AND source_account=%s AND external_order_id=%s",(install['tenant_id'],install['shop'],order['id']))
+                existing_routes={str(r['connection_id']) for r in cur.fetchall()}
+                if existing_routes and existing_routes!=set(groups): raise ValueError('ORDER_ROUTING_CHANGED')
                 shipping=order['shippingLines']
                 if shipping['pageInfo']['hasNextPage'] or len(shipping['nodes'])!=1: raise ValueError('SHIPPING_METHOD_REQUIRES_REVIEW')
                 # A savepoint rolls back ALL split previews if any group cannot be normalized.
@@ -237,7 +252,7 @@ def process_inbox_once():
                 try:
                     for connection_id,items in groups.items():
                         body=OrderIn(connection_id=connection_id,source='SHOPIFY',source_account=install['shop'],external_order_id=order['id'],reference='Shopify '+order['id'].rsplit('/',1)[-1],shipping_method=shipping['nodes'][0]['title'],items=items)
-                        s.create_order(cur,install['tenant_id'],body,'shopify-worker')
+                        s.create_order(cur,install['tenant_id'],body,'shopify-worker',automated=True,source_created_at=created)
                 except Exception:
                     cur.execute('ROLLBACK TO SAVEPOINT normalize_order')
                     raise ValueError('NORMALIZATION_REQUIRES_REVIEW') from None
@@ -245,7 +260,7 @@ def process_inbox_once():
                 status='DONE'
             except ValueError as exc:
                 allowed={'ORDER_OUTSIDE_PREVIEW_RETENTION','ORDER_REMOVED_FOR_PRIVACY','ORDER_NOT_AVAILABLE','CANCELLED_SOURCE_ORDER_REQUIRES_REVIEW','SOURCE_ORDER_NOT_PAID','SELECT_SHOPIFY_FULFILLMENT_LOCATION','ORDER_REQUIRES_PAGINATION_REVIEW','UNMATCHED_PRODUCTS','NO_ELIGIBLE_LINES_AT_SELECTED_LOCATION','SHIPPING_METHOD_REQUIRES_REVIEW','SHIPPING_ADDRESS_REQUIRED','NORMALIZATION_REQUIRES_REVIEW'}
-                code=str(exc) if str(exc) in allowed else 'SHOPIFY_RESPONSE_REQUIRES_REVIEW'
+                code=str(exc) if str(exc) in allowed|{'ORDER_ROUTING_CHANGED'} else 'SHOPIFY_RESPONSE_REQUIRES_REVIEW'
             except Exception: code='SHOPIFY_READ_FAILED'
         cur.execute('UPDATE distribution_webhooks SET status=%s,error_code=%s WHERE id=%s',(status,code,entry['id']))
         return True

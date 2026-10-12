@@ -13,7 +13,7 @@ from app.distribution.router import router,access,admin
 proc=None
 
 def rpc(sql,params=(),execute=False):
- params=[v.obj if isinstance(v,Jsonb) else str(v) if isinstance(v,__import__('uuid').UUID) else v for v in params]
+ params=[v.obj if isinstance(v,Jsonb) else str(v) if isinstance(v,__import__('uuid').UUID) else v.isoformat() if isinstance(v,__import__('datetime').datetime) else v for v in params]
  proc.stdin.write(json.dumps({'sql':sql,'params':params,'exec':execute})+'\n');proc.stdin.flush()
  result=json.loads(proc.stdout.readline())
  if 'error' in result:raise RuntimeError(result['error'])

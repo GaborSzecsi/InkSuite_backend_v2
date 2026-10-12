@@ -23,7 +23,7 @@ def transaction():
 
 
 def connection(cur, tenant, connection_id, lock=False):
-    row=one(cur,'SELECT * FROM distribution_connections WHERE tenant_id=%s AND id=%s'+(' FOR UPDATE' if lock else ''),(tenant,connection_id))
+    row=one(cur,'SELECT * FROM distribution_connections WHERE tenant_id=%s AND id=%s'+(' FOR NO KEY UPDATE' if lock else ''),(tenant,connection_id))
     if not row: raise HTTPException(404,'Distributor connection not found.')
     return row
 
@@ -37,7 +37,7 @@ def enqueue(cur,tenant,connection_id,kind,order_id=None):
     return {'queued':True,'job_id':str(row['id']) if row else None}
 
 
-def create_order(cur,tenant,body,actor):
+def create_order(cur,tenant,body,actor,automated=False,source_created_at=None):
     """Preview ingestion; live ingestion uses the same row locks and reserve function."""
     conn=connection(cur,tenant,body.connection_id,lock=True)
     data=body.model_dump(mode='json')
@@ -65,13 +65,26 @@ def create_order(cur,tenant,body,actor):
         if not ed: raise HTTPException(422,'An edition does not belong to this publisher.')
         if not ed['isbn13'] or ed['product_form'] not in ('BB','BC','BA','BH','BD','BE','BF','BG','BK'):
             raise HTTPException(422,'Only physical editions with an ISBN can be fulfilled.')
-        editions.append((edition_id,qty,ed['isbn13']))
+        import re
+        isbn=re.sub(r'[^0-9]','',ed['isbn13'])
+        if not re.fullmatch(r'97[89][0-9]{10}',isbn): raise HTTPException(422,'A 13 digit ISBN is required for distributor fulfillment.')
+        editions.append((edition_id,qty,isbn))
     row=one(cur,"""INSERT INTO distribution_orders(tenant_id,connection_id,source,source_account,external_order_id,reference,request_hash,recipient,shipping_method,delivery_instructions,mode)
         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'preview') RETURNING *""",
         (tenant,body.connection_id,body.source,body.source_account,body.external_order_id,data['reference'],digest,Jsonb(data['recipient']),body.shipping_method,data['delivery_instructions']))
+    activated=conn.get('orders_enabled_at')
+    if isinstance(activated,str):
+        from datetime import datetime
+        activated=datetime.fromisoformat(activated.replace('Z','+00:00'))
+    eligible=activated and source_created_at and source_created_at>=activated
+    if automated and eligible and body.source=='SHOPIFY' and conn['enabled'] and conn['mode']=='live' and conn.get('orders_enabled'):
+        row=one(cur,"UPDATE distribution_orders SET mode='live' WHERE tenant_id=%s AND id=%s RETURNING *",(tenant,row['id']))
     for ed,qty,isbn in editions:
         cur.execute('INSERT INTO distribution_order_items(tenant_id,order_id,edition_id,isbn,quantity) VALUES(%s,%s,%s,%s,%s)',(tenant,row['id'],ed,isbn,qty))
-    event(cur,tenant,conn['id'],actor,'ORDER_PREVIEW_CREATED',row['id'])
+    event(cur,tenant,conn['id'],actor,'ORDER_RECEIVED' if row['mode']=='live' else 'ORDER_PREVIEW_CREATED',row['id'])
+    if automated:
+        from .execution import queue_order
+        queue_order(cur,tenant,row['id'])
     return row
 
 
@@ -79,11 +92,12 @@ def reserve(cur,tenant,order_id):
     """Atomic all-or-nothing reservation. A preview order cannot consume live stock."""
     order=one(cur,'SELECT * FROM distribution_orders WHERE tenant_id=%s AND id=%s FOR UPDATE',(tenant,order_id))
     if not order: raise HTTPException(404,'Order not found.')
-    if order['mode']!='live': raise HTTPException(409,'Preview orders do not reserve live stock.')
+    conn=connection(cur,tenant,order['connection_id'])
+    if order['mode']!='live' and conn['adapter']!='simulator': raise HTTPException(409,'Preview orders do not reserve live stock.')
     if order['status'] in ('RESERVED','QUEUED','SUBMITTING','SUBMITTED','ACCEPTED','SHIPPED'): return order
     if order['status']!='RECEIVED': raise HTTPException(409,'This order cannot be reserved in its current state.')
     conn=connection(cur,tenant,order['connection_id'])
-    if not conn['enabled'] or conn['mode']!='live': raise HTTPException(409,'This connection is not live.')
+    if not conn['enabled'] or (conn['mode']!='live' and conn['adapter']!='simulator'): raise HTTPException(409,'This connection is not enabled.')
     cur.execute('SELECT * FROM distribution_order_items WHERE tenant_id=%s AND order_id=%s ORDER BY edition_id',(tenant,order_id))
     items=cur.fetchall()
     if not items: raise HTTPException(422,'Order has no items.')
@@ -99,6 +113,9 @@ def reserve(cur,tenant,order_id):
 
 
 def cancel(cur,tenant,order_id,actor):
+    initial=one(cur,'SELECT connection_id FROM distribution_orders WHERE tenant_id=%s AND id=%s',(tenant,order_id))
+    if not initial: raise HTTPException(404,'Order not found.')
+    connection(cur,tenant,initial['connection_id'],lock=True)
     order=one(cur,'SELECT * FROM distribution_orders WHERE tenant_id=%s AND id=%s FOR UPDATE',(tenant,order_id))
     if not order: raise HTTPException(404,'Order not found.')
     if order['status']=='CANCELLED': return order

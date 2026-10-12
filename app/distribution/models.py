@@ -7,7 +7,7 @@ class StrictModel(BaseModel):
 
 class ConnectionIn(StrictModel):
     display_name: str = Field(min_length=1,max_length=120)
-    adapter: Literal['hachette_exporteo'] = 'hachette_exporteo'
+    adapter: Literal['hachette_exporteo','standard_json','simulator'] = 'hachette_exporteo'
     safety_buffer: int = Field(default=5,ge=0,le=100000)
 
 class CredentialsIn(StrictModel):
@@ -62,8 +62,16 @@ class TransportConfig(StrictModel):
     host_key: str = Field(default='',max_length=2000)
 
 class ConfigurationIn(StrictModel):
+    api_url: str | None = Field(default=None,max_length=1000)
+    simulated_stock: dict[str,int] = Field(default_factory=dict,max_length=500)
     orders: TransportConfig | None = None
     inventory: TransportConfig | None = None
     tracking: TransportConfig | None = None
     shipping_methods: dict[str,str] = Field(default_factory=dict,max_length=100)
     safety_buffer: int = Field(default=5,ge=0,le=100000)
+
+class ExecutionIn(StrictModel):
+    enabled: bool
+    orders_enabled: bool = False
+    inventory_enabled: bool = False
+    exclusive_fulfillment_confirmed: bool = False

@@ -1,4 +1,4 @@
-"""Separate worker process. No server startup thread and no live sending in this release."""
+"""Separate worker process; live execution requires explicit per-connection activation."""
 import logging
 import time
 from . import service as s
@@ -8,7 +8,7 @@ from .secrets import read
 
 log=logging.getLogger(__name__)
 
-def run_once():
+def legacy_run_once():
     with s.transaction() as cur:
         # A crashed submission has an unknown outcome: do not queue it again.
         cur.execute("UPDATE distribution_jobs SET status='REVIEW_REQUIRED',error_code='WORKER_INTERRUPTED' WHERE status='RUNNING' AND started_at<now()-interval '10 minutes'")
@@ -39,6 +39,12 @@ def run_once():
         s.event(cur,job['tenant_id'],job['connection_id'],'distribution-worker',job['kind']+('_FAILED' if code else '_COMPLETED'),job['order_id'],{'error_code':code})
     return True
 
+def run_once():
+    from .execution import run_once as execute_once, ready
+    with s.transaction() as cur:
+        installed=ready(cur)
+    return execute_once() if installed else legacy_run_once()
+
 if __name__=='__main__':
     import os
     from dotenv import load_dotenv
@@ -54,10 +60,13 @@ if __name__=='__main__':
             if time.monotonic() - last_retention > 3600:
                 processed = privacy.retention_once()
                 last_retention = time.monotonic() if processed < 100 else 0
-            if not privacy.run_once() and not run_once():
-                from .shopify import process_inbox_once, sync_catalog_once
-                from .publishing import run_once as publish_once
-                if not process_inbox_once() and not sync_catalog_once() and not publish_once(): time.sleep(5)
+            from .shopify import process_inbox_once, sync_catalog_once
+            from .publishing import run_once as publish_once
+            # Give each queue a turn; a busy inventory feed must not starve paid orders.
+            worked=False
+            for process in (privacy.run_once,process_inbox_once,run_once,sync_catalog_once,publish_once):
+                worked=bool(process()) or worked
+            if not worked: time.sleep(5)
         except Exception:
             log.error('Distribution worker unavailable; check database and migrations 020/021.')
             time.sleep(15)

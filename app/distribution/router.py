@@ -5,7 +5,7 @@ from app.tenants.dependencies import require_tenant_access
 from . import service as s
 from . import secrets
 from .adapters import ADAPTERS, adapter_for, ConfigurationRequired
-from .models import ConnectionIn, CredentialsIn, OrderIn, ListingIn, MappingIn
+from .models import ConnectionIn, CredentialsIn, OrderIn, ListingIn, MappingIn, ExecutionIn
 
 router=APIRouter(prefix='/tenants/{tenant_slug}/distribution',tags=['Distribution'])
 
@@ -63,10 +63,11 @@ def add_connection(body:ConnectionIn,ctx=Depends(admin)):
 def credentials(connection_id:UUID,body:CredentialsIn,ctx=Depends(admin)):
     tenant,actor=ids(ctx)
     with s.transaction() as cur:
-        s.connection(cur,tenant,connection_id,lock=True)
+        conn=s.connection(cur,tenant,connection_id,lock=True)
+        if conn['enabled']: raise HTTPException(409,'Pause the connection before changing its credentials.')
         try: name=secrets.save(tenant,connection_id,body.model_dump())
         except Exception: raise HTTPException(503,'Credentials could not be stored securely. Check the distribution Secrets Manager permission.') from None
-        cur.execute('UPDATE distribution_connections SET secret_reference=%s,updated_at=now() WHERE tenant_id=%s AND id=%s',(name,tenant,connection_id))
+        cur.execute("UPDATE distribution_connections SET secret_reference=%s,status='NOT_CONFIGURED',updated_at=now() WHERE tenant_id=%s AND id=%s",(name,tenant,connection_id))
         s.event(cur,tenant,connection_id,actor,'CREDENTIALS_UPDATED')
     return {'credentials_saved':True}
 
@@ -88,7 +89,7 @@ def test(connection_id:UUID,ctx=Depends(admin)):
     tenant,actor=ids(ctx)
     with s.transaction() as cur:
         conn=s.connection(cur,tenant,connection_id)
-        if not conn['secret_reference']: raise HTTPException(409,'Save connection credentials first.')
+        if not conn['secret_reference'] and conn['adapter']!='simulator': raise HTTPException(409,'Save connection credentials first.')
         result=s.enqueue(cur,tenant,connection_id,'TEST')
         s.event(cur,tenant,connection_id,actor,'CONNECTION_TEST_REQUESTED')
         return result
@@ -218,8 +219,41 @@ def configure(connection_id:UUID,body:ConfigurationIn,ctx=Depends(admin)):
         if not key or not value or len(key)>100 or len(value)>50 or any(c in key+value for c in '\r\n\t'):
             raise HTTPException(422,'Shipping mappings need a channel label and a valid distributor code.')
     with s.transaction() as cur:
-        s.connection(cur,tenant,connection_id,lock=True)
+        conn=s.connection(cur,tenant,connection_id,lock=True)
+        if conn['enabled']: raise HTTPException(409,'Pause the distributor connection before editing its configuration.')
+        if s.one(cur,"SELECT id FROM distribution_orders WHERE tenant_id=%s AND connection_id=%s AND mode='live' AND status IN ('RESERVED','QUEUED','SUBMITTING','SUBMITTED','ACCEPTED') LIMIT 1",(tenant,connection_id)):
+            raise HTTPException(409,'Reconcile outstanding orders before changing this distributor destination. Use a new connection for a different destination.')
+        if body.api_url:
+            from urllib.parse import urlsplit
+            url=urlsplit(body.api_url)
+            if url.scheme!='https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+                raise HTTPException(422,'Use an HTTPS base URL without credentials or query parameters.')
+        from .protocol import Stock
+        for isbn,quantity in body.simulated_stock.items():
+            try: Stock(isbn=isbn,on_hand=quantity)
+            except Exception: raise HTTPException(422,'Simulator stock requires a 13 digit ISBN and nonnegative integer quantity.') from None
         config=body.model_dump(exclude={'safety_buffer'},exclude_none=True)
         row=s.one(cur,"UPDATE distribution_connections SET configuration=%s,safety_buffer=%s,status='NOT_CONFIGURED',updated_at=now() WHERE tenant_id=%s AND id=%s RETURNING *",(Jsonb(config),body.safety_buffer,tenant,connection_id))
         s.event(cur,tenant,connection_id,actor,'CONNECTION_CONFIGURATION_UPDATED')
+        return public_connection(row)
+
+@router.put('/connections/{connection_id}/execution')
+def configure_execution(connection_id:UUID,body:'ExecutionIn',ctx=Depends(admin)):
+    from .execution import ready
+    tenant,actor=ids(ctx)
+    with s.transaction() as cur:
+        if not ready(cur): raise HTTPException(503,'Order and inventory execution awaits migration 030.')
+        conn=s.connection(cur,tenant,connection_id,lock=True)
+        capabilities=adapter_for(conn).capabilities
+        if body.enabled:
+            if conn['status']!='CONNECTED': raise HTTPException(409,'Save configuration and successfully test the connection first.')
+            if body.orders_enabled and not capabilities.submit_order: raise HTTPException(409,'Configure an order-capable adapter.')
+            if body.inventory_enabled and not capabilities.inventory: raise HTTPException(409,'Select an inventory-capable adapter.')
+            if conn['adapter']!='simulator' and body.orders_enabled and not body.exclusive_fulfillment_confirmed:
+                raise HTTPException(409,'Confirm the existing order exporter is disabled before enabling live order forwarding.')
+        row=s.one(cur,"""UPDATE distribution_connections SET enabled=%s,orders_enabled=%s,inventory_enabled=%s,
+            orders_enabled_at=CASE WHEN %s AND %s AND NOT (enabled AND orders_enabled) THEN now() ELSE orders_enabled_at END,
+            mode=%s,next_sync_at=now(),updated_at=now() WHERE tenant_id=%s AND id=%s RETURNING *""",
+            (body.enabled,body.orders_enabled,body.inventory_enabled,body.enabled,body.orders_enabled,'preview' if conn['adapter']=='simulator' else 'live',tenant,connection_id))
+        s.event(cur,tenant,connection_id,actor,'EXECUTION_SETTINGS_CHANGED',details=body.model_dump())
         return public_connection(row)

@@ -113,8 +113,9 @@ def link(body:LinkIn,auth=Depends(session)):
 def workspace(install=Depends(linked)):
     with s.transaction() as cur:
         tenant=install['tenant_id']
-        cur.execute('SELECT id,display_name FROM distribution_connections WHERE tenant_id=%s ORDER BY display_name',(tenant,));connections=cur.fetchall()
-        cur.execute('SELECT e.id,e.isbn13,w.title FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id WHERE e.tenant_id=%s ORDER BY w.title LIMIT 1000',(tenant,));editions=cur.fetchall()
+        from .router import public_connection
+        cur.execute('SELECT * FROM distribution_connections WHERE tenant_id=%s ORDER BY display_name',(tenant,));connections=[public_connection(c) for c in cur.fetchall()]
+        cur.execute("SELECT e.id,e.isbn13,w.title,COALESCE(NULLIF(e.onix_product_form,''),e.product_form) AS product_form FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id WHERE e.tenant_id=%s ORDER BY w.title LIMIT 1000",(tenant,));editions=cur.fetchall()
         cur.execute('SELECT variant_id,title,sku,edition_id,connection_id,catalog_metadata FROM distribution_shopify_variants WHERE tenant_id=%s AND installation_id=%s AND active ORDER BY title LIMIT 500',(tenant,install['id']));variants=cur.fetchall()
         cur.execute("SELECT o.id,o.external_order_id,o.status,o.created_at,COALESCE(sum(l.quantity),0) AS quantity FROM distribution_orders o LEFT JOIN distribution_order_items l ON l.order_id=o.id AND l.tenant_id=o.tenant_id WHERE o.tenant_id=%s AND o.source='SHOPIFY' AND o.source_account=%s GROUP BY o.id ORDER BY o.created_at DESC LIMIT 100",(tenant,install['shop']));orders=cur.fetchall()
         cur.execute('SELECT id,topic,status,error_code FROM distribution_webhooks WHERE tenant_id=%s AND installation_id=%s ORDER BY created_at DESC LIMIT 100',(tenant,install['id']));inbox=cur.fetchall()
@@ -192,3 +193,113 @@ class PublishIn(BaseModel):
 def publish_books(body:PublishIn,install=Depends(linked)):
     from .publishing import enqueue
     return enqueue(install,body.edition_ids,body.connection_id)
+
+
+# Per-publisher execution controls, authenticated by the existing linked administrator.
+from typing import Literal
+from .models import ConfigurationIn, ExecutionIn, CredentialsIn
+
+class DistributorAction(BaseModel):
+    connection_id:UUID
+    action:Literal['configure','credentials','test','sync','settings','retry','ship_simulation','simulate_order']
+    configuration:ConfigurationIn|None=None
+    settings:ExecutionIn|None=None
+    credentials:CredentialsIn|None=None
+    job_id:UUID|None=None
+    order_id:UUID|None=None
+    edition_id:UUID|None=None
+    quantity:int=Field(default=1,ge=1,le=100000)
+
+@embedded.get('/distribution')
+def distribution_status(install=Depends(linked)):
+    from .execution import ready
+    with s.transaction() as cur:
+        if not ready(cur): return {'ready':False,'jobs':[],'inventory':[],'inventory_push_enabled':False}
+        row=s.one(cur,'SELECT inventory_push_enabled FROM distribution_shopify_installations WHERE tenant_id=%s AND id=%s',(install['tenant_id'],install['id']))
+        cur.execute("""SELECT id,connection_id,order_id,kind,status,error_code,attempts,created_at
+            FROM distribution_jobs WHERE tenant_id=%s ORDER BY created_at DESC LIMIT 100""",(install['tenant_id'],))
+        jobs=cur.fetchall()
+        cur.execute("""SELECT a.connection_id,e.isbn13,w.title,a.distributor_quantity,a.reserved_quantity,a.sellable_quantity,
+            a.last_synced_at,a.sync_status FROM distribution_availability a
+            JOIN editions e ON e.tenant_id=a.tenant_id AND e.id=a.edition_id
+            JOIN works w ON w.tenant_id=e.tenant_id AND w.id=e.work_id WHERE a.tenant_id=%s
+            ORDER BY w.title,e.isbn13 LIMIT 500""",(install['tenant_id'],))
+        return {'ready':True,'jobs':jobs,'inventory':cur.fetchall(),'inventory_push_enabled':row['inventory_push_enabled']}
+
+@embedded.post('/distribution')
+def distribution_action(body:DistributorAction,install=Depends(linked)):
+    from . import router as routes
+    from .execution import ready
+    from .adapters import adapter_for
+    tenant=install['tenant_id']
+    with s.transaction() as cur:
+        if not ready(cur): raise HTTPException(503,'Execution awaits migration 030.')
+        conn=s.connection(cur,tenant,body.connection_id)
+    context=ctx(install)
+    if body.action=='configure' and body.configuration:
+        return routes.configure(body.connection_id,body.configuration,context)
+    if body.action=='credentials' and body.credentials:
+        return routes.credentials(body.connection_id,body.credentials,context)
+    if body.action=='test': return routes.test(body.connection_id,context)
+    if body.action=='sync': return routes.sync(body.connection_id,context)
+    if body.action=='settings' and body.settings:
+        return routes.configure_execution(body.connection_id,body.settings,context)
+    if body.action=='simulate_order' and body.edition_id:
+        from .models import OrderIn
+        if conn['adapter']!='simulator': raise HTTPException(409,'Select a simulated distributor.')
+        if not conn['enabled']: raise HTTPException(409,'Enable the simulated connection first.')
+        key='simulation-'+str(uuid4())
+        order=OrderIn(connection_id=body.connection_id,source='SHOPIFY',source_account=install['shop'],
+            external_order_id=key,reference=key,shipping_method='SIMULATED',
+            items=[{'edition_id':body.edition_id,'quantity':body.quantity}])
+        with s.transaction() as cur:
+            result=s.create_order(cur,tenant,order,install['user_id'],automated=True)
+        return {'queued':True,'order_id':str(result['id'])}
+    if body.action=='retry' and body.job_id:
+        with s.transaction() as cur:
+            job=s.one(cur,"SELECT * FROM distribution_jobs WHERE tenant_id=%s AND connection_id=%s AND id=%s AND status IN ('FAILED','REVIEW_REQUIRED') FOR UPDATE",(tenant,body.connection_id,body.job_id))
+            if not job: raise HTTPException(404,'Retryable job not found.')
+            if job['kind']=='SUBMIT' and not getattr(adapter_for(conn),'idempotent_submission',False):
+                raise HTTPException(409,'Confirm the transmission outcome with the distributor; this adapter cannot safely replay an uncertain upload.')
+            if job['kind']=='SUBMIT':
+                order=s.one(cur,'SELECT status FROM distribution_orders WHERE tenant_id=%s AND id=%s',(tenant,job['order_id']))
+                if not order or order['status'] not in ('QUEUED','SUBMITTING'):
+                    raise HTTPException(409,'This order has already been acknowledged or rejected. Review it with the distributor instead of sending it again.')
+            if s.one(cur,"SELECT id FROM distribution_jobs WHERE tenant_id=%s AND connection_id=%s AND kind=%s AND order_id IS NOT DISTINCT FROM %s AND status IN ('RUNNING','QUEUED')",(tenant,body.connection_id,job['kind'],job['order_id'])):
+                raise HTTPException(409,'A matching job is already pending.')
+            cur.execute("UPDATE distribution_jobs SET status='QUEUED',due_at=now(),error_code=NULL WHERE id=%s",(job['id'],))
+            s.event(cur,tenant,body.connection_id,install['user_id'],'JOB_RETRY_REQUESTED',job['order_id'])
+            return {'queued':True}
+    if body.action=='ship_simulation' and body.order_id:
+        if conn['adapter']!='simulator': raise HTTPException(409,'This operation is available only for simulated distributors.')
+        with s.transaction() as cur:
+            s.connection(cur,tenant,body.connection_id,lock=True)
+            row=s.one(cur,"UPDATE distribution_simulated_orders SET status='SHIPPED' WHERE tenant_id=%s AND connection_id=%s AND order_id=%s RETURNING order_id",(tenant,body.connection_id,body.order_id))
+            if not row: raise HTTPException(404,'Simulated accepted order not found.')
+            s.enqueue(cur,tenant,body.connection_id,'TRACKING',body.order_id)
+            s.event(cur,tenant,body.connection_id,install['user_id'],'SIMULATED_SHIPMENT',body.order_id)
+            return {'queued':True}
+    raise HTTPException(422,'Required action fields are missing.')
+
+class InventoryPublicationIn(BaseModel):
+    enabled:bool
+    confirm_inventory_authority:bool=False
+
+@embedded.put('/inventory-publication')
+def inventory_publication(body:InventoryPublicationIn,install=Depends(linked),auth=Depends(session)):
+    from .execution import ready
+    if body.enabled and not body.confirm_inventory_authority:
+        raise HTTPException(409,'Confirm this distributor is the inventory authority for the selected location.')
+    with s.transaction() as cur:
+        if not ready(cur): raise HTTPException(503,'Execution awaits migration 030.')
+        row=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE tenant_id=%s AND id=%s FOR UPDATE',(install['tenant_id'],install['id']))
+        if body.enabled:
+            if not row['location_id']: raise HTTPException(409,'Select a fulfillment location first.')
+            token=exchange(auth)
+            if not sh.has_required_scopes(token.get('scope',''),'write_inventory'):
+                raise HTTPException(403,'Approve the current app version with inventory write permission, then retry.')
+            sh.secrets.save(row['tenant_id'],row['id'],token)
+        cur.execute('UPDATE distribution_shopify_installations SET inventory_push_enabled=%s WHERE id=%s',(body.enabled,row['id']))
+        privacy.audit(cur,install['tenant_id'],install['user_id'],'INVENTORY_PUBLICATION_ENABLED' if body.enabled else 'INVENTORY_PUBLICATION_DISABLED',install['id'])
+    return {'inventory_push_enabled':body.enabled}
+
