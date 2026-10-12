@@ -73,6 +73,29 @@ class PlatformAuthorizationTests(unittest.TestCase):
             self.assertEqual(response.status_code,400)
             db.assert_not_called()
 
+    def test_tenant_creation_sets_storage_prefix_and_owner_membership(self):
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [
+            {'activity': 'platform_activity', 'support': 'platform_support_sessions'},
+            {'id': self.tenant, 'name': 'InkSuite Demo', 'slug': 'inksuite-demo', 'created_at': None},
+        ]
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cursor
+        @contextmanager
+        def fake_db():
+            yield conn
+        with patch('app.auth.dependencies.get_user_db_record_from_claims', return_value={'id': self.actor, 'platform_role': 'superadmin'}), patch.object(platform, 'db_conn', fake_db):
+            response = self.client.post('/platform-admin/tenants', json={'name': ' InkSuite Demo ', 'slug': 'inksuite-demo'})
+        self.assertEqual(response.status_code, 201, response.text)
+        calls = cursor.execute.call_args_list
+        query, params = calls[1].args
+        self.assertIn('s3_prefix', query)
+        self.assertEqual(params, ('InkSuite Demo', 'inksuite-demo', 'tenants/inksuite-demo'))
+        self.assertEqual(calls[2].args[1], (self.tenant, self.actor))
+        self.assertIn("'tenant_admin'", calls[2].args[0])
+        self.assertEqual(calls[3].args[1][3], 'TENANT_CREATED')
+        conn.transaction.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

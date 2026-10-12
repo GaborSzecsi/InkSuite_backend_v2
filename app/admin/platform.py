@@ -84,7 +84,7 @@ def create_tenant(body: TenantBody,user: dict=Depends(require_superadmin)):
     try:
         with db_conn() as conn, conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
             ready(cur)
-            cur.execute('INSERT INTO tenants(name,slug) VALUES(%s,%s) RETURNING id,name,slug,created_at',(body.name.strip(),body.slug))
+            cur.execute('INSERT INTO tenants(name,slug,s3_prefix) VALUES(%s,%s,%s) RETURNING id,name,slug,created_at',(body.name.strip(),body.slug,f'tenants/{body.slug}'))
             tenant=cur.fetchone()
             cur.execute("INSERT INTO memberships(tenant_id,user_id,role) VALUES(%s,%s,'tenant_admin')",(tenant['id'],user['id']))
             audit(cur,user,'TENANT_CREATED',tenant)

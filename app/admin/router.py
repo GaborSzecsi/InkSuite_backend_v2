@@ -49,8 +49,8 @@ def create_tenant(
 
     with db_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO tenants (name, slug) VALUES (%s, %s) ON CONFLICT (slug) DO NOTHING RETURNING id::text, name, slug",
-            (name or slug, slug),
+            "INSERT INTO tenants (name, slug, s3_prefix) VALUES (%s, %s, %s) ON CONFLICT (slug) DO NOTHING RETURNING id::text, name, slug",
+            (name or slug, slug, f"tenants/{slug}"),
         )
         row = cur.fetchone()
     if not row:

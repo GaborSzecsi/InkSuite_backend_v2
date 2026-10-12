@@ -7,7 +7,7 @@ const {randomUUID}=require('node:crypto');
 async function verify(){
  const db=new PGlite();let checks=0;
  try{
-  await db.exec(`CREATE TABLE tenants(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text,slug text UNIQUE,created_at timestamptz DEFAULT now());
+  await db.exec(`CREATE TABLE tenants(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),name text,slug text UNIQUE,s3_prefix text NOT NULL,created_at timestamptz DEFAULT now());
    CREATE TABLE users(id uuid PRIMARY KEY,email text,full_name text);
    CREATE TABLE memberships(tenant_id uuid REFERENCES tenants(id),user_id uuid REFERENCES users(id),role text,module_permissions jsonb DEFAULT '{}',PRIMARY KEY(tenant_id,user_id));
    CREATE TABLE test_books(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),tenant_id uuid REFERENCES tenants(id) ON DELETE CASCADE);
@@ -16,8 +16,9 @@ async function verify(){
   await db.exec(migration);await db.exec(migration);checks++;
   const admin=randomUUID(),other=randomUUID(),tenant=randomUUID(),second=randomUUID();
   await db.query("INSERT INTO users VALUES($1,'admin@example.test','Admin'),($2,'other@example.test','Other')",[admin,other]);
-  await db.query("INSERT INTO tenants(id,name,slug) VALUES($1,'Demo','demo'),($2,'Other','other')",[tenant,second]);
-  await assert.rejects(db.query("INSERT INTO tenants(name,slug) VALUES('Duplicate','demo')"));checks++;
+  await db.query("INSERT INTO tenants(id,name,slug,s3_prefix) VALUES($1,'Demo','demo','tenants/demo'),($2,'Other','other','tenants/other')",[tenant,second]);
+  await assert.rejects(db.query("INSERT INTO tenants(name,slug,s3_prefix) VALUES('Duplicate','demo','tenants/demo')"),e=>e.code==='23505');checks++;
+  await assert.rejects(db.query("INSERT INTO tenants(name,slug) VALUES('Missing prefix','missing-prefix')"),e=>e.code==='23502');checks++;
   await db.query("INSERT INTO platform_support_sessions(actor_id,tenant_id,tenant_slug,reason) VALUES($1,$2,'demo','Investigate test account')",[admin,tenant]);
   const active=await db.query('SELECT * FROM platform_support_sessions WHERE actor_id=$1 AND ended_at IS NULL AND expires_at>now()',[admin]);
   assert.equal(active.rows.length,1);assert.equal(new Date(active.rows[0].expires_at)-new Date(active.rows[0].started_at),1800000);checks++;
@@ -30,6 +31,10 @@ async function verify(){
   assert.equal(Number(usage.views),3);assert.equal(Number(usage.users),2);checks++;
   const scoped=(await db.query("SELECT count(*) AS views FROM platform_activity WHERE tenant_id=$1 AND action='PAGE_VIEW'",[tenant])).rows[0];assert.equal(Number(scoped.views),2);checks++;
   const source=await fs.readFile(path.join(__dirname,'../app/admin/platform.py'),'utf8');
+  const createSql=source.match(/cur\.execute\('(INSERT INTO tenants\(name,slug,s3_prefix\)[^']+)'/)[1];
+  let parameter=0;
+  const created=(await db.query(createSql.replace(/%s/g,()=>'$'+(++parameter)),['Review Demo','review-demo','tenants/review-demo'])).rows[0];
+  assert.equal((await db.query('SELECT s3_prefix FROM tenants WHERE id=$1',[created.id])).rows[0].s3_prefix,'tenants/review-demo');checks++;
   const inventorySql=source.match(/cur\.execute\("""(SELECT c\.table_name[\s\S]*?)"""\)/)[1];
   const columns=(await db.query(inventorySql)).rows;
   assert(columns.some(r=>r.table_name==='test_books'&&r.column_name==='tenant_id'));
@@ -38,7 +43,7 @@ async function verify(){
   await db.query('INSERT INTO test_legacy(publisher_id) VALUES($1)',[tenant]);
   assert.equal(Number((await db.query('SELECT count(*) AS n FROM test_legacy WHERE publisher_id::text=$1',[tenant])).rows[0].n),1);checks++;
   await db.exec('BEGIN');
-  const empty=randomUUID();await db.query("INSERT INTO tenants(id,name,slug) VALUES($1,'Empty','empty')",[empty]);
+  const empty=randomUUID();await db.query("INSERT INTO tenants(id,name,slug,s3_prefix) VALUES($1,'Empty','empty','tenants/empty')",[empty]);
   await db.query("INSERT INTO memberships(tenant_id,user_id,role) VALUES($1,$2,'tenant_admin')",[empty,admin]);
   await db.query("INSERT INTO platform_activity(actor_id,tenant_id,tenant_slug,action,module) VALUES($1,$2,'empty','TENANT_DELETED','platform')",[admin,empty]);
   await db.query('DELETE FROM memberships WHERE tenant_id=$1',[empty]);await db.query('DELETE FROM tenants WHERE id=$1',[empty]);await db.exec('COMMIT');
