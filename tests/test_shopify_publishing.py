@@ -26,12 +26,12 @@ class CatalogPublishingTests(unittest.TestCase):
    self.assertEqual(data['status'],'DRAFT');self.assertEqual(len(data['variants']),1)
    self.assertEqual(data['variants'][0]['barcode'],e['isbn']);self.assertEqual(data['files'][0]['originalSource'],e['images'][0])
  def test_existing_match_makes_no_mutation(self):
-  with patch.object(p,'live_variants',return_value=[self.variant()]),patch.object(p.sh,'graphql') as call:
-   p.create_or_add(None,{},[self.edition()]);call.assert_not_called()
+  with patch.object(p,'live_variants',return_value=[self.variant()]),patch.object(p,'sync_images') as images,patch.object(p.sh,'graphql') as call:
+   p.create_or_add(None,{},[self.edition()]);call.assert_not_called();images.assert_called_once()
  def test_add_variant_preserves_existing_content(self):
   e=self.edition('9780140328721','Paperback');v=self.variant(e['isbn'])
   responses=[{'product':{'status':'ACTIVE','options':[{'name':'Format','optionValues':[{'name':'Hardcover'}]}]}},{'productVariantsBulkCreate':{'productVariants':[v],'userErrors':[]}}]
-  with patch.object(p,'live_variants',return_value=[self.variant()]),patch.object(p.sh,'graphql',side_effect=responses) as call:
+  with patch.object(p,'live_variants',return_value=[self.variant()]),patch.object(p,'sync_images'),patch.object(p.sh,'graphql',side_effect=responses) as call:
    p.create_or_add(None,{},[e]);payload=call.call_args.args[3]
    self.assertEqual(set(payload),{'id','variants'});self.assertEqual(payload['variants'][0]['optionValues'][0]['name'],'Paperback')
  def test_private_or_signed_images_not_sent(self):

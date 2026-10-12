@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException
 from psycopg.types.json import Jsonb
 from . import service as s, shopify as sh
+from .media import missing_images, sync_images
 
 FORMATS={'BB':'Hardcover','BC':'Paperback','BA':'Book','EA':'E-book','EB':'E-book','ED':'E-book','DG':'E-book','AA':'Audiobook','AB':'Audiobook','AC':'Audiobook','AJ':'Audiobook'}
 
@@ -166,7 +167,10 @@ def save_match(cur,install,connection,e,v):
 
 def create_or_add(cur,install,selected):
     matched,missing,product=plan(selected,live_variants(cur,install))
-    if not missing:return matched
+    images=list(dict.fromkeys(u for e in selected for u in e['images']))[:20]
+    if not missing:
+        sync_images(cur,install,product,images,selected[0]['title'])
+        return matched
     if any(e['issues'] for e in missing):raise ValueError('Edition metadata requires review')
     labels=[e['format'] for e in missing]
     if len(set(labels))!=len(labels):raise ValueError('Selected editions have duplicate format names; choose one edition per format')
@@ -181,7 +185,7 @@ def create_or_add(cur,install,selected):
         result=sh.graphql(cur,install,query,payload)['productVariantsBulkCreate']
         created=result.get('productVariants') or []
     else:
-        images=list(dict.fromkeys(u for e in missing for u in e['images']))[:20]
+        images=missing_images(images,[])
         query='''mutation($input:ProductSetInput!){productSet(input:$input,synchronous:true){product{id variants(first:100){nodes{id title barcode sku product{id title}}}} userErrors{message}}}'''
         payload={'input':{'title':selected[0]['title'],'status':'DRAFT','productType':'Book',
           'descriptionHtml':'<p>'+html.escape(selected[0]['description']).replace('\n','<br/>')+'</p>',
@@ -195,6 +199,7 @@ def create_or_add(cur,install,selected):
         found=[v for v in created if sh.normalized_isbn(v.get('barcode'))==e['isbn']]
         if len(found)!=1:raise ValueError('Shopify result requires reconciliation; do not resubmit')
         matched.append((e,found[0]))
+    if product:sync_images(cur,install,product,images,selected[0]['title'])
     return matched
 
 
@@ -219,7 +224,7 @@ def run_once():
             # Refresh trusted temporary image access immediately before Shopify copies it.
             matches=create_or_add(cur,install,[by_id[e['id']] for e in job['selection']])
             for e,v in matches:save_match(cur,install,job['connection_id'],e,v)
-            cur.execute("UPDATE distribution_shopify_publish_jobs SET status='DONE',message='Matched or added selected formats. Review draft products and image processing in Shopify.',updated_at=now() WHERE id=%s",(job['id'],))
+            cur.execute("UPDATE distribution_shopify_publish_jobs SET status='DONE',message='Matched or added selected formats and synchronized missing images. Review products and image processing in Shopify.',updated_at=now() WHERE id=%s",(job['id'],))
     except Exception as exc:
         message=str(exc) if isinstance(exc,ValueError) else 'Publication could not be confirmed. Inspect Shopify before retrying to avoid duplicates.'
         with s.transaction() as cur:cur.execute("UPDATE distribution_shopify_publish_jobs SET status='REVIEW_REQUIRED',message=%s,updated_at=now() WHERE id=%s",(message,job['id']))
