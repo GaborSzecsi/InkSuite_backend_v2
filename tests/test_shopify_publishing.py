@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from app.distribution import publishing as p
 
 class CatalogPublishingTests(unittest.TestCase):
@@ -42,5 +42,26 @@ class CatalogPublishingTests(unittest.TestCase):
   with patch.object(p,'live_variants',return_value=[]),patch.object(p.sh,'graphql') as call:
    with self.assertRaises(ValueError):p.create_or_add(None,{},[dict(self.edition(),issues=['No price'])])
    call.assert_not_called()
+
+class CatalogMetadataTests(unittest.TestCase):
+ def test_shared_artwork_and_subtitles(self):
+  cur=MagicMock()
+  rows=[dict(id='hc',work_id='book',title='Penguin and Panda',subtitle='Fun and Games',isbn13='9780306406157',product_form='Hardcover',description='Shared description',cover_image_link=''),dict(id='pb',work_id='book',title='Penguin and Panda',subtitle='Fun and Games',isbn13='9780140328721',product_form='Paperback',description='Shared description',cover_image_link='')]
+  cur.fetchall.side_effect=[rows,[dict(edition_id='hc',price_amount=13.99),dict(edition_id='pb',price_amount=9.99)],[dict(edition_id='hc',resource_link='https://example.com/cover.jpg')]]
+  result=p.entries(cur,'tenant','USD')
+  self.assertEqual(result[1]['images'],result[0]['images'])
+  self.assertEqual(result[1]['title'],'Penguin and Panda: Fun and Games')
+  self.assertEqual(result[1]['issues'],[])
+  self.assertIn("NULLIF(btrim(p.price_type_code),'')",cur.execute.call_args_list[1].args[0])
+ def test_conflicting_prices_are_not_guessed(self):
+  cur=MagicMock();cur.fetchall.side_effect=[[dict(id='hc',work_id='book',title='Book',isbn13='9780306406157',product_form='Hardcover',description='Description',cover_image_link='https://example.com/cover.jpg')],[dict(edition_id='hc',price_amount=13.99),dict(edition_id='hc',price_amount=12.99)],[]]
+  result=p.entries(cur,'tenant','USD')
+  self.assertIsNone(result[0]['price'])
+ def test_trusted_legacy_cover_shared_across_formats(self):
+  cur=MagicMock();cur.fetchall.side_effect=[[dict(id='hc',work_id='book',uid='upload',title='Book',isbn13='9780306406157',product_form='Hardcover',description='Description',cover_image_link='')],[dict(edition_id='hc',price_amount=13.99)],[]]
+  with patch('app.marketplace.catalog_service.legacy_cover',return_value='https://example.com/cover.jpg?signature=temporary'):
+   result=p.entries(cur,'tenant','USD')
+  self.assertEqual(result[0]['issues'],[])
+  self.assertNotIn('uid',result[0])
 
 if __name__=='__main__':unittest.main()

@@ -22,12 +22,12 @@ def image_url(value):
 
 def entries(cur,tenant,currency):
     cur.execute('''SELECT e.id,e.work_id,e.isbn13,e.product_form,e.onix_product_form,e.cover_image_link,
-        w.title,w.main_description AS description FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
+        w.title,w.subtitle,w.uid,w.main_description AS description FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
         WHERE e.tenant_id=%s ORDER BY w.title,e.id''',(tenant,))
     rows=cur.fetchall()
     cur.execute("""SELECT d.edition_id,p.price_amount FROM edition_prices p JOIN edition_supply_details d
       ON d.id=p.supply_detail_id AND d.tenant_id=p.tenant_id WHERE d.tenant_id=%s
-      AND p.currency_code=%s AND p.price_type_code IN ('01','02') AND p.price_amount>0
+      AND p.currency_code=%s AND COALESCE(NULLIF(btrim(p.price_type_code),''),'01') IN ('01','02') AND p.price_amount>0
       AND (p.price_effective_from IS NULL OR p.price_effective_from<=current_date)
       AND (p.price_effective_until IS NULL OR p.price_effective_until>=current_date)""",(tenant,currency))
     prices=defaultdict(set)
@@ -39,6 +39,8 @@ def entries(cur,tenant,currency):
     for row in cur.fetchall():images[str(row['edition_id'])].append(image_url(row['resource_link']))
     for e in rows:
         e['id']=str(e['id']);e['work_id']=str(e['work_id'])
+        subtitle=(e.get('subtitle') or '').strip()
+        if subtitle:e['title']=e['title'].strip()+': '+subtitle
         code=e.get('onix_product_form') or e.get('product_form') or ''
         e['format']=FORMATS.get(code,e.get('product_form') or code or 'Unknown format')
         e['isbn']=sh.normalized_isbn(e['isbn13'])
@@ -51,6 +53,27 @@ def entries(cur,tenant,currency):
         if not e['price']:e['issues'].append('Missing or ambiguous price in '+currency)
         if not e['images']:e['issues'].append('No public HTTPS cover/image URL')
         if not e['description']:e['issues'].append('Missing description')
+    # Shopify content belongs to the book, not an individual binding. Keep edition
+    # images first, but allow sibling editions of this exact work to supply artwork.
+    by_work=defaultdict(list)
+    for e in rows:by_work[e['work_id']].append(e)
+    for siblings in by_work.values():
+        shared_images=list(dict.fromkeys(u for e in siblings for u in e['images']))[:20]
+        if not shared_images and siblings[0].get('uid'):
+            # Only the trusted storage helper may supply a signed URL; arbitrary
+            # caller-provided signed URLs remain disallowed by image_url().
+            from app.marketplace.catalog_service import legacy_cover
+            cover=legacy_cover(None,siblings[0]['uid'],tenant,cur)
+            if cover:shared_images=[cover]
+        descriptions={e['description'].strip() for e in siblings if e['description'].strip()}
+        for e in siblings:
+            if not e['images'] and shared_images:
+                e['images']=shared_images.copy()
+                e['issues'].remove('No public HTTPS cover/image URL')
+            if not e['description'].strip() and len(descriptions)==1:
+                e['description']=next(iter(descriptions))
+                if 'Missing description' in e['issues']:e['issues'].remove('Missing description')
+    for e in rows:e.pop('uid',None)
     counts=defaultdict(int)
     for e in rows:
         if e['isbn']:counts[e['isbn']]+=1
@@ -191,8 +214,10 @@ def run_once():
             by_id={e['id']:e for e in current['editions']}
             for e in job['selection']:
                 now=by_id.get(e['id'])
-                if not now or any(now[k]!=e[k] for k in ('isbn','price','currency','format','title','description','images')):raise ValueError('InkSuite metadata changed; review selection again')
-            matches=create_or_add(cur,install,job['selection'])
+                if not now or any(now[k]!=e[k] for k in ('isbn','price','currency','format','title','description')):raise ValueError('InkSuite metadata changed; review selection again')
+                if [u.split('?',1)[0] for u in now['images']] != [u.split('?',1)[0] for u in e['images']]:raise ValueError('InkSuite artwork changed; review selection again')
+            # Refresh trusted temporary image access immediately before Shopify copies it.
+            matches=create_or_add(cur,install,[by_id[e['id']] for e in job['selection']])
             for e,v in matches:save_match(cur,install,job['connection_id'],e,v)
             cur.execute("UPDATE distribution_shopify_publish_jobs SET status='DONE',message='Matched or added selected formats. Review draft products and image processing in Shopify.',updated_at=now() WHERE id=%s",(job['id'],))
     except Exception as exc:
