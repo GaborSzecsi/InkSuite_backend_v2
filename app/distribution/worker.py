@@ -45,6 +45,18 @@ def run_once():
         installed=ready(cur)
     return execute_once() if installed else legacy_run_once()
 
+def run_retention_batch():
+    from . import privacy
+    try:
+        processed = privacy.retention_once()
+    except Exception:
+        log.error('Distribution retention failed; cleanup was not confirmed.')
+        raise
+    # retention_once has left its transaction: success means the batch committed.
+    log.info('Distribution retention completed; expired_orders=%d', processed)
+    return processed
+
+
 if __name__=='__main__':
     import os
     from dotenv import load_dotenv
@@ -53,13 +65,13 @@ if __name__=='__main__':
     if os.getenv('DISTRIBUTION_WORKER_ENABLED') != 'true':
         raise SystemExit('Worker disabled. Enable only in the intended service environment; never against the development production tunnel.')
     from . import privacy
-    last_retention = 0
+    last_retention = None
     while True:
         try:
             # Privacy work cannot starve behind catalog/order queues.
-            if time.monotonic() - last_retention > 3600:
-                processed = privacy.retention_once()
-                last_retention = time.monotonic() if processed < 100 else 0
+            if last_retention is None or time.monotonic() - last_retention > 3600:
+                processed = run_retention_batch()
+                last_retention = time.monotonic() if processed < 100 else None
             from .shopify import process_inbox_once, sync_catalog_once
             from .publishing import run_once as publish_once
             # Give each queue a turn; a busy inventory feed must not starve paid orders.

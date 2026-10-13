@@ -27,6 +27,34 @@ def audit(cur, tenant, actor, action, resource=None):
                 (tenant, str(actor), action, resource))
 
 
+def durable_delivery_audit(tenant, action, resource):
+    """Commit metadata on a separate connection before proceeding with delivery access.
+
+    Never use the caller's cursor: its transmission transaction may roll back.
+    No order FK is locked and no buyer fields enter this audit record.
+    """
+    allowed = {'DELIVERY_DETAILS_READ_ATTEMPT', 'DELIVERY_DETAILS_READ_FOR_TRANSMISSION'}
+    if action not in allowed:
+        raise ValueError('Unsupported delivery audit action.')
+    with s.transaction() as audit_cur:
+        audit_cur.execute("SET LOCAL lock_timeout = '5s'")
+        audit_cur.execute("SET LOCAL statement_timeout = '10s'")
+        audit(audit_cur, tenant, 'distribution-worker', action, resource)
+
+
+def delivery_restricted(cur, tenant, shop, order_id):
+    """Hold delivery during unresolved deletion requests, including live-order review."""
+    if suppressed(cur, tenant, shop, order_id):
+        return True
+    value = numeric_id(order_id)
+    return bool(s.one(cur, """SELECT id FROM distribution_privacy_requests
+        WHERE tenant_id=%s AND shop=%s AND topic IN ('customers/redact','shop/redact')
+        AND status IN ('PENDING','REVIEW_REQUIRED')
+        AND (topic='shop/redact' OR payload->'order_ids' @> %s::jsonb
+             OR COALESCE(jsonb_array_length(payload->'order_ids'),0)=0)
+        LIMIT 1""", (tenant, shop, json.dumps([value]))))
+
+
 def numeric_id(value):
     value = str(value or '').rsplit('/', 1)[-1]
     return value if value.isdigit() else ''

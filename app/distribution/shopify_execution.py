@@ -31,9 +31,12 @@ def delivery_order(cur,conn,order,items):
         raise ConfigurationRequired('Only authorized live Shopify orders can be transmitted.')
     install=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE tenant_id=%s AND shop=%s AND active FOR UPDATE',(conn['tenant_id'],order['source_account']))
     if not install or not install['location_id']: raise ConfigurationRequired('Active store and fulfillment location required.')
-    if privacy.suppressed(cur,conn['tenant_id'],install['shop'],order['external_order_id']):
-        raise ConfigurationRequired('Order was removed under the privacy policy.')
+    if privacy.delivery_restricted(cur,conn['tenant_id'],install['shop'],order['external_order_id']):
+        raise ConfigurationRequired('Delivery is restricted pending privacy review or deletion.')
+    # Fail closed if the durable audit cannot be committed.
+    privacy.durable_delivery_audit(conn['tenant_id'],'DELIVERY_DETAILS_READ_ATTEMPT',order['id'])
     source=sh.graphql(cur,install,DELIVERY_QUERY,{'id':order['external_order_id']})['order']
+    privacy.durable_delivery_audit(conn['tenant_id'],'DELIVERY_DETAILS_READ_FOR_TRANSMISSION',order['id'])
     if not source or source['cancelledAt'] or source['displayFinancialStatus']!='PAID':
         raise ConfigurationRequired('Order is no longer eligible for fulfillment.')
     expected=Counter({str(i['edition_id']):i['quantity'] for i in items})
@@ -51,7 +54,6 @@ def delivery_order(cur,conn,order,items):
             phone=address.get('phone') or '').model_dump()
     except Exception:
         raise ConfigurationRequired('A valid delivery address is required.') from None
-    privacy.audit(cur,conn['tenant_id'],'distribution-worker','DELIVERY_DETAILS_READ_FOR_TRANSMISSION',order['id'])
     return {**order,'recipient':recipient}
 
 LEVEL_QUERY='''query($item:ID!,$location:ID!){inventoryItem(id:$item){tracked inventoryLevel(locationId:$location){quantities(names:["on_hand","committed"]){name quantity}}}}'''
