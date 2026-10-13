@@ -21,11 +21,17 @@ def _b64url_decode(data: str) -> bytes:
     return base64.urlsafe_b64decode((s + pad).encode("ascii"))
 
 
-def make_wopi_token(file_id: str, user_id: str, ttl: int, secret: str) -> str:
+def make_wopi_token(file_id: str, user_id: str, ttl: int, secret: str, *, file_kind: str = 'draft', read_only: bool = False) -> str:
+    from app.tenants.workspace import workspace
+    selected = workspace()
     payload = {
         "file_id": str(file_id),
         "user_id": str(user_id),
         "exp": int(time.time()) + int(ttl),
+        "tenant_id": selected.tenant_id,
+        "tenant_slug": selected.slug,
+        "file_kind": file_kind,
+        "read_only": read_only,
     }
 
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")

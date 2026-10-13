@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 import psycopg
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -44,7 +44,6 @@ async def db_error_handler(request, exc: psycopg.Error):
         status_code=503,
         content={
             "detail": "Service temporarily unavailable. The database is unreachable—ensure PostgreSQL is running and DATABASE_URL is correct in the backend .env.",
-            "error": str(exc),
         },
     )
 
@@ -178,8 +177,8 @@ app.include_router(financialuploads.router, prefix="/api", tags=["Financial Uplo
 # ---------------------------------------------------------------------
 # Static mounts
 # ---------------------------------------------------------------------
-app.mount("/static/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-app.mount("/static/templates", StaticFiles(directory=str(TEMPLATES_DIR)), name="templates")
+# Private uploads and templates must be served through authenticated handlers.
+# Mounting their directories here bypassed every /api authorization check.
 
 # ---------------------------------------------------------------------
 # Deny-by-default auth: STRICT validation for /api/* (when REQUIRE_AUTH=1)
@@ -216,6 +215,7 @@ def _token_from_cookie(cookie_header: str | None) -> str | None:
 
 @app.middleware("http")
 async def require_auth_middleware(request, call_next):
+    from starlette.concurrency import run_in_threadpool
     path = request.url.path or ""
 
     # only care about /api/* for auth
@@ -235,7 +235,13 @@ async def require_auth_middleware(request, call_next):
 
     # Only exact recipient-token routes bypass account auth; handlers enforce email proof.
     from app.bookdev_security import public_request_endpoint
-    if public_request_endpoint(path, request.method.upper()):
+    banking_token_route = (request.method.upper(), path) in {
+        ('GET', '/api/banking/public/request'),
+        ('POST', '/api/banking/public/otp'),
+        ('POST', '/api/banking/public/verify'),
+        ('PUT', '/api/banking/public/bank-account'),
+    }
+    if banking_token_route or public_request_endpoint(path, request.method.upper()):
         response = await call_next(request)
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["Pragma"] = "no-cache"
@@ -244,6 +250,10 @@ async def require_auth_middleware(request, call_next):
         return response
 
     # Embedded endpoints validate Shopify JWTs in their own dependency.
+    # WOPI routes validate document-specific signed tokens and establish tenant context.
+    import re
+    if re.fullmatch(r'/api/wopi/(?:templates/)?files/[^/]+(?:/contents)?', path):
+        return await call_next(request)
     if path.startswith('/api/distribution/shopify/embedded/'):
         return await call_next(request)
 
@@ -258,7 +268,7 @@ async def require_auth_middleware(request, call_next):
     if token:
         try:
             from app.auth.service import get_current_user_from_token
-            claims = get_current_user_from_token(token)
+            claims = await run_in_threadpool(get_current_user_from_token, token)
             if claims:
                 request.state.user_claims = claims
         except Exception:
@@ -267,8 +277,9 @@ async def require_auth_middleware(request, call_next):
     if (path == "/api/uploads" or path.startswith("/api/uploads/")) and request.method.upper() in {"POST", "PUT", "DELETE"} and not getattr(request.state, "user_claims", None):
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 
-    # When strict auth is on, require a valid token
-    if REQUIRE_AUTH and not getattr(request.state, "user_claims", None):
+    # Publisher APIs always require authentication, independently of dev flags.
+    from app.tenants.workspace import guarded_path
+    if (REQUIRE_AUTH or guarded_path(path)) and not getattr(request.state, "user_claims", None):
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 
     # Restrict /api/royalty to tenant_admin (or superadmin) for the given X-Tenant
@@ -280,22 +291,44 @@ async def require_auth_middleware(request, call_next):
         try:
             from app.auth.service import get_user_db_record_from_claims, get_memberships_for_user, is_superadmin
             from app.tenants.resolver import resolve_tenant
-            user = get_user_db_record_from_claims(claims) if claims else None
+            user = await run_in_threadpool(get_user_db_record_from_claims, claims) if claims else None
             if not user:
                 return JSONResponse(status_code=403, content={"detail": "Forbidden"})
             if is_superadmin(user.get("platform_role")):
                 pass  # allow
             else:
-                tenant = resolve_tenant(tenant_slug)
+                tenant = await run_in_threadpool(resolve_tenant, tenant_slug)
                 if not tenant:
                     return JSONResponse(status_code=403, content={"detail": "Tenant not found"})
-                memberships = get_memberships_for_user(user["id"])
+                memberships = await run_in_threadpool(get_memberships_for_user, user["id"])
                 role = next((m["role"] for m in memberships if (m.get("tenant_slug") or "").lower() == tenant_slug.lower()), None)
                 if role != "tenant_admin":
                     return JSONResponse(status_code=403, content={"detail": "Royalty calculator is restricted to admins"})
         except Exception:
             return JSONResponse(status_code=403, content={"detail": "Forbidden"})
 
+    from app.tenants.workspace import (
+        guarded_path, select_workspace, enforce_legacy_boundary, current_workspace,
+    )
+    if guarded_path(path):
+        try:
+            # Database-backed membership checks must not block the event loop.
+            selected = await run_in_threadpool(select_workspace, request, getattr(request.state, 'user_claims', None))
+            enforce_legacy_boundary(path, selected)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={'detail': exc.detail})
+        token = current_workspace.set(selected)
+        try:
+            # Legacy Query defaults must never choose a different publisher.
+            from urllib.parse import urlencode
+            params = [(k, v) for k, v in request.query_params.multi_items() if k != 'tenant_slug']
+            params.append(('tenant_slug', selected.slug))
+            request.scope['query_string'] = urlencode(params).encode()
+            response = await call_next(request)
+            response.headers['Cache-Control'] = 'private, no-store'
+            return response
+        finally:
+            current_workspace.reset(token)
     return await call_next(request)
 
 # ---------------------------------------------------------------------

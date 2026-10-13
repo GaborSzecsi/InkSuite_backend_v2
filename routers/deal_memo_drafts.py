@@ -154,9 +154,6 @@ def _tenant_id(cur, tenant_slug: str | None = None) -> str:
     cur.execute("SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1", (slug,))
     row = cur.fetchone()
     if not row:
-        cur.execute("SELECT id FROM tenants ORDER BY id LIMIT 1")
-        row = cur.fetchone()
-    if not row:
         raise HTTPException(status_code=503, detail="No tenant configured (deal_memo_drafts)")
     return str(row["id"])
 

@@ -15,11 +15,13 @@ from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
+from app.wopi.workspace import editor_workspace
 from fastapi.responses import FileResponse, JSONResponse, Response as FastAPIResponse
 from pydantic import BaseModel, EmailStr
 
 from app.core.db import db_conn
+from app.tenants.workspace import tenant_id as active_tenant_id, tenant_slug as active_tenant_slug
 from .contract_royalties import render_royalty_sections, RoyaltyValidationError, format_contract_insertion
 
 try:
@@ -56,13 +58,11 @@ class GenerateRequest(BaseModel):
 
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
-wopi_router = APIRouter(prefix="/wopi", tags=["WOPI"])
+wopi_router = APIRouter(prefix="/wopi", tags=["WOPI"], dependencies=[Depends(editor_workspace)])
 
 # ----------------------- S3 -----------------------
 _DRAFTS_AWS_REGION = (os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-2").strip()
 _DRAFTS_BUCKET = (os.getenv("S3_BUCKET") or os.getenv("TENANT_BUCKET") or "inksuite-data").strip()
-_tenant_base = (os.getenv("TENANT_PREFIX") or "tenants/marble-press").strip().rstrip("/")
-_DRAFTS_PREFIX = (os.getenv("DRAFTS_S3_PREFIX") or f"{_tenant_base}/data/TempDraftContracts").strip().rstrip("/") + "/"
 
 
 def _drafts_s3_endpoint() -> str:
@@ -83,26 +83,22 @@ def _drafts_s3_client():
 
 
 # ----------------------- PATHS -----------------------
-BASE_DATA_DIR = Path.home() / "Documents" / "marble_app" / "data"
-TEMPLATES_DIR = BASE_DATA_DIR / "Templates"
-DRAFTS_DIR = BASE_DATA_DIR / "TempDraftContracts"
-INDEX_PATH = DRAFTS_DIR / "index.json"
+from app.tenants.contract_storage import (
+    draft_prefix, template_prefix, draft_directory, template_directory,
+    checked_key, checked_local_path, filename as checked_filename,
+)
 
-if _S3_AVAILABLE:
-    DRAFTS_S3_PREFIX = tenant_data_prefix("data", "TempDraftContracts").rstrip("/") + "/"
-    DRAFT_INDEX_KEY = DRAFTS_S3_PREFIX + "index.json"
-    TEMPLATES_S3_PREFIX = tenant_data_prefix("data", "Templates").rstrip("/") + "/"
-    TEMPLATES_INDEX_KEY = TEMPLATES_S3_PREFIX + "templates_index.json"
-else:
-    DRAFTS_S3_PREFIX = ""
-    DRAFT_INDEX_KEY = ""
-    TEMPLATES_S3_PREFIX = ""
-    TEMPLATES_INDEX_KEY = ""
 
-TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
-DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
-if not INDEX_PATH.exists():
-    INDEX_PATH.write_text("[]", encoding="utf-8")
+def draft_index_key():
+    return draft_prefix() + 'index.json'
+
+
+def template_index_key():
+    return template_prefix() + 'templates_index.json'
+
+
+def draft_index_path():
+    return draft_directory() / 'index.json'
 
 TOKEN_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
@@ -434,10 +430,10 @@ def _load_deal_memo_db_fields(uid: str) -> dict[str, Any]:
                         ON aprof.agency_party_id = d.agency_party_id
                     LEFT JOIN party_addresses addr
                         ON addr.party_id = d.agency_party_id
-                    WHERE d.uid = %s
+                    WHERE d.uid = %s AND d.tenant_id = %s
                     LIMIT 1
                     """,
-                    (uid,),
+                    (uid, active_tenant_id()),
                 )
                 row = cur.fetchone()
                 if not row:
@@ -745,9 +741,9 @@ def _iter_contract_paragraphs(doc):
 
 
 def _load_index() -> List[dict]:
-    if _S3_AVAILABLE and DRAFT_INDEX_KEY:
+    if _S3_AVAILABLE and draft_index_key():
         try:
-            raw = get_bytes(DRAFT_INDEX_KEY)
+            raw = get_bytes(draft_index_key())
             data = json.loads(raw.decode("utf-8"))
             if isinstance(data, list):
                 return data
@@ -756,37 +752,38 @@ def _load_index() -> List[dict]:
         except Exception:
             pass
     try:
-        return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+        return json.loads(draft_index_path().read_text(encoding="utf-8"))
     except Exception:
         return []
 
 
 def _save_index(items: List[dict]) -> None:
-    if _S3_AVAILABLE and DRAFT_INDEX_KEY:
+    if _S3_AVAILABLE and draft_index_key():
         try:
             put_bytes(
-                DRAFT_INDEX_KEY,
+                draft_index_key(),
                 json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8"),
                 content_type="application/json",
             )
             return
         except Exception:
             pass
-    INDEX_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    draft_directory().mkdir(parents=True, exist_ok=True)
+    draft_index_path().write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _list_draft_keys_direct() -> List[str]:
     global _last_draft_list_error
     _last_draft_list_error = None
     keys: List[str] = []
-    if not _DRAFTS_BUCKET or not _DRAFTS_PREFIX:
+    if not _DRAFTS_BUCKET or not draft_prefix():
         _last_draft_list_error = "DRAFTS_BUCKET or DRAFTS_PREFIX empty"
         return keys
     try:
         client = _drafts_s3_client()
         token: Optional[str] = None
         while True:
-            kwargs: Dict[str, Any] = {"Bucket": _DRAFTS_BUCKET, "Prefix": _DRAFTS_PREFIX, "MaxKeys": 1000}
+            kwargs: Dict[str, Any] = {"Bucket": _DRAFTS_BUCKET, "Prefix": draft_prefix(), "MaxKeys": 1000}
             if token:
                 kwargs["ContinuationToken"] = token
             resp = client.list_objects_v2(**kwargs)
@@ -808,9 +805,9 @@ def _synthesize_drafts_from_s3() -> List[dict]:
     out: List[dict] = []
     keys = _list_draft_keys_direct()
 
-    if not keys and _S3_AVAILABLE and DRAFTS_S3_PREFIX:
+    if not keys and _S3_AVAILABLE and draft_prefix():
         try:
-            keys = list_keys(DRAFTS_S3_PREFIX)
+            keys = list_keys(draft_prefix())
             keys = [k for k in keys if k and k.lower().endswith(".docx")]
         except Exception:
             pass
@@ -836,17 +833,18 @@ def _synthesize_drafts_from_s3() -> List[dict]:
 
 
 def _find_template_path(template_id: str) -> Path:
+    checked_filename(template_id)
     if template_id.lower().endswith(".docx"):
-        p = TEMPLATES_DIR / template_id
+        p = checked_local_path(template_directory() / template_id, template_directory())
         if p.exists():
             return p
         raise HTTPException(status_code=404, detail=f"Template file not found: {p}")
 
-    matches = sorted(TEMPLATES_DIR.glob(f"{template_id}_*.docx"))
+    matches = sorted(template_directory().glob(f"{template_id}_*.docx"))
     if matches:
-        return matches[0]
+        return checked_local_path(matches[0], template_directory())
 
-    fallback = TEMPLATES_DIR / f"{template_id}.docx"
+    fallback = checked_local_path(template_directory() / f"{template_id}.docx", template_directory())
     if fallback.exists():
         return fallback
 
@@ -854,15 +852,15 @@ def _find_template_path(template_id: str) -> Path:
         status_code=404,
         detail=(
             "Template not found.\n"
-            f"Looked for:\n - {TEMPLATES_DIR}\\{template_id}_*.docx\n - {TEMPLATES_DIR}\\{template_id}.docx"
+            f"Looked for:\n - {template_directory()}\\{template_id}_*.docx\n - {template_directory()}\\{template_id}.docx"
         ),
     )
 
 
 def _load_templates_index() -> list[dict[str, Any]]:
-    if _S3_AVAILABLE and TEMPLATES_INDEX_KEY:
+    if _S3_AVAILABLE and template_index_key():
         try:
-            raw = get_bytes(TEMPLATES_INDEX_KEY)
+            raw = get_bytes(template_index_key())
             data = json.loads(raw.decode("utf-8"))
             if isinstance(data, list):
                 return data
@@ -871,7 +869,7 @@ def _load_templates_index() -> list[dict[str, Any]]:
         except Exception:
             pass
 
-    local_index = TEMPLATES_DIR / "templates_index.json"
+    local_index = template_directory() / "templates_index.json"
     try:
         data = json.loads(local_index.read_text(encoding="utf-8"))
         if isinstance(data, list):
@@ -885,6 +883,7 @@ def _load_templates_index() -> list[dict[str, Any]]:
 
 
 def _resolve_template_s3_key(template_id: str) -> str | None:
+    checked_filename(template_id)
     items = _load_templates_index()
 
     for it in items:
@@ -892,15 +891,15 @@ def _resolve_template_s3_key(template_id: str) -> str | None:
             for key_name in ("s3_key", "key", "path", "object_key"):
                 key = str(it.get(key_name) or "").strip()
                 if key and key.lower().endswith(".docx"):
-                    return key
+                    return checked_key(key, template_prefix())
 
             filename = str(it.get("filename") or "").strip()
-            if filename and TEMPLATES_S3_PREFIX:
-                return TEMPLATES_S3_PREFIX + filename
+            if filename and template_prefix():
+                return checked_key(template_prefix() + checked_filename(filename), template_prefix())
 
-    if _S3_AVAILABLE and TEMPLATES_S3_PREFIX:
+    if _S3_AVAILABLE and template_prefix():
         try:
-            keys = list_keys(TEMPLATES_S3_PREFIX)
+            keys = list_keys(template_prefix())
             for key in keys:
                 base = key.split("/")[-1]
                 if base == template_id or base == f"{template_id}.docx":
@@ -1047,6 +1046,19 @@ def _populate_subrights(memo: dict, values: dict[str, str]) -> None:
 def _find_draft(item_id: str) -> dict | None:
     for it in _load_index():
         if str(it.get("id")) == str(item_id):
+            it = dict(it)
+            if it.get('s3_key'):
+                checked_key(it['s3_key'], draft_prefix())
+            if it.get('path'):
+                try:
+                    checked_local_path(it['path'], draft_directory())
+                except HTTPException:
+                    if not it.get('s3_key'):
+                        raise
+                    # Ignore stale workstation paths when an S3 document exists.
+                    it['path'] = ''
+            if not it.get('s3_key') and not it.get('path'):
+                raise HTTPException(404, 'Draft file not found')
             return it
     for it in _synthesize_drafts_from_s3():
         if str(it.get("id")) == str(item_id):
@@ -1071,10 +1083,10 @@ def _load_advance_installments_db(uid: str) -> list[dict[str, Any]]:
                     FROM deal_memo_advance_installments ai
                     JOIN deal_memo_drafts d
                         ON d.id = ai.deal_memo_draft_id
-                    WHERE d.uid = %s
+                    WHERE d.uid = %s AND d.tenant_id = %s
                     ORDER BY ai.installment_order, ai.id
                     """,
-                    (uid,),
+                    (uid, active_tenant_id()),
                 )
                 rows = cur.fetchall() or []
                 cols = [desc[0] for desc in cur.description]
@@ -1330,13 +1342,13 @@ def wopi_check_file_info(file_id: str, request: Request):
             "UserId": user_id,
             "UserFriendlyName": payload.get("user_id") or "InkSuite User",
             "Version": version,
-            "SupportsUpdate": True,
-            "SupportsLocks": True,
+            "SupportsUpdate": not payload.get('read_only', True),
+            "SupportsLocks": not payload.get('read_only', True),
             "SupportsGetLock": True,
-            "SupportsPutFile": True,
+            "SupportsPutFile": not payload.get('read_only', True),
             "SupportsRename": False,
-            "ReadOnly": False,
-            "UserCanWrite": True,
+            "ReadOnly": payload.get('read_only', True),
+            "UserCanWrite": not payload.get('read_only', True),
         }
     )
 
@@ -1379,6 +1391,7 @@ def _now_epoch() -> float:
 
 
 def _lock_get(file_id: str) -> str:
+    file_id = f'{active_tenant_slug()}:{file_id}'
     ent = _WOPI_LOCKS.get(file_id)
     if not ent:
         return ""
@@ -1389,10 +1402,12 @@ def _lock_get(file_id: str) -> str:
 
 
 def _lock_set(file_id: str, lock_value: str) -> None:
+    file_id = f'{active_tenant_slug()}:{file_id}'
     _WOPI_LOCKS[file_id] = {"lock": lock_value, "exp": _now_epoch() + _WOPI_LOCK_TTL_SEC}
 
 
 def _lock_clear(file_id: str) -> None:
+    file_id = f'{active_tenant_slug()}:{file_id}'
     _WOPI_LOCKS.pop(file_id, None)
 
 
@@ -1677,7 +1692,8 @@ def generate_contract(req: GenerateRequest):
         safe_title = (str(memo.get("title") or memo.get("name") or "Contract").strip() or "Contract").replace(" ", "_")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_name = f"{safe_title}_{out_uid}_{stamp}.docx"
-        out_path = DRAFTS_DIR / out_name
+        draft_directory().mkdir(parents=True, exist_ok=True)
+        out_path = draft_directory() / checked_filename(out_name)
         doc.save(str(out_path))
 
     finally:
@@ -1687,11 +1703,11 @@ def generate_contract(req: GenerateRequest):
             pass
 
     s3_key: str | None = None
-    if _S3_AVAILABLE and _DRAFTS_BUCKET and _DRAFTS_PREFIX:
+    if _S3_AVAILABLE and _DRAFTS_BUCKET and draft_prefix():
         try:
             client = _drafts_s3_client()
             data = out_path.read_bytes()
-            s3_key = f"{_DRAFTS_PREFIX}{out_name}"
+            s3_key = f"{draft_prefix()}{out_name}"
             client.put_object(
                 Bucket=_DRAFTS_BUCKET,
                 Key=s3_key,
@@ -1719,11 +1735,8 @@ def generate_contract(req: GenerateRequest):
     try:
         with db_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1", ("marble-press",))
+                cur.execute("SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1", (active_tenant_slug(),))
                 row = cur.fetchone()
-                if not row:
-                    cur.execute("SELECT id FROM tenants ORDER BY id LIMIT 1")
-                    row = cur.fetchone()
                 if row and out_uid:
                     tenant_id = str(row[0]) if hasattr(row, "__getitem__") else str(row["id"])
                     cur.execute(
@@ -1763,7 +1776,7 @@ def draft_contracts_debug():
     return {
         "config": {
             "bucket": _DRAFTS_BUCKET,
-            "prefix": _DRAFTS_PREFIX,
+            "prefix": draft_prefix(),
             "region": _DRAFTS_AWS_REGION,
             "endpoint": _drafts_s3_endpoint(),
         },

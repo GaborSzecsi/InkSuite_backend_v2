@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from pydantic import BaseModel, EmailStr
 
 from app.core.db import db_conn
+from app.tenants.workspace import Workspace, current_workspace
 from app.email.templates import render_invite_agent_email
 from routers.contract_docs import _find_draft  # keep your existing import style
 
@@ -478,7 +479,26 @@ def create_invite_for_draft(
     }
 
 
-@router.get("/invites/{token}")
+async def invite_workspace(token: str):
+    inv = _get_invite_by_token_hash(_token_hash(token))
+    if not inv:
+        raise HTTPException(404, 'Invite not found')
+    if inv['status'] in ('revoked', 'expired') or inv['expires_at'] <= _now_utc():
+        raise HTTPException(410, 'Invite expired or revoked')
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SELECT id FROM tenants WHERE slug = %s', (inv['tenant_slug'],))
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, 'Publisher not found')
+    marker = current_workspace.set(Workspace(str(row[0]), inv['tenant_slug'], 'document_recipient', inv['id']))
+    try:
+        yield
+    finally:
+        current_workspace.reset(marker)
+
+
+@router.get("/invites/{token}", dependencies=[Depends(invite_workspace)])
 def resolve_invite_token(token: str):
     th = _token_hash(token)
     inv = _get_invite_by_token_hash(th)
@@ -503,7 +523,7 @@ def resolve_invite_token(token: str):
     }
 
 
-@router.get("/invites/{token}/collabora-config")
+@router.get("/invites/{token}/collabora-config", dependencies=[Depends(invite_workspace)])
 def collabora_config_for_invite(token: str):
     """Return WOPI editor config for the invite's draft. Public (no auth). Agent gets read-only view."""
     th = _token_hash(token)
@@ -527,8 +547,9 @@ def collabora_config_for_invite(token: str):
     wopi_token = make_wopi_token(
         file_id=draft_id,
         user_id=user_id,
-        ttl=settings.wopi_token_ttl_sec,
+        ttl=min(settings.wopi_token_ttl_sec, max(1, int((inv['expires_at'] - _now_utc()).total_seconds()))),
         secret=settings.wopi_access_token_secret,
+        read_only=True,
     )
     wopi_base = (os.getenv("WOPI_PUBLIC_BASE") or os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if not wopi_base:

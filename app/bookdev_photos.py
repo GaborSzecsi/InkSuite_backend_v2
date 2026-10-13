@@ -48,7 +48,7 @@ def normalize_photo(file):
 
 def save_request_photo(row, party_id, data, width, height):
     from routers import uploads
-    work = uploads._resolve_work(row["work_id"])
+    work = uploads._resolve_work(row["work_id"], tenant_id=str(row["tenant_id"]))
     if str(work["tenant_id"]) != row["tenant_id"]:
         raise HTTPException(403, "The photo does not belong to this request.")
     role = "author" if row["request_type"] == "AUTHOR_PHOTO" else "illustrator"

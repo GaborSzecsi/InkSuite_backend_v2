@@ -27,6 +27,7 @@ from models.royalty import (
 )
 
 from services.royalty_calculator import RoyaltyCalculator
+from app.tenants.workspace import storage_directory
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,8 @@ FORCE_WEASYPRINT = True
 #     Catalog work list / resolve (SQL)
 # =============================
 def _tenant_slug() -> str:
-    return (os.getenv("NEXT_PUBLIC_TENANT_SLUG") or os.getenv("TENANT_SLUG") or "marble-press").strip()
+    from app.tenants.workspace import tenant_slug
+    return tenant_slug()
 
 
 def _import_catalog_mod():
@@ -670,7 +672,7 @@ def get_royalty_periods(request: Request) -> List[Dict[str, Any]]:
 
                     FROM royalty_periods
                     WHERE tenant_id = %s::uuid
-                      AND period_code ~ '^\d{4}-H[12]$'
+                      AND period_code ~ '^[0-9]{4}-H[12]$'
                     ORDER BY period_start DESC, period_end DESC
                     """,
                     (tenant_id,),
@@ -951,7 +953,7 @@ def save_royalty_statement(request: RoyaltyStatementRequest):
     saved_parties: list[str] = []
 
     def write_party_json(party: str, party_data: Dict):
-        party_file = ROYALTY_DATA_DIR / f"{party}_royalty.json"
+        party_file = storage_directory(ROYALTY_DATA_DIR) / f"{party}_royalty.json"
         statement_data = {
             "uid": stmt_uid,
             "book_title": book.title,
@@ -981,12 +983,12 @@ def save_royalty_statement(request: RoyaltyStatementRequest):
                 ):
                     filtered.append(e)
             filtered.append(statement_data)
-            ROYALTY_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            storage_directory(ROYALTY_DATA_DIR).mkdir(parents=True, exist_ok=True)
             party_file.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
         except Exception as e:
             print(f"[statements] Error saving to {party_file}: {e}")
 
-    book_upload_dir = UPLOADS_DIR / stmt_uid
+    book_upload_dir = storage_directory(UPLOADS_DIR) / stmt_uid
     book_upload_dir.mkdir(parents=True, exist_ok=True)
 
     if has_party_rows(author_data):
@@ -1016,7 +1018,7 @@ def save_royalty_statement(request: RoyaltyStatementRequest):
         print("[save] Skipping illustrator statement (no royalty % > 0).")
 
     try:
-        rebuild_author_index_from_log(ROYALTY_DATA_DIR)
+        rebuild_author_index_from_log(storage_directory(ROYALTY_DATA_DIR))
     except Exception as reidx_err:
         print(f"[save] WARNING: could not rebuild author index: {reidx_err}")
 
@@ -1129,7 +1131,7 @@ def render_royalty_statement(
         "calculations": party_data,
     }
 
-    party_file = ROYALTY_DATA_DIR / f"{party}_royalty.json"
+    party_file = storage_directory(ROYALTY_DATA_DIR) / f"{party}_royalty.json"
     try:
         existing: list = []
         if party_file.exists():
@@ -1147,11 +1149,11 @@ def render_royalty_statement(
                 filtered.append(e)
 
         filtered.append(statement_data)
-        ROYALTY_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        storage_directory(ROYALTY_DATA_DIR).mkdir(parents=True, exist_ok=True)
         party_file.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
 
         try:
-            rebuild_author_index_from_log(ROYALTY_DATA_DIR)
+            rebuild_author_index_from_log(storage_directory(ROYALTY_DATA_DIR))
         except Exception as reidx_err:
             print(f"[render] WARNING: could not rebuild author index: {reidx_err}")
 
@@ -1750,7 +1752,7 @@ def generate_statement_html(book: Book, request: RoyaltyStatementRequest, party_
         return f"${x:,.2f}"
 
     logo_base64 = ""
-    if LOGO_PATH.exists():
+    if _tenant_slug() == "marble-press" and LOGO_PATH.exists():
         try:
             logo_bytes = LOGO_PATH.read_bytes()
             logo_base64 = base64.b64encode(logo_bytes).decode("utf-8")

@@ -65,13 +65,12 @@ def digest(value: str) -> str:
 
 
 def tenant_from_request(request: Request, tenant_slug: str | None = None) -> str:
-    # Replace this resolver with your Cognito membership resolver when available.
-    # Never accept an arbitrary tenant for authenticated commercial traffic.
+    from app.tenants.workspace import workspace
+    selected = workspace()
     header_tenant = (request.headers.get("X-Tenant") or "").strip()
-    tenant = header_tenant or (tenant_slug or "").strip()
-    if not tenant:
-        raise HTTPException(400, "Missing tenant context")
-    return tenant
+    if any(value and value != selected.slug for value in (header_tenant, tenant_slug)):
+        raise HTTPException(403, "Conflicting publisher workspace")
+    return selected.slug
 
 
 def actor(request: Request) -> tuple[str | None, str | None]:

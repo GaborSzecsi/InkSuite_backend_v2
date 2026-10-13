@@ -21,12 +21,27 @@ class RoyaltyCalculator:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         base_dir = os.path.dirname(current_dir)
 
-        self.royalty_file = os.path.join(base_dir, "book_data", "royalty_statements.json")
-        self.author_royalty_file = os.path.join(base_dir, "book_data", "author_royalties.json")
-        self.illustrator_royalty_file = os.path.join(base_dir, "book_data", "illustrator_royalties.json")
-        self.books_file = os.path.join(base_dir, "book_data", "books.json")
+        self._legacy_data_dir = Path(base_dir) / "book_data"
 
-        os.makedirs(os.path.dirname(self.books_file), exist_ok=True)
+    def _file(self, name):
+        from app.tenants.workspace import storage_directory
+        return str(storage_directory(self._legacy_data_dir) / name)
+
+    @property
+    def royalty_file(self):
+        return self._file("royalty_statements.json")
+
+    @property
+    def author_royalty_file(self):
+        return self._file("author_royalties.json")
+
+    @property
+    def illustrator_royalty_file(self):
+        return self._file("illustrator_royalties.json")
+
+    @property
+    def books_file(self):
+        return self._file("books.json")
 
     @staticmethod
     def _dump(model):

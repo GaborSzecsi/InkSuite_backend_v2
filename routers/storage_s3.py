@@ -13,6 +13,10 @@ def _bucket() -> str:
     return b
 
 def _tenant_prefix() -> str:
+    from app.tenants.workspace import current_workspace
+    selected = current_workspace.get()
+    if selected:
+        return f"tenants/{selected.slug}"
     # You can set TENANT_PREFIX=tenants/marble-press
     p = (os.getenv("TENANT_PREFIX") or "").strip().strip("/")
     if not p:

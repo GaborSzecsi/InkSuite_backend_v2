@@ -19,17 +19,8 @@ router = APIRouter(prefix="/onix", tags=["ONIX Feed"])
 
 
 def _tenant_id_from_request(cur, request: Request) -> str:
-    slug = (request.query_params.get("tenant_slug") or request.headers.get("X-Tenant") or "").strip()
-    if not slug:
-        slug = "marble-press"
-    cur.execute("SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1", (slug,))
-    row = cur.fetchone()
-    if not row:
-        cur.execute("SELECT id FROM tenants ORDER BY id LIMIT 1")
-        row = cur.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    return str(row["id"])
+    from app.tenants.workspace import tenant_id
+    return tenant_id()
 
 
 def _user_id_from_request(request: Request) -> Optional[str]:
@@ -532,16 +523,11 @@ def list_products(
 
 
 def _tenant_id_cur(tenant_slug: str):
-    with db_conn() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1", (tenant_slug,))
-            row = cur.fetchone()
-            if not row:
-                cur.execute("SELECT id FROM tenants ORDER BY id LIMIT 1")
-                row = cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Tenant not found")
-            return str(row["id"])
+    from app.tenants.workspace import workspace
+    selected = workspace()
+    if tenant_slug.strip().lower() != selected.slug:
+        raise HTTPException(status_code=403, detail="Conflicting publisher workspace")
+    return selected.tenant_id
 
 
 @router.get("/products/{isbn}")

@@ -9,6 +9,7 @@ from PIL import Image
 from psycopg.rows import dict_row
 
 from app.core.db import db_conn
+from app.tenants.workspace import tenant_id as active_tenant_id, tenant_slug as active_tenant_slug
 
 import boto3
 from botocore.config import Config
@@ -26,6 +27,12 @@ router = APIRouter(prefix="/uploads", tags=["Uploads"])
 # ----------------------------
 DATA_UPLOAD_DIR = os.environ.get("DATA_UPLOAD_DIR", "./data/uploads")
 pathlib.Path(DATA_UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+
+
+def _local_upload_dir():
+    root = pathlib.Path(DATA_UPLOAD_DIR)
+    slug = active_tenant_slug()
+    return root if slug == 'marble-press' else root / 'tenants' / slug
 
 UploadKind = Literal[
     "author_contract",
@@ -108,7 +115,7 @@ def _public_url_for_key(key: str) -> str:
 
 def _public_storage_key(uid: str, filename: str) -> str:
     """All retailer/catalog assets live in the title's public S3 folder."""
-    return f"{UPLOADS_S3_PREFIX}/{uid}/public/{filename}"
+    return f"{_uploads_prefix()}/{uid}/public/{filename}"
 
 
 def _resolve_edition(work_id: str, edition_id: str = "", isbn13: str = "") -> Dict[str, Any]:
@@ -185,7 +192,7 @@ def _validate_cover_shape(edition: Dict[str, Any], width: int, height: int) -> N
 
 
 def _next_public_sequence(uid: str, isbn13: str, stem: str) -> int:
-    prefix = f"{UPLOADS_S3_PREFIX}/{uid}/public/{isbn13}_{stem}_"
+    prefix = f"{_uploads_prefix()}/{uid}/public/{isbn13}_{stem}_"
     s3 = _s3_client()
     token = None
     used = set()
@@ -343,6 +350,8 @@ def _upsert_supporting_resource(
                 WHERE r.tenant_id = %s::uuid
                   AND r.edition_id = %s::uuid
                   AND v.storage_key = %s
+                  AND r.tenant_id = %s::uuid
+                  AND e.work_id = %s::uuid
                 LIMIT 1
                 """,
                 (tenant_id, edition_id, storage_key),
@@ -633,7 +642,7 @@ def _reconcile_s3_public_resources(
 ) -> None:
     uid = (work.get("uid") or "").strip()
     isbn = _clean_isbn13(edition.get("isbn13") or "")
-    prefix = f"{UPLOADS_S3_PREFIX}/{uid}/public/{isbn}_"
+    prefix = f"{_uploads_prefix()}/{uid}/public/{isbn}_"
     s3 = _s3_client()
     token = None
 
@@ -688,11 +697,9 @@ AWS_REGION = (os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION
 S3_BUCKET = (os.environ.get("S3_BUCKET") or "inksuite-data").strip()
 
 # s3://inksuite-data/tenants/marble-press/data/uploads/<uid>/<uid>__cover.jpg
-UPLOADS_S3_PREFIX = (
-    os.environ.get("UPLOADS_S3_PREFIX")
-    or os.environ.get("UPLOADS_PREFIX")
-    or "tenants/marble-press/data/uploads"
-).strip().rstrip("/")
+def _uploads_prefix() -> str:
+    return f"tenants/{active_tenant_slug()}/data/uploads"
+
 
 USE_UPLOADS_S3 = os.environ.get("USE_UPLOADS_S3", "1").strip().lower() not in ("0", "false", "no")
 
@@ -739,7 +746,7 @@ def _is_cover(name: str) -> bool:
 def _s3_url_for_key(key: str) -> str:
     if "/arc/" in key:
         raise HTTPException(status_code=403, detail="ARC files are available only through the authorized reader.")
-    if not UPLOADS_USE_PRESIGNED:
+    if not UPLOADS_USE_PRESIGNED and "/public/" in key:
         return f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{key}"
 
     s3 = _s3_client()
@@ -765,7 +772,7 @@ def _ext_for_upload(filename: str, mime: str) -> tuple[str, str]:
     ext = pathlib.Path(filename or "").suffix.lower()
     return (ext or ".bin"), (mime or "application/octet-stream")
 
-def _resolve_work(candidate: str) -> Dict[str, Any]:
+def _resolve_work(candidate: str, *, tenant_id: str | None = None) -> Dict[str, Any]:
     val = (candidate or "").strip()
     if not val:
         raise HTTPException(status_code=400, detail="bookUid, workId, or book_key is required")
@@ -773,17 +780,19 @@ def _resolve_work(candidate: str) -> Dict[str, Any]:
     sql = """
         SELECT id::text AS id, uid::text AS uid, tenant_id::text AS tenant_id, title
         FROM works
-        WHERE uid::text = %s OR id::text = %s
+        WHERE tenant_id = %s::uuid AND (uid::text = %s OR id::text = %s)
         LIMIT 1
     """
     with db_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(sql, (val, val))
+            cur.execute(sql, (tenant_id or active_tenant_id(), val, val))
             row = cur.fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Work not found for '{val}'")
-
+    uid = str(row.get('uid') or '')
+    if not uid or '/' in uid or '\\' in uid or uid in ('.', '..'):
+        raise HTTPException(409, 'Book storage identifier requires repair')
     return row
 
 def _update_edition_cover(edition_id: str, s3_key: str, content_type: str) -> None:
@@ -811,7 +820,7 @@ def uploads_health():
         "useS3": USE_UPLOADS_S3,
         "region": AWS_REGION,
         "bucket": S3_BUCKET,
-        "uploadsPrefix": UPLOADS_S3_PREFIX,
+        "uploadsPrefix": _uploads_prefix(),
         "presigned": UPLOADS_USE_PRESIGNED,
         "presignExpires": UPLOADS_PRESIGN_EXPIRES,
         "endpoint": f"https://s3.{AWS_REGION}.amazonaws.com",
@@ -865,18 +874,19 @@ def _shared_photo_assets(work: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 @router.get("/book-assets")
 def list_book_assets(bookUid: str = Query(...)):
-    uid = (bookUid or "").strip()
+    work = _resolve_work(bookUid)
+    uid = str(work["uid"])
     if not uid:
         raise HTTPException(status_code=400, detail="bookUid is required")
 
     if USE_UPLOADS_S3:
-        if not S3_BUCKET or not UPLOADS_S3_PREFIX:
+        if not S3_BUCKET or not _uploads_prefix():
             raise HTTPException(
                 status_code=500,
-                detail="Uploads S3 config missing (need S3_BUCKET and UPLOADS_S3_PREFIX/UPLOADS_PREFIX)",
+                detail="Uploads S3 config missing (need S3_BUCKET and _uploads_prefix()/UPLOADS_PREFIX)",
             )
 
-        prefix = f"{UPLOADS_S3_PREFIX}/{uid}/"
+        prefix = f"{_uploads_prefix()}/{uid}/"
         s3 = _s3_client()
 
         try:
@@ -932,7 +942,7 @@ def list_book_assets(bookUid: str = Query(...)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    local_dir = pathlib.Path(DATA_UPLOAD_DIR) / uid
+    local_dir = _local_upload_dir() / uid
     if local_dir.exists() and local_dir.is_dir():
         files: List[Dict[str, Any]] = []
         cover: Optional[Dict[str, Any]] = None
@@ -940,9 +950,9 @@ def list_book_assets(bookUid: str = Query(...)):
         for p in sorted(local_dir.rglob("*")):
             if not p.is_file():
                 continue
-            rel = p.relative_to(pathlib.Path(DATA_UPLOAD_DIR)).as_posix()
+            rel = p.relative_to(_local_upload_dir()).as_posix()
             name = p.name
-            url = f"/static/uploads/{rel}"
+            url = f"/api/uploads/file/{rel}"
             size = int(p.stat().st_size)
 
             if _is_cover(name) and cover is None:
@@ -956,6 +966,19 @@ def list_book_assets(bookUid: str = Query(...)):
         status_code=500,
         detail=f"Uploads not available. S3 disabled and local folder missing: {str(local_dir)}",
     )
+
+
+@router.get('/file/{book_uid}/{filename:path}')
+def private_local_file(book_uid: str, filename: str):
+    from fastapi.responses import FileResponse
+    work = _resolve_work(book_uid)
+    root = (_local_upload_dir() / str(work['uid'])).resolve()
+    target = (root / filename).resolve()
+    if not target.is_relative_to(root) or target == root or 'arc' in target.relative_to(root).parts:
+        raise HTTPException(404, 'File not found')
+    if not target.is_file():
+        raise HTTPException(404, 'File not found')
+    return FileResponse(target, headers={'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'})
 
 
 
@@ -1047,7 +1070,7 @@ def save_public_resource_metadata(payload: Dict[str, Any] = Body(...)):
                     credit = %s,
                     resource_mode = COALESCE(NULLIF(%s, ''), resource_mode),
                     updated_at = now()
-                WHERE id = %s::uuid
+                WHERE id = %s::uuid AND tenant_id = %s::uuid
                 RETURNING edition_id::text AS edition_id, tenant_id::text AS tenant_id
                 """,
                 (
@@ -1058,6 +1081,7 @@ def save_public_resource_metadata(payload: Dict[str, Any] = Body(...)):
                     str(payload.get("credit") or ""),
                     str(payload.get("resourceMode") or payload.get("resource_mode") or ""),
                     resource_id,
+                    active_tenant_id(),
                 ),
             )
             row = cur.fetchone()
@@ -1262,7 +1286,7 @@ def _delete_owned_public_s3_key(key: str, uid: str) -> bool:
     if not key or not uid or not USE_UPLOADS_S3:
         return False
 
-    expected_prefix = f"{UPLOADS_S3_PREFIX}/{uid}/public/"
+    expected_prefix = f"{_uploads_prefix()}/{uid}/public/"
     if not key.startswith(expected_prefix):
         return False
 
@@ -1710,7 +1734,7 @@ def clone_public_resource(payload: Dict[str, Any] = Body(...)):
                   AND v.storage_key = %s
                 LIMIT 1
                 """,
-                (source_resource_id, source_storage_key),
+                (source_resource_id, source_storage_key, active_tenant_id(), work["id"]),
             )
             source = cur.fetchone()
 
@@ -1802,7 +1826,8 @@ def delete_upload(
     - When using local disk, delete from DATA_UPLOAD_DIR.
     The frontend sends either a full S3 URL (url) or a filename.
     """
-    candidate = (bookKey or "").strip()
+    work = _resolve_work(bookKey)
+    candidate = str(work["uid"])
     if not candidate:
         raise HTTPException(status_code=400, detail="bookKey is required")
 
@@ -1816,8 +1841,11 @@ def delete_upload(
             fn = (filename or "").strip()
             if not fn:
                 raise HTTPException(status_code=400, detail="filename or url is required")
-            key = f"{UPLOADS_S3_PREFIX}/{candidate}/{fn}"
+            key = f"{_uploads_prefix()}/{candidate}/{fn}"
 
+        expected = f"{_uploads_prefix()}/{candidate}/"
+        if not key.startswith(expected) or any(part in (".", "..") for part in key.split("/")) or "\\" in key:
+            raise HTTPException(403, "File does not belong to this book")
         try:
             s3 = _s3_client()
             s3.delete_object(Bucket=S3_BUCKET, Key=key)
@@ -1833,12 +1861,14 @@ def delete_upload(
         return {"ok": True}
 
     # Local disk fallback
-    safe_dir = pathlib.Path(DATA_UPLOAD_DIR) / _clean_name(candidate or "_")
+    safe_dir = _local_upload_dir() / candidate
     if not safe_dir.exists():
         return {"ok": True}
 
     target: pathlib.Path | None = None
     if filename:
+        if pathlib.Path(filename).name != filename or '/' in filename or '\\' in filename:
+            raise HTTPException(400, 'Invalid filename')
         cand = safe_dir / filename
         if cand.exists() and cand.is_file():
             target = cand
@@ -2053,7 +2083,7 @@ async def upload_file(
         else:  # w9
             fname = f"{uid}__w9{ext}"
 
-        s3_key = f"{UPLOADS_S3_PREFIX}/{uid}/{fname}"
+        s3_key = f"{_uploads_prefix()}/{uid}/{fname}"
 
         try:
             s3 = _s3_client()
@@ -2148,7 +2178,9 @@ async def upload_file(
             workId=resolved_work_id,
         )
 
-    safe_dir = os.path.join(DATA_UPLOAD_DIR, _clean_name(candidate) or "_")
+    work = _resolve_work(candidate)
+    candidate = str(work['uid'])
+    safe_dir = os.path.join(_local_upload_dir(), candidate)
     pathlib.Path(safe_dir).mkdir(parents=True, exist_ok=True)
 
     ext = pathlib.Path(file.filename or "upload.bin").suffix or ""
@@ -2157,7 +2189,7 @@ async def upload_file(
     with open(out_path, "wb") as f:
         f.write(data)
 
-    url = f"/static/uploads/{_clean_name(candidate) or '_'}/{safe_name}"
+    url = f"/api/uploads/file/{candidate}/{safe_name}"
 
     return UploadResponse(
         ok=True,

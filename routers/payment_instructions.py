@@ -55,12 +55,13 @@ class Instruction(BaseModel):
 
 
 def authorized_tenant(cur, work_id, claims):
+    from app.tenants.workspace import tenant_id
     cur.execute(
         """SELECT w.tenant_id, m.role, m.module_permissions
         FROM public.works w JOIN public.memberships m ON m.tenant_id=w.tenant_id
         JOIN public.users u ON u.id=m.user_id
-        WHERE w.id=%s AND u.cognito_sub=%s""",
-        (work_id, claims.get("sub")),
+        WHERE w.id=%s AND u.cognito_sub=%s AND w.tenant_id=%s""",
+        (work_id, claims.get("sub"), tenant_id()),
     )
     row = cur.fetchone()
     if not row:

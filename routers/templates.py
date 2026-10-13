@@ -21,6 +21,9 @@ from fastapi import (
     Response,
 )
 from fastapi.responses import JSONResponse, Response as FastAPIResponse
+from fastapi import Depends
+from app.wopi.workspace import editor_workspace
+from app.tenants.workspace import tenant_slug as active_tenant_slug
 from pydantic import BaseModel, Field
 
 from docx import Document
@@ -42,10 +45,15 @@ router = APIRouter(prefix="/contracts", tags=["contracts"])
 
 # -------------------- S3 layout --------------------
 # templates live under: tenants/<slug>/data/Templates/
-TEMPLATES_PREFIX = tenant_data_prefix("data", "Templates").rstrip("/") + "/"
-INDEX_KEY = TEMPLATES_PREFIX + "templates_index.json"
-VERSIONS_PREFIX = TEMPLATES_PREFIX + "Versions/"  # optional backups
-MAPPINGS_PREFIX = TEMPLATES_PREFIX  # store {tid}.mapping.json alongside templates
+from app.tenants.contract_storage import template_prefix, checked_key, filename as checked_filename
+
+
+def template_index_key():
+    return template_prefix() + 'templates_index.json'
+
+
+def template_versions_prefix():
+    return template_prefix() + 'Versions/'
 
 # -------------------- Models --------------------
 TypeStr = Literal["author", "illustrator", "generic"]
@@ -98,7 +106,7 @@ def _abs_url(request: Request, rel: str) -> str:
 
 def _read_index() -> List[ContractTemplate]:
     try:
-        raw = get_bytes(INDEX_KEY)
+        raw = get_bytes(template_index_key())
     except Exception:
         return []
 
@@ -117,7 +125,7 @@ def _write_index(items: List[ContractTemplate]) -> None:
         indent=2,
         ensure_ascii=False,
     ).encode("utf-8")
-    put_bytes(INDEX_KEY, blob, content_type="application/json")
+    put_bytes(template_index_key(), blob, content_type="application/json")
 
 
 def _get_template_obj(tid: str) -> Optional[ContractTemplate]:
@@ -136,7 +144,7 @@ def _synthesize_templates_from_s3() -> List[ContractTemplate]:
     """When templates_index.json is missing or empty, list .docx keys in S3 and build template list."""
     out: List[ContractTemplate] = []
     try:
-        keys = list_keys(TEMPLATES_PREFIX)
+        keys = list_keys(template_prefix())
     except Exception:
         return out
 
@@ -177,29 +185,30 @@ def _synthesize_templates_from_s3() -> List[ContractTemplate]:
 
 
 def _template_key_from_obj(it: ContractTemplate) -> str:
-    return TEMPLATES_PREFIX + it.filename
+    return template_prefix() + checked_filename(it.filename)
 
 
 def _key_for_id(tid: str) -> str:
+    checked_filename(tid)
     it = _get_template_obj(tid)
     if it and it.filename:
         return _template_key_from_obj(it)
 
-    keys = list_keys(TEMPLATES_PREFIX)
+    keys = list_keys(template_prefix())
     for k in keys:
         name = k.split("/")[-1]
         if name.startswith(tid + "_") or name.startswith(tid + "__"):
             return k
 
-    return TEMPLATES_PREFIX + f"{tid}_MISSING"
+    return template_prefix() + f"{tid}_MISSING"
 
 
 def _mapping_key(tid: str) -> str:
-    return MAPPINGS_PREFIX + f"{tid}.mapping.json"
+    return template_prefix() + f"{checked_filename(tid)}.mapping.json"
 
 
 def _version_key(tid: str, ts: str) -> str:
-    return VERSIONS_PREFIX + f"{tid}/{ts}.docx"
+    return template_versions_prefix() + f"{checked_filename(tid)}/{checked_filename(ts)}.docx"
 
 
 def _touch_index_after_save(
@@ -379,7 +388,7 @@ async def upload_template(
     tid = os.urandom(16).hex()
     original_name = (file.filename or "template.docx").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
     stored_filename = f"{tid}_{original_name}"
-    key = TEMPLATES_PREFIX + stored_filename
+    key = template_prefix() + stored_filename
 
     data = await file.read()
     put_bytes(
@@ -678,7 +687,7 @@ def _extract_wopi_token(request: Request) -> str:
     return request.headers.get("X-WOPI-AccessToken") or ""
 
 
-wopi_templates_router = APIRouter(prefix="/wopi/templates", tags=["WOPI Templates"])
+wopi_templates_router = APIRouter(prefix="/wopi/templates", tags=["WOPI Templates"], dependencies=[Depends(editor_workspace)])
 
 # ------------------------ WOPI override dispatcher for templates ------------------------
 
@@ -691,6 +700,7 @@ def _template_now_epoch() -> float:
 
 
 def _template_lock_get(tid: str) -> str:
+    tid = f'{active_tenant_slug()}:{tid}'
     ent = _WOPI_TEMPLATE_LOCKS.get(tid)
     if not ent:
         return ""
@@ -703,6 +713,7 @@ def _template_lock_get(tid: str) -> str:
 
 
 def _template_lock_set(tid: str, lock_value: str) -> None:
+    tid = f'{active_tenant_slug()}:{tid}'
     _WOPI_TEMPLATE_LOCKS[tid] = {
         "lock": lock_value,
         "exp": _template_now_epoch() + _WOPI_TEMPLATE_LOCK_TTL_SEC,
@@ -710,6 +721,7 @@ def _template_lock_set(tid: str, lock_value: str) -> None:
 
 
 def _template_lock_clear(tid: str) -> None:
+    tid = f'{active_tenant_slug()}:{tid}'
     _WOPI_TEMPLATE_LOCKS.pop(tid, None)
 
 
@@ -900,6 +912,7 @@ def collabora_config_for_template(tid: str):
     token = make_wopi_token(
         file_id=tid,
         user_id="inksuite-user",
+        file_kind="template",
         ttl=settings.wopi_token_ttl_sec,
         secret=settings.wopi_access_token_secret,
     )

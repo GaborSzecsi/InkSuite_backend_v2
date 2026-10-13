@@ -12,7 +12,12 @@ from app.core.db import db_conn
 router = APIRouter(prefix="/financials", tags=["Financials"])
 
 
-def _get_tenant_id(cur, tenant_slug: str = "marble-press") -> str:
+def _get_tenant_id(cur, tenant_slug: str | None = None) -> str:
+    from app.tenants.workspace import workspace
+    selected = workspace()
+    if tenant_slug and tenant_slug != selected.slug:
+        raise HTTPException(403, "Conflicting publisher workspace")
+    tenant_slug = selected.slug
     cur.execute(
         """
         SELECT id

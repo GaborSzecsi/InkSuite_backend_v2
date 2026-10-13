@@ -78,18 +78,19 @@ def _normalize_contact_category_name(category: str, scope: str) -> str:
 
 
 def _get_tenant_id_from_slug(cur, tenant_slug: str) -> str:
+    from app.tenants.workspace import current_workspace
+    selected = current_workspace.get()
+    if selected and selected.slug != tenant_slug:
+        raise HTTPException(403, "Conflicting publisher workspace")
     cur.execute(
         "SELECT id FROM tenants WHERE lower(slug) = lower(%s) LIMIT 1",
         (tenant_slug.strip(),),
     )
     row = cur.fetchone()
     if not row:
-        cur.execute("SELECT id FROM tenants ORDER BY id LIMIT 1")
-        row = cur.fetchone()
-    if not row:
         raise HTTPException(
             status_code=404,
-            detail=f"Unknown tenant_slug: {tenant_slug} (and no tenants in DB)",
+            detail="Publisher workspace not found",
         )
     return str(row["id"])
 
