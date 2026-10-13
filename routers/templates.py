@@ -5,7 +5,7 @@ import os
 import json
 import hashlib
 import mimetypes
-import tempfile
+from io import BytesIO
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -228,24 +228,12 @@ def _touch_index_after_save(
             return
 
 
-def _download_docx_to_tmp(key: str) -> str:
-    data = get_bytes(key)
-    fd, path = tempfile.mkstemp(suffix=".docx")
-    os.close(fd)
-    with open(path, "wb") as f:
-        f.write(data)
-    return path
+def _download_docx_to_tmp(key):
+    raise RuntimeError('Local contract storage has been removed.')
 
 
-def _upload_docx_from_path(key: str, path: str) -> None:
-    with open(path, "rb") as f:
-        data = f.read()
-
-    put_bytes(
-        key,
-        data,
-        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
+def _upload_docx_from_path(key, path):
+    raise RuntimeError('Local contract storage has been removed.')
 
 
 # ---- Insert token helpers ----
@@ -475,17 +463,8 @@ async def get_template_html(tid: str):
         raise HTTPException(status_code=404, detail="Template not found")
 
     key = _template_key_from_obj(it)
-    tmp_path = _download_docx_to_tmp(key)
-
-    try:
-        with open(tmp_path, "rb") as f:
-            result = mammoth.convert_to_html(f, style_map="")
-        raw_html = result.value or ""
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
+    with BytesIO(get_bytes(key)) as source:
+        raw_html = mammoth.convert_to_html(source, style_map='').value or ''
 
     parts = raw_html.split("<p")
     rebuilt = []
@@ -518,34 +497,27 @@ async def insert_token(tid: str, body: InsertTokenPayload):
         raise HTTPException(status_code=400, detail="placeholder cannot be empty")
 
     key = _template_key_from_obj(it)
-    tmp_path = _download_docx_to_tmp(key)
+    doc = Document(BytesIO(get_bytes(key)))
+    paragraphs = list(doc.paragraphs)
 
-    try:
-        doc = Document(tmp_path)
-        paragraphs = list(doc.paragraphs)
+    if body.paragraph_index < 0 or body.paragraph_index >= len(paragraphs):
+        raise HTTPException(status_code=400, detail="paragraph_index out of range")
 
-        if body.paragraph_index < 0 or body.paragraph_index >= len(paragraphs):
-            raise HTTPException(status_code=400, detail="paragraph_index out of range")
+    p = paragraphs[body.paragraph_index]
+    para_text = p.text or ""
+    effective_offset = _find_offset_with_context(
+        para_text,
+        body.char_offset,
+        body.left_ctx,
+        body.right_ctx,
+    )
+    ok, eff = _insert_text_at_paragraph_offset(p, effective_offset, token_text)
+    if not ok:
+        raise HTTPException(status_code=500, detail="failed to insert token")
 
-        p = paragraphs[body.paragraph_index]
-        para_text = p.text or ""
-        effective_offset = _find_offset_with_context(
-            para_text,
-            body.char_offset,
-            body.left_ctx,
-            body.right_ctx,
-        )
-        ok, eff = _insert_text_at_paragraph_offset(p, effective_offset, token_text)
-        if not ok:
-            raise HTTPException(status_code=500, detail="failed to insert token")
-
-        doc.save(tmp_path)
-        _upload_docx_from_path(key, tmp_path)
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
+    with BytesIO() as output:
+        doc.save(output)
+        put_bytes(key, output.getvalue(), content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
 
     items = _read_index()
     phs = None

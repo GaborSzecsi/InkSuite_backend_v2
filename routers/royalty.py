@@ -923,127 +923,17 @@ def calculate_royalties(request: RoyaltyStatementRequest):
 
 @router.post("/statements")
 def save_royalty_statement(request: RoyaltyStatementRequest):
-    """
-    Saves royalty statements and generates PDFs conditionally:
-    - Author: if there is any sales/royalty row (same as before)
-    - Illustrator: ONLY if there is at least one royalty % > 0
-    Resolves the work from the catalog (SQL) only.
-    """
-    def has_party_rows(pdata: Dict | None) -> bool:
-        if not pdata:
-            return False
-        cats = pdata.get("categories") or []
-        return bool(isinstance(cats, list) and len(cats) > 0)
-
-    book_data = _resolve_book_dict(request)
-    if not book_data:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Book not found for uid/work_id: {request.uid or request.work_id}",
-        )
-    book = Book.model_validate(book_data)
-    stmt_uid = str((book.uid or request.uid or book_data.get("uid") or request.work_id or "")).strip()
-    if not stmt_uid:
-        stmt_uid = str(book_data.get("id") or "")
-
-    calcs = _calc_with_db_history(request, book, book_data)
-    author_data = calcs.get("author") or {}
-    illustrator_data = calcs.get("illustrator") or {}
-
-    saved_parties: list[str] = []
-
-    def write_party_json(party: str, party_data: Dict):
-        party_file = storage_directory(ROYALTY_DATA_DIR) / f"{party}_royalty.json"
-        statement_data = {
-            "uid": stmt_uid,
-            "book_title": book.title,
-            "book_author": book.author,
-            "party": party,
-            "period_start": request.period_start,
-            "period_end": request.period_end,
-            "generated_at": datetime.now().isoformat(),
-            "sales_data": [
-                sd.dict() if hasattr(sd, "dict") else dict(sd)
-                for sd in request.sales_data
-            ],
-            "calculations": party_data,
-        }
-        try:
-            existing: list = []
-            if party_file.exists():
-                maybe = json.loads(party_file.read_text(encoding="utf-8"))
-                existing = maybe if isinstance(maybe, list) else []
-            filtered = []
-            for e in existing:
-                e_uid = e.get("uid") or e.get("book_uid")
-                if not (
-                    e_uid == statement_data["uid"]
-                    and e.get("period_start") == statement_data["period_start"]
-                    and e.get("period_end") == statement_data["period_end"]
-                ):
-                    filtered.append(e)
-            filtered.append(statement_data)
-            storage_directory(ROYALTY_DATA_DIR).mkdir(parents=True, exist_ok=True)
-            party_file.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
-        except Exception as e:
-            print(f"[statements] Error saving to {party_file}: {e}")
-
-    book_upload_dir = storage_directory(UPLOADS_DIR) / stmt_uid
-    book_upload_dir.mkdir(parents=True, exist_ok=True)
-
-    if has_party_rows(author_data):
-        try:
-            write_party_json("author", author_data)
-            author_pdf = generate_statement_pdf(book, request, author_data, "author")
-            author_filename = f"royalty_statement_author_{request.period_start}_{request.period_end}.pdf"
-            (book_upload_dir / author_filename).write_bytes(author_pdf)
-            print(f"[save] Saved author PDF to {(book_upload_dir / author_filename)}")
-            saved_parties.append("author")
-        except Exception as e:
-            print(f"[save] Error generating/saving author statement: {e}")
-    else:
-        print("[save] Skipping author statement (no author rows).")
-
-    if has_party_rows(illustrator_data) and has_positive_royalty_percent(illustrator_data):
-        try:
-            write_party_json("illustrator", illustrator_data)
-            illustrator_pdf = generate_statement_pdf(book, request, illustrator_data, "illustrator")
-            illustrator_filename = f"royalty_statement_illustrator_{request.period_start}_{request.period_end}.pdf"
-            (book_upload_dir / illustrator_filename).write_bytes(illustrator_pdf)
-            print(f"[save] Saved illustrator PDF to {(book_upload_dir / illustrator_filename)}")
-            saved_parties.append("illustrator")
-        except Exception as e:
-            print(f"[save] Error generating/saving illustrator statement: {e}")
-    else:
-        print("[save] Skipping illustrator statement (no royalty % > 0).")
-
-    try:
-        rebuild_author_index_from_log(storage_directory(ROYALTY_DATA_DIR))
-    except Exception as reidx_err:
-        print(f"[save] WARNING: could not rebuild author index: {reidx_err}")
-
-    _persist_statement_calculations_to_db(request, book_data, calcs)
-
-    if not saved_parties:
-        return {"message": "No statements saved (author/illustrator conditions not met).", "saved": []}
-    return {"message": "Saved", "saved": saved_parties}
+    raise HTTPException(410, "Local royalty statement storage is retired. Use the database-backed statements-engine workflow.")
 
 
 @router.get("/statements/{person_type}/{person_name}")
 def get_person_statements(person_type: str, person_name: str):
-    if person_type not in ("author", "illustrator"):
-        raise HTTPException(status_code=400, detail="person_type must be 'author' or 'illustrator'")
-    return {"statements": calculator.get_person_statements(person_name, person_type)}
+    raise HTTPException(410, "Local royalty statement storage is retired. Use the database-backed statements-engine workflow.")
 
 
 @router.delete("/statements/{person_type}/{person_name}")
 def delete_statement(person_type: str, person_name: str, period_start: str, period_end: str):
-    if person_type not in ("author", "illustrator"):
-        raise HTTPException(status_code=400, detail="person_type must be 'author' or 'illustrator'")
-    ok = calculator.delete_statement(person_type, person_name, period_start, period_end)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Statement not found")
-    return {"message": "Statement deleted"}
+    raise HTTPException(410, "Local royalty statement storage is retired. Use the database-backed statements-engine workflow.")
 
 
 @router.get("/categories")
@@ -1070,7 +960,7 @@ def render_royalty_statement(
 ):
     """
     Render a royalty statement as HTML or PDF for a specific party.
-    Also saves statement data to JSON files for history.
+    Rendering has no persistence side effects; history is managed by the SQL statement engine.
 
     Rule:
       - If party == 'illustrator', only allow render/save when at least one
@@ -1118,47 +1008,6 @@ def render_royalty_statement(
 
     if not has_rows:
         raise HTTPException(status_code=400, detail=f"No {party} data in calculations")
-
-    statement_data = {
-        "uid": stmt_uid,
-        "book_title": book.title,
-        "book_author": book.author,
-        "party": party,
-        "period_start": request.period_start,
-        "period_end": request.period_end,
-        "generated_at": datetime.now().isoformat(),
-        "sales_data": [sd.dict() if hasattr(sd, "dict") else dict(sd) for sd in request.sales_data],
-        "calculations": party_data,
-    }
-
-    party_file = storage_directory(ROYALTY_DATA_DIR) / f"{party}_royalty.json"
-    try:
-        existing: list = []
-        if party_file.exists():
-            maybe = json.loads(party_file.read_text(encoding="utf-8"))
-            existing = maybe if isinstance(maybe, list) else []
-
-        book_uid_key = statement_data["uid"]
-        ps_key = statement_data["period_start"]
-        pe_key = statement_data["period_end"]
-
-        filtered = []
-        for e in existing:
-            e_uid = e.get("uid") or e.get("book_uid")
-            if not (e_uid == book_uid_key and e.get("period_start") == ps_key and e.get("period_end") == pe_key):
-                filtered.append(e)
-
-        filtered.append(statement_data)
-        storage_directory(ROYALTY_DATA_DIR).mkdir(parents=True, exist_ok=True)
-        party_file.write_text(json.dumps(filtered, indent=2), encoding="utf-8")
-
-        try:
-            rebuild_author_index_from_log(storage_directory(ROYALTY_DATA_DIR))
-        except Exception as reidx_err:
-            print(f"[render] WARNING: could not rebuild author index: {reidx_err}")
-
-    except Exception as e:
-        print(f"[render] Error saving to {party_file}: {e}")
 
     html = generate_statement_html(book, request, party_data, party)
     if format == "html":
@@ -1217,79 +1066,7 @@ def has_positive_royalty_percent(party_data: dict | None) -> bool:
 
 
 def rebuild_author_index_from_log(ROYALTY_DATA_DIR: Path):
-    """
-    Rebuild author_royalties.json (plural) from author_royalty.json (singular).
-    De-dupes by (author/person, book_uid, period_start, period_end), keeping the newest generated_at.
-    """
-    from collections import defaultdict
-
-    def parse_dt(s: str | None):
-        if not s:
-            return None
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        except Exception:
-            return None
-
-    log_file = ROYALTY_DATA_DIR / "author_royalty.json"
-    idx_file = ROYALTY_DATA_DIR / "author_royalties.json"
-
-    if not log_file.exists():
-        idx_file.write_text(json.dumps({}, indent=2), encoding="utf-8")
-        return
-
-    try:
-        data = json.loads(log_file.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            for k in ("entries", "log", "data"):
-                if isinstance(data.get(k), list):
-                    data = data[k]
-                    break
-            else:
-                data = []
-    except Exception:
-        data = []
-
-    latest: dict[tuple, tuple] = {}
-    for e in data:
-        author = (
-            e.get("person_name")
-            or e.get("party_name")
-            or e.get("party")
-            or e.get("book_author")
-            or e.get("author")
-            or "author"
-        )
-        book_uid = e.get("book_uid") or e.get("book_id") or e.get("uid")
-        ps = e.get("period_start") or e.get("periodStart")
-        pe = e.get("period_end") or e.get("periodEnd")
-        ga = e.get("generated_at") or e.get("generatedAt") or e.get("created_at") or e.get("timestamp")
-        dt = parse_dt(ga)
-        key = (author, book_uid, ps, pe)
-
-        prev = latest.get(key)
-        if prev is None:
-            latest[key] = (dt, e)
-        else:
-            pdt, _ = prev
-            if (dt and (not pdt or dt >= pdt)) or (pdt is None and dt is None):
-                latest[key] = (dt, e)
-
-    buckets: dict[str, list] = defaultdict(list)
-    for (author, _book_uid, _ps, _pe), (_dt, entry) in latest.items():
-        buckets[author].append(entry)
-
-    def sort_key(e):
-        return (
-            e.get("period_end") or e.get("periodEnd") or "",
-            e.get("period_start") or e.get("periodStart") or "",
-            e.get("generated_at") or e.get("generatedAt") or "",
-        )
-
-    for author in buckets:
-        buckets[author].sort(key=sort_key)
-
-    idx_file.write_text(json.dumps(buckets, indent=2, ensure_ascii=False), encoding="utf-8")
+    raise RuntimeError("Local royalty JSON index rebuilding is retired.")
 
 
 # =============================

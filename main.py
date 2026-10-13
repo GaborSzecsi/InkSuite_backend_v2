@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 @app.exception_handler(psycopg.Error)
 async def db_error_handler(request, exc: psycopg.Error):
     """Return 503 on DB connection/query errors so clients get a clear response instead of 500 + traceback."""
-    logger.warning("Database error: %s", exc)
+    logger.warning("Database error type=%s sqlstate=%s", type(exc).__name__, getattr(exc, "sqlstate", None))
     return JSONResponse(
         status_code=503,
         content={
@@ -61,10 +61,10 @@ def health():
             cur.fetchone()
         return {"status": "ok", "database": "ok"}
     except Exception as e:
-        logger.warning("Health check DB error: %s", e)
+        logger.warning("Health check DB error type=%s", type(e).__name__)
         return JSONResponse(
             status_code=503,
-            content={"status": "error", "database": "unreachable", "detail": str(e)},
+            content={"status": "error", "database": "unreachable", "detail": "Database health check failed"},
         )
 
 

@@ -6,7 +6,7 @@ import os
 import re
 import time
 import uuid
-import tempfile
+from io import BytesIO
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -31,7 +31,7 @@ except Exception as e:
     raise RuntimeError("python-docx not installed. pip install python-docx") from e
 
 try:
-    from .storage_s3 import tenant_data_prefix, list_keys, get_bytes, put_bytes
+    from .storage_s3 import tenant_data_prefix, list_keys, get_bytes, put_bytes, s3 as storage_client
 
     _S3_AVAILABLE = True
 except Exception:
@@ -741,35 +741,14 @@ def _iter_contract_paragraphs(doc):
 
 
 def _load_index() -> List[dict]:
-    if _S3_AVAILABLE and draft_index_key():
-        try:
-            raw = get_bytes(draft_index_key())
-            data = json.loads(raw.decode("utf-8"))
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict) and isinstance(data.get("items"), list):
-                return data["items"]
-        except Exception:
-            pass
-    try:
-        return json.loads(draft_index_path().read_text(encoding="utf-8"))
-    except Exception:
-        return []
+    return _read_cloud_index(draft_index_key())
 
 
 def _save_index(items: List[dict]) -> None:
-    if _S3_AVAILABLE and draft_index_key():
-        try:
-            put_bytes(
-                draft_index_key(),
-                json.dumps(items, ensure_ascii=False, indent=2).encode("utf-8"),
-                content_type="application/json",
-            )
-            return
-        except Exception:
-            pass
-    draft_directory().mkdir(parents=True, exist_ok=True)
-    draft_index_path().write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        put_bytes(draft_index_key(), json.dumps(items, ensure_ascii=False, indent=2).encode('utf-8'), content_type='application/json')
+    except Exception as exc:
+        raise HTTPException(503, 'Unable to save contract index to cloud storage. Please retry.') from exc
 
 
 def _list_draft_keys_direct() -> List[str]:
@@ -832,54 +811,12 @@ def _synthesize_drafts_from_s3() -> List[dict]:
     return sorted(out, key=lambda x: x.get("createdAt", ""), reverse=True)
 
 
-def _find_template_path(template_id: str) -> Path:
-    checked_filename(template_id)
-    if template_id.lower().endswith(".docx"):
-        p = checked_local_path(template_directory() / template_id, template_directory())
-        if p.exists():
-            return p
-        raise HTTPException(status_code=404, detail=f"Template file not found: {p}")
-
-    matches = sorted(template_directory().glob(f"{template_id}_*.docx"))
-    if matches:
-        return checked_local_path(matches[0], template_directory())
-
-    fallback = checked_local_path(template_directory() / f"{template_id}.docx", template_directory())
-    if fallback.exists():
-        return fallback
-
-    raise HTTPException(
-        status_code=404,
-        detail=(
-            "Template not found.\n"
-            f"Looked for:\n - {template_directory()}\\{template_id}_*.docx\n - {template_directory()}\\{template_id}.docx"
-        ),
-    )
+def _find_template_path(template_id):
+    raise HTTPException(404, 'Template is not available in cloud storage.')
 
 
 def _load_templates_index() -> list[dict[str, Any]]:
-    if _S3_AVAILABLE and template_index_key():
-        try:
-            raw = get_bytes(template_index_key())
-            data = json.loads(raw.decode("utf-8"))
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict) and isinstance(data.get("items"), list):
-                return data["items"]
-        except Exception:
-            pass
-
-    local_index = template_directory() / "templates_index.json"
-    try:
-        data = json.loads(local_index.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict) and isinstance(data.get("items"), list):
-            return data["items"]
-    except Exception:
-        pass
-
-    return []
+    return _read_cloud_index(template_index_key())
 
 
 def _resolve_template_s3_key(template_id: str) -> str | None:
@@ -915,17 +852,13 @@ def _resolve_template_s3_key(template_id: str) -> str | None:
 
 
 def _load_template_bytes_and_name(template_id: str) -> tuple[bytes, str]:
-    s3_key = _resolve_template_s3_key(template_id)
-    if s3_key and _S3_AVAILABLE:
-        try:
-            data = get_bytes(s3_key)
-            filename = s3_key.split("/")[-1]
-            return data, filename
-        except Exception:
-            pass
-
-    path = _find_template_path(template_id)
-    return path.read_bytes(), path.name
+    key = _resolve_template_s3_key(template_id)
+    if not key:
+        raise HTTPException(404, 'Template is not available in cloud storage.')
+    try:
+        return get_bytes(key), key.split('/')[-1]
+    except Exception as exc:
+        raise HTTPException(503, 'Unable to read template from cloud storage. Please retry.') from exc
 
 
 def _populate_royalty_tokens(memo: dict, values: dict[str, str]) -> bool:
@@ -1045,23 +978,17 @@ def _populate_subrights(memo: dict, values: dict[str, str]) -> None:
 
 def _find_draft(item_id: str) -> dict | None:
     for it in _load_index():
-        if str(it.get("id")) == str(item_id):
-            it = dict(it)
-            if it.get('s3_key'):
-                checked_key(it['s3_key'], draft_prefix())
-            if it.get('path'):
-                try:
-                    checked_local_path(it['path'], draft_directory())
-                except HTTPException:
-                    if not it.get('s3_key'):
-                        raise
-                    # Ignore stale workstation paths when an S3 document exists.
-                    it['path'] = ''
-            if not it.get('s3_key') and not it.get('path'):
-                raise HTTPException(404, 'Draft file not found')
-            return it
+        if str(it.get('id')) == str(item_id):
+            item = dict(it)
+            key = item.get('s3_key')
+            if not key:
+                raise HTTPException(404, 'Draft is not available in cloud storage.')
+            item['s3_key'] = checked_key(key, draft_prefix())
+            item.pop('path', None)
+            return item
     for it in _synthesize_drafts_from_s3():
-        if str(it.get("id")) == str(item_id):
+        if str(it.get('id')) == str(item_id):
+            checked_key(it['s3_key'], draft_prefix())
             return it
     return None
 
@@ -1260,66 +1187,35 @@ def _extract_wopi_token(request: Request) -> str:
 
 
 def _put_draft_contract_file(item_id: str, content: bytes) -> None:
-    it = _find_draft(item_id)
-    if not it:
-        raise HTTPException(status_code=404, detail="Draft not found")
-    s3_key = it.get("s3_key")
-    if s3_key and _DRAFTS_BUCKET:
-        client = _drafts_s3_client()
-        client.put_object(
-            Bucket=_DRAFTS_BUCKET,
-            Key=s3_key,
-            Body=content,
-            ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-        return
-    p = Path(it.get("path", ""))
-    if not p.suffix and not str(p).endswith(".docx"):
-        p = p.with_suffix(".docx")
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(content)
+    item = _find_draft(item_id)
+    if not item:
+        raise HTTPException(404, 'Draft not found')
+    _write_cloud_draft(item['s3_key'], content)
 
 
 def _wopi_file_info(file_id: str) -> tuple[str, int, str]:
-    it = _find_draft(file_id)
-    if not it:
-        raise HTTPException(status_code=404, detail="File not found")
-    base_name = it.get("filename") or (it.get("s3_key") or "").split("/")[-1] or Path(it.get("path", "")).name or "draft.docx"
-    size = 0
-    s3_key = it.get("s3_key")
-    if s3_key and _DRAFTS_BUCKET:
-        try:
-            client = _drafts_s3_client()
-            head = client.head_object(Bucket=_DRAFTS_BUCKET, Key=s3_key)
-            size = int(head.get("ContentLength", 0))
-        except Exception:
-            pass
-    if size == 0:
-        p = Path(it.get("path", ""))
-        if p.exists():
-            size = p.stat().st_size
-        else:
-            try:
-                size = len(__wopi_get_file_bytes(file_id))
-            except Exception:
-                pass
-    version = str(it.get("updated_at") or it.get("createdAt") or id(it))
-    return base_name, size, version
+    item = _find_draft(file_id)
+    if not item:
+        raise HTTPException(404, 'Draft not found')
+    key = checked_key(item['s3_key'], draft_prefix())
+    try:
+        head = _drafts_s3_client().head_object(Bucket=_DRAFTS_BUCKET, Key=key)
+    except Exception as exc:
+        raise HTTPException(503, 'Unable to read draft metadata from cloud storage.') from exc
+    return (item.get('filename') or key.split('/')[-1], int(head['ContentLength']),
+            str(head.get('ETag') or item.get('updated_at') or item.get('createdAt') or '1'))
 
 
 def __wopi_get_file_bytes(file_id: str) -> bytes:
-    it = _find_draft(file_id)
-    if not it:
-        raise HTTPException(status_code=404, detail="File not found")
-    s3_key = it.get("s3_key")
-    if s3_key and _DRAFTS_BUCKET:
-        client = _drafts_s3_client()
-        resp = client.get_object(Bucket=_DRAFTS_BUCKET, Key=s3_key)
-        return resp["Body"].read()
-    p = Path(it.get("path", ""))
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return p.read_bytes()
+    item = _find_draft(file_id)
+    if not item:
+        raise HTTPException(404, 'Draft not found')
+    key = checked_key(item['s3_key'], draft_prefix())
+    try:
+        with _drafts_s3_client().get_object(Bucket=_DRAFTS_BUCKET, Key=key)['Body'] as body:
+            return body.read()
+    except Exception as exc:
+        raise HTTPException(503, 'Unable to read draft from cloud storage.') from exc
 
 
 # ------------------------ WOPI ------------------------
@@ -1561,10 +1457,6 @@ def generate_contract(req: GenerateRequest):
 
     option_value = "__DELETED__" if option_deleted or not option_text else option_text
 
-    try:
-        print(sorted(list(memo.keys())))
-    except Exception:
-        print(memo)
 
     mapping = _default_mapping("illustrator" if is_illustrator else "author")
     if isinstance(req.mapping, dict):
@@ -1574,148 +1466,121 @@ def generate_contract(req: GenerateRequest):
     template_bytes, template_filename = _load_template_bytes_and_name(req.templateId)
     
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-        tmp.write(template_bytes)
-        tmp_path = tmp.name
+    doc = Document(BytesIO(template_bytes))
+
+    values: dict[str, str] = {}
+    for token, key in mapping.items():
+        norm_token = _normalize_token_name(token)
+
+        if key == "__ADVANCE_INSTALLMENTS__":
+            values[norm_token] = advance_installments_block
+        elif key == "__ADVANCE_INSTALLMENTS_BLOCK__":
+            values[norm_token] = advance_installments_block
+        elif key == "__ADVANCE_INSTALLMENTS_SENTENCE__":
+            values[norm_token] = advance_installments_sentence
+        elif key == "__ART_DELIVERY_BLOCK__":
+            values[norm_token] = _build_art_delivery_block(memo)
+        elif key == "__MANUSCRIPT_DELIVERY_BLOCK__":
+            values[norm_token] = _build_manuscript_delivery_block(memo)
+        elif key == "option_clause":
+            values[norm_token] = option_value
+        else:
+            raw_val = _get_value_from_memo(memo, key)
+
+            if key in ("author_advance", "illustrator_advance"):
+                values[norm_token] = total_advance_display if raw_val not in ("", None) else ""
+            elif key == "agency_clause":
+                values[norm_token] = agency_clause
+            else:
+                values[norm_token] = raw_val
+
+    values["Total_Advance"] = total_advance_display
+    values["TOTAL_ADVANCE"] = total_advance_display
+    values["total advence"] = total_advance_display
+    values["TOTAL_ADVENCE"] = total_advance_display
+    values["Total Advance"] = total_advance_display
+
+    values["Advance_Installments"] = advance_installments_block
+    values["Advance_Installments_Block"] = advance_installments_block
+    values["Advance_Installments_Sentence"] = advance_installments_sentence
+    values["Advance Installments"] = advance_installments_block
+    values["Advance Installments Block"] = advance_installments_block
+    values["Advance Installments Sentence"] = advance_installments_sentence
+
+    values["Agency_Clause"] = agency_clause
+    values["AGENCY_CLAUSE"] = agency_clause
+    values["Agency Clause"] = agency_clause
+
+    delivery_block = _build_manuscript_delivery_block(memo)
+    values["MANUSCRIPT_DELIVERY_BLOCK"] = delivery_block
+    values["Manuscript_Delivery_Block"] = delivery_block
+
+    values["Option_Clause"] = option_value
+    values["OPTION_CLAUSE"] = option_value
+    values["Option Clause"] = option_value
 
     try:
-        doc = Document(tmp_path)
-
-        values: dict[str, str] = {}
-        for token, key in mapping.items():
-            norm_token = _normalize_token_name(token)
-
-            if key == "__ADVANCE_INSTALLMENTS__":
-                values[norm_token] = advance_installments_block
-            elif key == "__ADVANCE_INSTALLMENTS_BLOCK__":
-                values[norm_token] = advance_installments_block
-            elif key == "__ADVANCE_INSTALLMENTS_SENTENCE__":
-                values[norm_token] = advance_installments_sentence
-            elif key == "__ART_DELIVERY_BLOCK__":
-                values[norm_token] = _build_art_delivery_block(memo)
-            elif key == "__MANUSCRIPT_DELIVERY_BLOCK__":
-                values[norm_token] = _build_manuscript_delivery_block(memo)
-            elif key == "option_clause":
-                values[norm_token] = option_value
-            else:
-                raw_val = _get_value_from_memo(memo, key)
-
-                if key in ("author_advance", "illustrator_advance"):
-                    values[norm_token] = total_advance_display if raw_val not in ("", None) else ""
-                elif key == "agency_clause":
-                    values[norm_token] = agency_clause
-                else:
-                    values[norm_token] = raw_val
-
-        values["Total_Advance"] = total_advance_display
-        values["TOTAL_ADVANCE"] = total_advance_display
-        values["total advence"] = total_advance_display
-        values["TOTAL_ADVENCE"] = total_advance_display
-        values["Total Advance"] = total_advance_display
-
-        values["Advance_Installments"] = advance_installments_block
-        values["Advance_Installments_Block"] = advance_installments_block
-        values["Advance_Installments_Sentence"] = advance_installments_sentence
-        values["Advance Installments"] = advance_installments_block
-        values["Advance Installments Block"] = advance_installments_block
-        values["Advance Installments Sentence"] = advance_installments_sentence
-
-        values["Agency_Clause"] = agency_clause
-        values["AGENCY_CLAUSE"] = agency_clause
-        values["Agency Clause"] = agency_clause
-
-        delivery_block = _build_manuscript_delivery_block(memo)
-        values["MANUSCRIPT_DELIVERY_BLOCK"] = delivery_block
-        values["Manuscript_Delivery_Block"] = delivery_block
-
-        values["Option_Clause"] = option_value
-        values["OPTION_CLAUSE"] = option_value
-        values["Option Clause"] = option_value
-
-        try:
-            render_royalty_sections(
-                doc, memo, "illustrator" if is_illustrator else "author",
-                insert_block=_insert_numbered_contract_block,
-            )
-        except RoyaltyValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-        _populate_royalty_tokens(memo, values)
-        royalty_party = "illustrator" if is_illustrator else "author"
-        royalty_rows = ((memo.get("royalties") or {}).get(royalty_party) or {}).get("first_rights") or []
-        has_boardbook = any(
-            re.sub(r"[\s_-]", "", str(row.get("format") or "")).lower() in {"boardbook", "boardbooks"}
-            for row in royalty_rows
+        render_royalty_sections(
+            doc, memo, "illustrator" if is_illustrator else "author",
+            insert_block=_insert_numbered_contract_block,
         )
-        _populate_subrights(memo, values)
+    except RoyaltyValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-        def replace_in_paragraph(p):
-            # Word often wraps email tags in hyperlinks, which p.runs omits.
-            original_text = "".join(p._p.xpath(".//w:t/text()"))
+    _populate_royalty_tokens(memo, values)
+    royalty_party = "illustrator" if is_illustrator else "author"
+    royalty_rows = ((memo.get("royalties") or {}).get(royalty_party) or {}).get("first_rights") or []
+    has_boardbook = any(
+        re.sub(r"[\s_-]", "", str(row.get("format") or "")).lower() in {"boardbook", "boardbooks"}
+        for row in royalty_rows
+    )
+    _populate_subrights(memo, values)
 
-            block_match = TOKEN_RE.fullmatch(original_text.strip())
-            if block_match:
-                block_key = _normalize_token_name(block_match.group(1))
-                compact_key = re.sub(r"[\s_]", "", block_key).lower()
-                if compact_key in {"manuscriptdeliveryblock", "artdeliveryblock", "advanceinstallments", "advanceinstallmentsblock"}:
-                    if _insert_numbered_contract_block(
-                        p, values.get(block_key, ""), advance=compact_key.startswith("advance")
-                    ):
+    def replace_in_paragraph(p):
+        # Word often wraps email tags in hyperlinks, which p.runs omits.
+        original_text = "".join(p._p.xpath(".//w:t/text()"))
+
+        block_match = TOKEN_RE.fullmatch(original_text.strip())
+        if block_match:
+            block_key = _normalize_token_name(block_match.group(1))
+            compact_key = re.sub(r"[\s_]", "", block_key).lower()
+            if compact_key in {"manuscriptdeliveryblock", "artdeliveryblock", "advanceinstallments", "advanceinstallmentsblock"}:
+                if _insert_numbered_contract_block(
+                    p, values.get(block_key, ""), advance=compact_key.startswith("advance")
+                ):
+                    return
+
+        # Remove only the standalone granted-edition list entry, not other clauses.
+        board_entry = re.fullmatch(r"\s*(?:(?:[ivx]+|\d+|[a-z])[.)]\s*)?board\s*books?\s*[;.,]?\s*", original_text, re.I)
+        if (not has_boardbook) and (("Boardbook_" in original_text) or board_entry):
+            element = p._element
+            parent = element.getparent()
+            if parent is not None:
+                parent.remove(element)
+            return
+
+        if any(f"{{{{{tok}}}}}" in original_text for tok in SUBRIGHT_TOKENS):
+            for tok in SUBRIGHT_TOKENS:
+                if f"{{{{{tok}}}}}" in original_text:
+                    val = values.get(tok)
+                    if val is None or str(val).strip() == "":
+                        element = p._element
+                        parent = element.getparent()
+                        if parent is not None:
+                            parent.remove(element)
                         return
 
-            # Remove only the standalone granted-edition list entry, not other clauses.
-            board_entry = re.fullmatch(r"\s*(?:(?:[ivx]+|\d+|[a-z])[.)]\s*)?board\s*books?\s*[;.,]?\s*", original_text, re.I)
-            if (not has_boardbook) and (("Boardbook_" in original_text) or board_entry):
-                element = p._element
-                parent = element.getparent()
-                if parent is not None:
-                    parent.remove(element)
-                return
+        _replace_inline_tokens(p, values)
 
-            if any(f"{{{{{tok}}}}}" in original_text for tok in SUBRIGHT_TOKENS):
-                for tok in SUBRIGHT_TOKENS:
-                    if f"{{{{{tok}}}}}" in original_text:
-                        val = values.get(tok)
-                        if val is None or str(val).strip() == "":
-                            element = p._element
-                            parent = element.getparent()
-                            if parent is not None:
-                                parent.remove(element)
-                            return
+    for p in list(_iter_contract_paragraphs(doc)):
+        replace_in_paragraph(p)
 
-            _replace_inline_tokens(p, values)
+    out_uid = str(memo.get("uid") or uuid.uuid4().hex[:12])
+    safe_title = (str(memo.get("title") or memo.get("name") or "Contract").strip() or "Contract").replace(" ", "_")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_name = f"{safe_title}_{out_uid}_{stamp}.docx"
+    s3_key = _save_generated_document(doc, out_name)
 
-        for p in list(_iter_contract_paragraphs(doc)):
-            replace_in_paragraph(p)
-
-        out_uid = str(memo.get("uid") or uuid.uuid4().hex[:12])
-        safe_title = (str(memo.get("title") or memo.get("name") or "Contract").strip() or "Contract").replace(" ", "_")
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_name = f"{safe_title}_{out_uid}_{stamp}.docx"
-        draft_directory().mkdir(parents=True, exist_ok=True)
-        out_path = draft_directory() / checked_filename(out_name)
-        doc.save(str(out_path))
-
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
-
-    s3_key: str | None = None
-    if _S3_AVAILABLE and _DRAFTS_BUCKET and draft_prefix():
-        try:
-            client = _drafts_s3_client()
-            data = out_path.read_bytes()
-            s3_key = f"{draft_prefix()}{out_name}"
-            client.put_object(
-                Bucket=_DRAFTS_BUCKET,
-                Key=s3_key,
-                Body=data,
-                ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
-        except Exception:
-            s3_key = None
 
     items = _load_index()
     item_id = uuid.uuid4().hex[:12]
@@ -1724,7 +1589,6 @@ def generate_contract(req: GenerateRequest):
         "uid": out_uid,
         "title": safe_title.replace("_", " "),
         "filename": out_name,
-        "path": str(out_path),
         "s3_key": s3_key or "",
         "templateId": req.templateId,
         "createdAt": datetime.now().isoformat(),
@@ -1795,32 +1659,16 @@ def list_draft_contracts():
 
 @router.delete("/draft-contracts/{item_id}")
 def delete_draft_contract(item_id: str):
-    it = _find_draft(item_id)
-    if not it:
-        raise HTTPException(status_code=404, detail="Draft not found")
-
-    s3_key = (it.get("s3_key") or "").strip()
-    if s3_key and _DRAFTS_BUCKET:
-        try:
-            client = _drafts_s3_client()
-            client.delete_object(Bucket=_DRAFTS_BUCKET, Key=s3_key)
-        except Exception:
-            pass
-
-    raw_path = (it.get("path") or "").strip()
-    if raw_path:
-        try:
-            p = Path(raw_path)
-            if p.exists() and p.is_file():
-                p.unlink()
-        except Exception:
-            pass
-
-    items = _load_index()
-    items = [x for x in items if str(x.get("id")) != str(item_id)]
-    _save_index(items)
-
-    return {"ok": True, "deleted": item_id}
+    item = _find_draft(item_id)
+    if not item:
+        raise HTTPException(404, 'Draft not found')
+    key = checked_key(item['s3_key'], draft_prefix())
+    try:
+        _drafts_s3_client().delete_object(Bucket=_DRAFTS_BUCKET, Key=key)
+    except Exception as exc:
+        raise HTTPException(503, 'Unable to delete draft from cloud storage.') from exc
+    _save_index([x for x in _load_index() if str(x.get('id')) != str(item_id)])
+    return {'ok': True, 'deleted': item_id}
 
 
 @router.delete("/drafts/{item_id}")
@@ -1830,34 +1678,13 @@ def delete_draft_alias(item_id: str):
 
 @router.get("/draft-contracts/{item_id}/file")
 def get_draft_contract_file(item_id: str):
-    it = _find_draft(item_id)
-    if not it:
-        raise HTTPException(status_code=404, detail="Draft not found")
-
-    s3_key = it.get("s3_key")
-    if s3_key and _DRAFTS_BUCKET:
-        try:
-            client = _drafts_s3_client()
-            resp = client.get_object(Bucket=_DRAFTS_BUCKET, Key=s3_key)
-            data = resp["Body"].read()
-            filename = it.get("filename") or s3_key.split("/")[-1]
-            return FastAPIResponse(
-                content=data,
-                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                headers={"Content-Disposition": f'inline; filename="{filename}"'},
-            )
-        except Exception as e:
-            raise HTTPException(status_code=404, detail=f"Draft file not found in S3: {e}")
-
-    p = Path(it.get("path", ""))
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="Draft file not found on disk")
-
-    return FileResponse(
-        str(p),
-        filename=p.name,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
+    item = _find_draft(item_id)
+    if not item:
+        raise HTTPException(404, 'Draft not found')
+    name = checked_filename(item.get('filename') or item['s3_key'].split('/')[-1])
+    return FastAPIResponse(content=__wopi_get_file_bytes(item_id),
+        media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        headers={'Content-Disposition': f"inline; filename*=UTF-8''{quote(name)}"})
 
 
 @router.get("/drafts")
@@ -1868,3 +1695,37 @@ def list_drafts_alias():
 @router.get("/drafts/{item_id}/file")
 def get_draft_file_alias(item_id: str):
     return get_draft_contract_file(item_id)
+
+def _read_cloud_index(key):
+    if not _S3_AVAILABLE:
+        raise HTTPException(503, 'Cloud contract storage is unavailable.')
+    try:
+        client = storage_client()
+        try:
+            raw = get_bytes(key)
+        except client.exceptions.NoSuchKey:
+            return []
+        data = json.loads(raw.decode('utf-8'))
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and isinstance(data.get('items'), list):
+            return data['items']
+        raise ValueError('Invalid index shape')
+    except Exception as exc:
+        raise HTTPException(503, 'Unable to read contract index from cloud storage.') from exc
+
+def _write_cloud_draft(key, content):
+    key = checked_key(key, draft_prefix())
+    try:
+        _drafts_s3_client().put_object(Bucket=_DRAFTS_BUCKET, Key=key, Body=content,
+            ContentType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    except Exception as exc:
+        raise HTTPException(503, 'Unable to save draft to cloud storage. Please retry.') from exc
+
+def _save_generated_document(doc, name):
+    key = draft_prefix() + checked_filename(name)
+    with BytesIO() as output:
+        doc.save(output)
+        _write_cloud_draft(key, output.getvalue())
+    return key
+

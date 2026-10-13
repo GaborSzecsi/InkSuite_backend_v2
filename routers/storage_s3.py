@@ -59,7 +59,8 @@ def list_keys(prefix: str) -> List[str]:
 def get_bytes(key: str) -> bytes:
     b = _bucket()
     resp = s3().get_object(Bucket=b, Key=key)
-    return resp["Body"].read()
+    with resp["Body"] as body:
+        return body.read()
 
 def put_bytes(key: str, data: bytes, content_type: Optional[str] = None) -> None:
     b = _bucket()
