@@ -259,6 +259,41 @@ class DistributionSQLTests(unittest.TestCase):
   privacy.retention_once()
   rows=rpc('SELECT id FROM distribution_orders WHERE tenant_id=$1',[self.tenant])['rows']
   self.assertEqual({r['id'] for r in rows},{fresh['id'],live['id']})
+ def test_retention_deletes_completed_live_orders_and_children(self):
+  from app.distribution import privacy
+  self.privacy_install()
+  for number,status in [('801','SHIPPED'),('802','CANCELLED')]:
+   row=self.create(self.body.model_copy(update={'external_order_id':number}))
+   rpc("UPDATE distribution_orders SET mode='live',status=$2,created_at=now()-interval '40 days',updated_at=now()-interval '31 days' WHERE id=$1",[row['id'],status])
+   rpc("INSERT INTO distribution_jobs(tenant_id,connection_id,order_id,kind,status) VALUES($1,$2,$3,'SUBMIT','DONE')",[self.tenant,self.connection,row['id']])
+  privacy.retention_once()
+  for table in ('distribution_orders','distribution_order_items','distribution_events','distribution_jobs'):
+   self.assertEqual(rpc(f'SELECT count(*) AS n FROM {table} WHERE tenant_id=$1',[self.tenant])['rows'][0]['n'],0)
+  with s.transaction() as cur:self.assertTrue(privacy.suppressed(cur,self.tenant,self.body.source_account,'801'))
+ def test_retention_preserves_unfinished_recent_and_unreconciled_live_orders(self):
+  from app.distribution import privacy
+  self.privacy_install()
+  kept=[]
+  for index,status in enumerate(('RECEIVED','ACCEPTED','REVIEW_REQUIRED','FAILED','SHIPPED','CANCELLED','SHIPPED')):
+   row=self.create(self.body.model_copy(update={'external_order_id':str(900+index)}));kept.append(row['id'])
+   rpc("UPDATE distribution_orders SET mode='live',status=$2,created_at=now()-interval '40 days',updated_at=now()-interval '31 days' WHERE id=$1",[row['id'],status])
+  rpc('UPDATE distribution_orders SET updated_at=now() WHERE id=$1',[kept[4]])
+  rpc("INSERT INTO distribution_jobs(tenant_id,connection_id,order_id,kind,status) VALUES($1,$2,$3,'TRACKING','REVIEW_REQUIRED')",[self.tenant,self.connection,kept[5]])
+  rpc('INSERT INTO distribution_inventory(tenant_id,connection_id,edition_id) VALUES($1,$2,$3)',[self.tenant,self.connection,self.ed])
+  rpc("INSERT INTO distribution_reservations(tenant_id,connection_id,edition_id,order_id,quantity,status) VALUES($1,$2,$3,$4,1,'FULFILLED')",[self.tenant,self.connection,self.ed,kept[6]])
+  privacy.retention_once()
+  self.assertEqual({r['id'] for r in rpc('SELECT id FROM distribution_orders WHERE tenant_id=$1',[self.tenant])['rows']},set(kept))
+ def test_retention_honors_unresolved_live_privacy_request(self):
+  from app.distribution import privacy
+  install=self.privacy_install();row=self.create()
+  rpc("UPDATE distribution_orders SET mode='live',status='CANCELLED',created_at=now()-interval '60 days',updated_at=now()-interval '40 days' WHERE id=$1",[row['id']])
+  request=self.privacy_request(install,'customers/data_request',['100'])
+  rpc("UPDATE distribution_privacy_requests SET created_at=now()-interval '40 days' WHERE id=$1",[request['id']])
+  privacy.retention_once()
+  self.assertTrue(rpc('SELECT id FROM distribution_orders WHERE id=$1',[row['id']])['rows'])
+  rpc("UPDATE distribution_privacy_requests SET status='DONE',completed_at=now() WHERE id=$1",[request['id']])
+  privacy.retention_once()
+  self.assertFalse(rpc('SELECT id FROM distribution_orders WHERE id=$1',[row['id']])['rows'])
  def test_missing_order_identifiers_requires_review(self):
   from app.distribution import privacy
   install=self.privacy_install();self.create();self.privacy_request(install,'customers/redact')

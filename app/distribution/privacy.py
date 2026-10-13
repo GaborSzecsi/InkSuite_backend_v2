@@ -123,8 +123,8 @@ def run_once():
             cur.execute("UPDATE distribution_privacy_requests SET status='REVIEW_REQUIRED',error_code='STORE_STILL_ACTIVE' WHERE id=%s", (request['id'],))
             return True
         rows = matching_orders(cur, request)
-        # No live fulfillment is enabled in this release. Do not invent legal holds or
-        # cancel real shipments when encountering data from a later live deployment.
+        # Live privacy requests require fulfillment review; never cancel shipments
+        # or release inventory implicitly as part of a customer deletion request.
         if any(row['mode'] != 'preview' for row in rows):
             cur.execute("UPDATE distribution_privacy_requests SET status='REVIEW_REQUIRED',error_code='LIVE_ORDER_RETENTION_REVIEW' WHERE id=%s", (request['id'],))
             return True
@@ -150,7 +150,7 @@ def run_once():
 
 
 def retention_once():
-    """Bounded batch: preview customer records 30 days; non-payload audit 365 days."""
+    """Expire previews and safely completed live orders after 30 days; audit 365 days."""
     with s.transaction() as cur:
         require_ready(cur)
         cur.execute("DELETE FROM distribution_oauth_states WHERE expires_at<now()-interval '1 day'")
@@ -161,16 +161,27 @@ def retention_once():
         cur.execute("DELETE FROM distribution_privacy_requests WHERE completed_at<now()-interval '365 days'")
         cur.execute("DELETE FROM distribution_webhooks WHERE created_at<now()-interval '30 days'")
         cur.execute("DELETE FROM distribution_shopify_jobs WHERE status IN ('DONE','FAILED') AND updated_at<now()-interval '30 days'")
-        cur.execute("""SELECT o.* FROM distribution_orders o WHERE o.source='SHOPIFY' AND o.mode='preview'
-            AND o.created_at<now()-interval '30 days' AND NOT EXISTS (
+        cur.execute("""SELECT o.* FROM distribution_orders o WHERE o.source='SHOPIFY'
+            AND ((o.mode='preview' AND o.created_at<now()-interval '30 days')
+              OR (o.mode='live' AND o.status IN ('SHIPPED','CANCELLED')
+                AND GREATEST(o.updated_at,o.shipped_at,o.created_at)<now()-interval '30 days'
+                AND NOT EXISTS (SELECT 1 FROM distribution_reservations r
+                    WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id
+                    AND r.status IN ('RESERVED','SUBMITTED','FULFILLED'))
+                AND NOT EXISTS (SELECT 1 FROM distribution_jobs j
+                    WHERE j.tenant_id=o.tenant_id AND j.order_id=o.id
+                    AND j.status IN ('QUEUED','RUNNING','REVIEW_REQUIRED','FAILED'))))
+            AND NOT EXISTS (
             SELECT 1 FROM distribution_privacy_requests p WHERE p.tenant_id=o.tenant_id AND p.shop=o.source_account
-            AND p.created_at>now()-interval '30 days' AND p.topic='customers/data_request' AND p.status IN ('PENDING','READY','REVIEW_REQUIRED'))
+            AND p.status IN ('PENDING','READY','REVIEW_REQUIRED')
+            AND (o.mode='live' OR (p.created_at>now()-interval '30 days' AND p.topic='customers/data_request')))
             ORDER BY o.id LIMIT 100 FOR UPDATE SKIP LOCKED""")
         rows = cur.fetchall()
         for row in rows:
             request = {'tenant_id': row['tenant_id'], 'shop': row['source_account']}
             delete_orders(cur, request, [row])
-            audit(cur, row['tenant_id'], 'retention-worker', 'PREVIEW_ORDER_EXPIRED')
+            action = 'LIVE_ORDER_EXPIRED' if row['mode'] == 'live' else 'PREVIEW_ORDER_EXPIRED'
+            audit(cur, row['tenant_id'], 'retention-worker', action)
         return len(rows)
 
 
