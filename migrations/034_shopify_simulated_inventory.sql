@@ -1,0 +1,5 @@
+BEGIN;
+ALTER TABLE distribution_shopify_installations ADD COLUMN simulated_inventory_connection_id uuid;
+ALTER TABLE distribution_shopify_installations ADD CONSTRAINT simulated_inventory_connection
+ FOREIGN KEY(tenant_id,simulated_inventory_connection_id) REFERENCES distribution_connections(tenant_id,id);
+COMMIT;

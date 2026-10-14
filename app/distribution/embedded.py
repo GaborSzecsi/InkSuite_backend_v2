@@ -201,7 +201,7 @@ from .models import ConfigurationIn, ExecutionIn, CredentialsIn
 
 class DistributorAction(BaseModel):
     connection_id:UUID
-    action:Literal['configure','credentials','test','sync','settings','retry','ship_simulation','simulate_order','remove']
+    action:Literal['configure','credentials','test','sync','settings','retry','ship_simulation','simulate_order','remove','set_test_stock']
     configuration:ConfigurationIn|None=None
     settings:ExecutionIn|None=None
     credentials:CredentialsIn|None=None
@@ -209,6 +209,8 @@ class DistributorAction(BaseModel):
     order_id:UUID|None=None
     edition_id:UUID|None=None
     quantity:int=Field(default=1,ge=1,le=100000)
+    test_quantity:int=Field(default=0,ge=0,le=100000,strict=True)
+    safety_buffer:int=Field(default=5,ge=0,le=100000,strict=True)
 
 @embedded.get('/distribution')
 def distribution_status(install=Depends(linked)):
@@ -236,6 +238,9 @@ def distribution_action(body:DistributorAction,install=Depends(linked)):
         if not ready(cur): raise HTTPException(503,'Execution awaits migration 030.')
         conn=s.connection(cur,tenant,body.connection_id)
     context=ctx(install)
+    if body.action=='set_test_stock' and body.edition_id:
+        from .simulated_inventory import set_test_stock
+        return set_test_stock(install,body.connection_id,body.edition_id,body.test_quantity,body.safety_buffer)
     if body.action=='remove': return routes.remove_connection(body.connection_id,context)
     if body.action=='configure' and body.configuration:
         return routes.configure(body.connection_id,body.configuration,context)

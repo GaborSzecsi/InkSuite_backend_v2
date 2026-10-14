@@ -210,6 +210,7 @@ class DistributorExecutionSQLTests(unittest.TestCase):
 
     def test_inventory_publication_uses_compare_and_set_and_zeroes_stale_stock(self):
         self.simulator(10);self.stock_store()
+        support.rpc("UPDATE distribution_connections SET adapter='standard_json',mode='live' WHERE id=$1",[self.connection])
         response={'inventoryItem':{'tracked':True,'inventoryLevel':{'quantities':[{'name':'on_hand','quantity':40},{'name':'committed','quantity':0}]}}}
         for stale,target in ((False,10),(True,0)):
             if stale:support.rpc("UPDATE distribution_inventory SET last_synced_at=now()-interval '2 days' WHERE tenant_id=$1",[self.tenant])
@@ -222,11 +223,90 @@ class DistributorExecutionSQLTests(unittest.TestCase):
 
     def test_shared_pool_is_not_duplicated_across_variants(self):
         self.simulator(10);install=self.stock_store()
+        support.rpc("UPDATE distribution_connections SET adapter='standard_json',mode='live' WHERE id=$1",[self.connection])
         support.rpc("INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,edition_id,connection_id,inventory_item_id) VALUES($1,$2,'gid://shopify/ProductVariant/2',$3,$4,'gid://shopify/InventoryItem/2')",[self.tenant,install,self.ed,self.connection])
         with patch.object(sx.sh,'graphql') as graphql:
             with self.assertRaises(ConfigurationRequired):
                 with s.transaction() as cur:sx.push_inventory(cur,s.connection(cur,self.tenant,self.connection))
             graphql.assert_not_called()
+
+    def demo_install(self):
+        installation=self.stock_store()
+        return {'id':installation,'tenant_id':self.tenant,'user_id':self.user}
+
+    def test_set_stock_saves_and_queues_without_enabling_orders(self):
+        from app.distribution.simulated_inventory import set_test_stock
+        self.simulator(10);install=self.demo_install()
+        support.rpc('UPDATE distribution_shopify_installations SET inventory_push_enabled=false WHERE id=$1',[install['id']])
+        support.rpc('UPDATE distribution_connections SET enabled=false WHERE id=$1',[self.connection])
+        with patch.object(sx.sh,'graphql',return_value={'shop':{'plan':{'partnerDevelopment':True}}}):
+            self.assertTrue(set_test_stock(install,self.connection,self.ed,20,2)['queued'])
+            self.assertTrue(set_test_stock(install,self.connection,self.ed,20,2)['queued'])
+        self.assertEqual(self.quantities()['sellable_quantity'],18)
+        store=support.rpc('SELECT inventory_push_enabled,simulated_inventory_connection_id FROM distribution_shopify_installations WHERE id=$1',[install['id']])['rows'][0]
+        self.assertFalse(store['inventory_push_enabled']);self.assertEqual(store['simulated_inventory_connection_id'],self.connection)
+        with s.transaction() as cur:
+            conn=s.connection(cur,self.tenant,self.connection)
+        self.assertTrue(conn['enabled']);self.assertTrue(conn['inventory_enabled']);self.assertFalse(conn['orders_enabled'])
+        jobs=support.rpc("SELECT kind FROM distribution_jobs WHERE tenant_id=$1 AND status='QUEUED'",[self.tenant])['rows']
+        self.assertEqual(jobs,[{'kind':'PUBLISH'}])
+
+    def test_set_stock_rejects_live_store_missing_plan_and_cross_tenant(self):
+        from app.distribution.simulated_inventory import set_test_stock
+        self.simulator(10);install=self.demo_install()
+        for response in ({'shop':{'plan':{'partnerDevelopment':False}}},{'shop':None},{}):
+            with patch.object(sx.sh,'graphql',return_value=response),self.assertRaises(HTTPException):
+                set_test_stock(install,self.connection,self.ed,99,0)
+        self.assertEqual(self.quantities()['distributor_quantity'],10)
+        with patch.object(sx.sh,'graphql') as gql,self.assertRaises(HTTPException):
+            set_test_stock({**install,'tenant_id':self.other},self.connection,self.ed,99,0)
+        gql.assert_not_called()
+
+    def test_simulator_cannot_publish_without_set_stock_or_after_store_conversion(self):
+        self.simulator(10);install=self.demo_install()
+        with patch.object(sx.sh,'graphql') as gql:
+            with s.transaction() as cur:sx.push_inventory(cur,s.connection(cur,self.tenant,self.connection))
+        gql.assert_not_called()
+        support.rpc('UPDATE distribution_shopify_installations SET simulated_inventory_connection_id=$1 WHERE id=$2',[self.connection,install['id']])
+        with patch.object(sx.sh,'graphql',return_value={'shop':{'plan':{'partnerDevelopment':False}}}) as gql:
+            with self.assertRaises(ConfigurationRequired):
+                with s.transaction() as cur:sx.push_inventory(cur,s.connection(cur,self.tenant,self.connection))
+        self.assertEqual(gql.call_count,1);self.assertEqual(gql.call_args.args[2],sx.DEVELOPMENT_STORE_QUERY)
+
+    def test_simulated_reservations_reduce_shopify_stock_without_fake_order_fetch(self):
+        from app.distribution.simulated_inventory import set_test_stock
+        self.simulator(20);install=self.demo_install()
+        support.rpc('UPDATE distribution_shopify_installations SET inventory_push_enabled=false WHERE id=$1',[install['id']])
+        self.new_order(external_order_id='simulation-local')
+        development={'shop':{'plan':{'partnerDevelopment':True}}}
+        with patch.object(sx.sh,'graphql',return_value=development):
+            set_test_stock(install,self.connection,self.ed,20,2)
+        level={'inventoryItem':{'tracked':True,'inventoryLevel':{'quantities':[{'name':'on_hand','quantity':-2},{'name':'committed','quantity':0}]}}}
+        with patch.object(sx.sh,'graphql',side_effect=[development,level,{'inventorySetQuantities':{'userErrors':[]}}]) as gql:
+            with s.transaction() as cur:x.execute(cur,{'tenant_id':self.tenant,'connection_id':self.connection,'kind':'PUBLISH'})
+        self.assertEqual(gql.call_args.args[3]['input']['quantities'][0]['quantity'],17)
+        self.assertEqual(gql.call_args.args[3]['input']['quantities'][0]['changeFromQuantity'],-2)
+        self.assertFalse(any(c.args[2]==sx.sh.ORDER_QUERY for c in gql.call_args_list))
+
+    def test_test_stock_requires_saved_location_and_keeps_live_settings_unchanged(self):
+        from app.distribution.simulated_inventory import set_test_stock
+        self.simulator(10);install=self.demo_install()
+        support.rpc('UPDATE distribution_shopify_installations SET location_id=NULL WHERE id=$1',[install['id']])
+        with patch.object(sx.sh,'graphql') as gql,self.assertRaises(HTTPException):
+            set_test_stock(install,self.connection,self.ed,20,0)
+        gql.assert_not_called()
+        self.assertEqual(self.quantities()['distributor_quantity'],10)
+
+    def test_unchanged_simulator_receipt_does_not_schedule_busy_loop(self):
+        self.simulator(10);order=self.new_order()
+        x.run_once()
+        support.rpc("UPDATE distribution_connections SET next_sync_at=now()+interval '1 day' WHERE id=$1",[self.connection])
+        with s.transaction() as cur:
+            conn=s.connection(cur,self.tenant,self.connection)
+            before=conn['next_sync_at']
+            current=self.order(order['id'])
+            x.apply_receipt(cur,conn,current,p.Receipt(order_key=order['id'],distributor_order_id=current['distributor_order_id'],status='ACCEPTED'))
+            self.assertEqual(s.connection(cur,self.tenant,self.connection)['next_sync_at'],before)
 
 
 if __name__=='__main__': unittest.main()

@@ -186,7 +186,7 @@ async def webhook(request:Request):
         if topic=='app/uninstalled':
             from .connections import uninstall_connections
             uninstall_connections(cur,install)
-            cur.execute('UPDATE distribution_shopify_installations SET active=false,inventory_push_enabled=false,location_id=NULL WHERE id=%s',(install['id'],))
+            cur.execute('UPDATE distribution_shopify_installations SET active=false,inventory_push_enabled=false,simulated_inventory_connection_id=NULL,location_id=NULL WHERE id=%s',(install['id'],))
             if s.one(cur, "SELECT to_regclass('public.distribution_shopify_users') AS ready")['ready']:
                 cur.execute('DELETE FROM distribution_shopify_users WHERE installation_id=%s',(install['id'],))
     return {'received':True}

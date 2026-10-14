@@ -62,15 +62,29 @@ SET_QUERY='''mutation($input:InventorySetQuantitiesInput!,$key:String!){
   inventoryAdjustmentGroup {createdAt} userErrors {code}
  }}'''
 
+DEVELOPMENT_STORE_QUERY='query { shop { plan { partnerDevelopment } } }'
+
+def require_development_store(cur,install):
+    data=sh.graphql(cur,install,DEVELOPMENT_STORE_QUERY)
+    if ((data.get('shop') or {}).get('plan') or {}).get('partnerDevelopment') is not True:
+        raise ConfigurationRequired('Simulated stock can only update a Shopify development store.')
+
+
 def push_inventory(cur,conn):
     """One stock pool per managed Shopify inventory item, guarded against racing sales."""
     tenant=conn['tenant_id']
     cur.execute("""SELECT DISTINCT i.* FROM distribution_shopify_installations i
         JOIN distribution_shopify_variants v ON v.tenant_id=i.tenant_id AND v.installation_id=i.id
-        WHERE v.tenant_id=%s AND v.connection_id=%s AND v.active AND i.active AND i.inventory_push_enabled""",(tenant,conn['id']))
+        WHERE v.tenant_id=%s AND v.connection_id=%s AND v.active AND i.active AND (i.inventory_push_enabled OR i.simulated_inventory_connection_id=v.connection_id)""",(tenant,conn['id']))
     installations=cur.fetchall()
     for initial in installations:
         install=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE tenant_id=%s AND id=%s FOR UPDATE',(tenant,initial['id']))
+        if not install['active']: continue
+        if conn['adapter']!='simulator' and not install['inventory_push_enabled']: continue
+        if conn['adapter']=='simulator':
+            if str(install.get('simulated_inventory_connection_id'))!=str(conn['id']): continue
+            # Recheck on every write batch: a development store can become a live store.
+            require_development_store(cur,install)
         if not install['location_id']: raise ConfigurationRequired('Select the Shopify stock location.')
         # Use CURRENT remaining lines, not historical quantities, to avoid treating a new
         # sale as an old committed order and accidentally restoring sold stock.
@@ -83,6 +97,7 @@ def push_inventory(cur,conn):
         if len(orders)>1000: raise ConfigurationRequired('Order reconciliation exceeds the current batch limit.')
         known=Counter()
         for row in orders:
+            if conn['adapter']=='simulator' and row['external_order_id'].startswith('simulation-'): continue
             source=sh.graphql(cur,install,sh.ORDER_QUERY,{'id':row['external_order_id']})['order']
             if not source: raise ConfigurationRequired('Cannot reconcile a previously imported order.')
             remaining=mapped_quantities(cur,install,source,conn['id']) if not source['cancelledAt'] else Counter()
@@ -114,7 +129,7 @@ def push_inventory(cur,conn):
         for variant in variants:
             count=s.one(cur,"""SELECT count(*) AS n FROM distribution_shopify_variants v
                 JOIN distribution_shopify_installations i ON i.tenant_id=v.tenant_id AND i.id=v.installation_id
-                WHERE v.tenant_id=%s AND v.connection_id=%s AND v.edition_id=%s AND v.active AND i.active AND i.inventory_push_enabled""",
+                WHERE v.tenant_id=%s AND v.connection_id=%s AND v.edition_id=%s AND v.active AND i.active AND (i.inventory_push_enabled OR i.simulated_inventory_connection_id=v.connection_id)""",
                 (tenant,conn['id'],variant['edition_id']))['n']
             if count!=1: raise ConfigurationRequired('Allocate shared stock before publishing one edition to multiple variants or stores.')
             if not variant['inventory_item_id']: raise ConfigurationRequired('Import the Shopify inventory item first.')

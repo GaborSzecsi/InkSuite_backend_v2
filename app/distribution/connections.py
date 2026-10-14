@@ -20,6 +20,7 @@ def remove_connection(cur, tenant, cid, actor):
     cur.execute("UPDATE distribution_shopify_publish_jobs SET status='SUPERSEDED',message='Distributor connection removed',updated_at=now() WHERE tenant_id=%s AND connection_id=%s AND status IN ('QUEUED','REVIEW_REQUIRED')",(tenant,cid))
     cur.execute('UPDATE distribution_shopify_variants SET connection_id=NULL WHERE tenant_id=%s AND connection_id=%s',(tenant,cid))
     cur.execute('UPDATE distribution_inventory SET marketplace_enabled=false WHERE tenant_id=%s AND connection_id=%s',(tenant,cid))
+    cur.execute('UPDATE distribution_shopify_installations SET simulated_inventory_connection_id=NULL WHERE tenant_id=%s AND simulated_inventory_connection_id=%s',(tenant,cid))
     if row['adapter']=='simulator':
         cur.execute("UPDATE distribution_reservations SET status='CANCELLED',updated_at=now() WHERE tenant_id=%s AND connection_id=%s AND status IN ('RESERVED','SUBMITTED')",(tenant,cid))
         cur.execute("UPDATE distribution_orders SET status='CANCELLED',updated_at=now() WHERE tenant_id=%s AND connection_id=%s AND status NOT IN ('SHIPPED','CANCELLED')",(tenant,cid))

@@ -112,6 +112,8 @@ def apply_receipt(cur,conn,order,receipt):
         accepted_at=CASE WHEN %s IN ('ACCEPTED','SHIPPED') THEN COALESCE(accepted_at,now()) ELSE accepted_at END,
         shipped_at=CASE WHEN %s='SHIPPED' THEN COALESCE(shipped_at,now()) ELSE shipped_at END,updated_at=now()
         WHERE tenant_id=%s AND id=%s""",(status,receipt.distributor_order_id,'DISTRIBUTOR_REJECTED' if receipt.status=='REJECTED' else None,status,status,tenant,oid))
+    if conn['adapter']=='simulator' and conn.get('inventory_enabled') and status!=order['status']:
+        cur.execute('UPDATE distribution_connections SET next_sync_at=now() WHERE tenant_id=%s AND id=%s',(tenant,conn['id']))
     s.event(cur,tenant,conn['id'],'distribution-worker','ORDER_'+status,oid)
     return status
 
@@ -123,7 +125,7 @@ def schedule(cur):
         if active(conn,'inventory_enabled'):
             s.enqueue(cur,conn['tenant_id'],conn['id'],'INVENTORY')
             # Publication also runs when the feed fails, so stale stock can be zeroed.
-            if conn['adapter']!='simulator' and s.one(cur,"SELECT id FROM distribution_shopify_installations WHERE tenant_id=%s AND active AND inventory_push_enabled LIMIT 1",(conn['tenant_id'],)):
+            if s.one(cur,"SELECT id FROM distribution_shopify_installations WHERE tenant_id=%s AND active AND (inventory_push_enabled OR simulated_inventory_connection_id=%s) LIMIT 1",(conn['tenant_id'],conn['id'])):
                 s.enqueue(cur,conn['tenant_id'],conn['id'],'PUBLISH')
         if active(conn,'orders_enabled'):
             cur.execute("SELECT id FROM distribution_orders WHERE tenant_id=%s AND connection_id=%s AND status IN ('SUBMITTED','ACCEPTED') ORDER BY created_at LIMIT 100",(conn['tenant_id'],conn['id']))
@@ -135,7 +137,7 @@ def execute(cur,job):
     conn=s.connection(cur,job['tenant_id'],job['connection_id'],lock=True)
     driver=adapter_for(conn) if job['kind']=='PUBLISH' else adapter(cur,conn)
     if job['kind']=='PUBLISH':
-        if not active(conn,'inventory_enabled') or getattr(driver,'simulated',False):
+        if not active(conn,'inventory_enabled'):
             raise ConfigurationRequired('Shopify stock publication requires an enabled inventory connection.')
         from .shopify_execution import push_inventory
         push_inventory(cur,conn)
@@ -147,8 +149,7 @@ def execute(cur,job):
         if not active(conn,'inventory_enabled') or not driver.capabilities.inventory:
             raise ConfigurationRequired('Inventory synchronization requires an enabled, configured connection.')
         reconcile(cur,conn,driver.fetch_inventory())
-        if not getattr(driver,'simulated',False):
-            s.enqueue(cur,conn['tenant_id'],conn['id'],'PUBLISH')
+        s.enqueue(cur,conn['tenant_id'],conn['id'],'PUBLISH')
         return
     if not active(conn,'orders_enabled'):
         raise ConfigurationRequired('Order forwarding requires an enabled distributor connection.')
