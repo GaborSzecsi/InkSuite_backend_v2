@@ -1,5 +1,6 @@
 """Merchant-selected catalog publication. No orders, customers or inventory writes."""
 from app.catalog_content import DESCRIPTION_SQL
+from app.catalog_artwork import artwork_resolver
 import html
 import ipaddress
 import re
@@ -38,7 +39,9 @@ def entries(cur,tenant,currency):
       ON v.resource_id=r.id AND v.tenant_id=r.tenant_id WHERE r.tenant_id=%s
       AND (r.resource_content_type IN ('01','02','03','04') OR v.resource_link ~* '[.](png|jpg|jpeg|webp|gif)$') ORDER BY r.is_primary DESC,r.item_order,v.item_order""",(tenant,))
     images=defaultdict(list)
-    for row in cur.fetchall():images[str(row['edition_id'])].append(image_url(row['resource_link']))
+    resolve_artwork=artwork_resolver(cur,tenant)
+    resource_rows=cur.fetchall()
+    for row in resource_rows:images[str(row['edition_id'])].append(resolve_artwork(image_url(row['resource_link'])))
     for e in rows:
         e['id']=str(e['id']);e['work_id']=str(e['work_id'])
         subtitle=(e.get('subtitle') or '').strip()
@@ -48,10 +51,10 @@ def entries(cur,tenant,currency):
         e['isbn']=sh.normalized_isbn(e['isbn13'])
         values=prices[e['id']];e['price']=str(next(iter(values))) if len(values)==1 else None
         e['currency']=currency
-        e['images']=list(dict.fromkeys(u for u in [image_url(e.get('cover_image_link'))]+images[e['id']] if u))[:20]
+        e['images']=list(dict.fromkeys(u for u in [resolve_artwork(image_url(e.get('cover_image_link')) or (e.get('cover_image_link') if str(e.get('cover_image_link') or '').startswith('tenants/') else ''))]+images[e['id']] if u))[:20]
         e['description']=e.get('description') or ''
         e['issues']=[]
-        if not e['isbn']:e['issues'].append('Missing or invalid ISBN')
+        if not e['isbn']:e['issues'].append('Invalid ISBN — check the digits and checksum' if str(e.get('isbn13') or '').strip() else 'Missing ISBN')
         if not e['price']:e['issues'].append('Missing or ambiguous price in '+currency)
         if not e['images']:e['issues'].append('No public HTTPS cover/image URL')
         if not e['description']:e['issues'].append('Missing description')

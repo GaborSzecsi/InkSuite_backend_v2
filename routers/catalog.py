@@ -2,6 +2,7 @@
 # Read-side routing and payload assembly only. Write logic lives in catalog_write.py.
 
 from __future__ import annotations
+from app.catalog_artwork import artwork_resolver
 
 import ast
 import re
@@ -2698,6 +2699,10 @@ def _fetch_editions(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
                 "updated_at": _jsonable(r.get("updated_at")),
             }
         )
+    resolve_artwork = artwork_resolver(cur, tenant_id)
+    for edition in out:
+        edition["cover_image_url"] = resolve_artwork(edition.get("cover_image_link"))
+
     return out
 
 
@@ -4147,6 +4152,7 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
     )
     if primary_cover_edition:
         doc["cover_image_link"] = _safe_str(primary_cover_edition.get("cover_image_link"))
+        doc["cover_image_url"] = primary_cover_edition.get("cover_image_url", "")
         doc["cover_image_format"] = _safe_str(primary_cover_edition.get("cover_image_format"))
         doc["cover_image_caption"] = _safe_str(primary_cover_edition.get("cover_image_caption"))
 
@@ -4904,10 +4910,12 @@ def list_works(
                     for row in cur.fetchall()
                 }
 
+            resolve_artwork = artwork_resolver(cur, tenant_id)
             items = []
             for r in rows:
                 it = _work_row_to_list_item(r)
                 it["cover_image_link"] = cover_by_work.get(str(r["id"]), "")
+                it["cover_image_url"] = resolve_artwork(it["cover_image_link"])
                 wid = str(r.get("id", ""))
                 if wid in author_by_work:
                     it["author"] = author_by_work[wid]
