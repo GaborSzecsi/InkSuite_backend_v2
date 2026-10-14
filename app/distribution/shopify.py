@@ -184,6 +184,8 @@ async def webhook(request:Request):
             minimal = {}  # Uninstall payloads need no merchant/customer fields.
         cur.execute('INSERT INTO distribution_webhooks(tenant_id,installation_id,delivery_id,topic,payload) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(installation_id,delivery_id) DO NOTHING',(install['tenant_id'],install['id'],delivery,topic,Jsonb(minimal)))
         if topic=='app/uninstalled':
+            from .connections import uninstall_connections
+            uninstall_connections(cur,install)
             cur.execute('UPDATE distribution_shopify_installations SET active=false,inventory_push_enabled=false,location_id=NULL WHERE id=%s',(install['id'],))
             if s.one(cur, "SELECT to_regclass('public.distribution_shopify_users') AS ready")['ready']:
                 cur.execute('DELETE FROM distribution_shopify_users WHERE installation_id=%s',(install['id'],))

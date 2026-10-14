@@ -45,7 +45,7 @@ def overview(ctx=Depends(access)):
     if not schema_ready():
         return {'mode':'preview','connections':[],'checkout_enabled':False,'schema_ready':False}
     with s.transaction() as cur:
-        cur.execute('SELECT * FROM distribution_connections WHERE tenant_id=%s ORDER BY display_name,id',(tenant,))
+        cur.execute('SELECT * FROM distribution_connections WHERE tenant_id=%s AND archived_at IS NULL ORDER BY display_name,id',(tenant,))
         connections=[public_connection(row) for row in cur.fetchall()]
     return {'mode':'preview','connections':connections,'checkout_enabled':False,'schema_ready':True}
 
@@ -54,9 +54,16 @@ def overview(ctx=Depends(access)):
 def add_connection(body:ConnectionIn,ctx=Depends(admin)):
     tenant,actor=ids(ctx)
     with s.transaction() as cur:
-        row=s.one(cur,'INSERT INTO distribution_connections(tenant_id,display_name,adapter,safety_buffer) VALUES(%s,%s,%s,%s) RETURNING *',(tenant,body.display_name,body.adapter,body.safety_buffer))
+        row=s.one(cur,'INSERT INTO distribution_connections(tenant_id,display_name,adapter,safety_buffer,shopify_installation_id) VALUES(%s,%s,%s,%s,%s) RETURNING *',(tenant,body.display_name,body.adapter,body.safety_buffer,ctx.get('shopify_installation_id')))
         s.event(cur,tenant,row['id'],actor,'CONNECTION_CREATED')
         return public_connection(row)
+
+
+@router.delete('/connections/{connection_id}')
+def remove_connection(connection_id:UUID,ctx=Depends(admin)):
+    from .connections import remove_connection as remove
+    tenant,actor=ids(ctx)
+    with s.transaction() as cur:return remove(cur,tenant,connection_id,actor)
 
 
 @router.put('/connections/{connection_id}/credentials')
@@ -114,6 +121,7 @@ def inventory(connection_id:UUID|None=None,q:str='',ctx=Depends(access)):
             a.last_synced_at,a.sync_status,COALESCE(a.marketplace_enabled,false) AS marketplace_enabled
             FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
             LEFT JOIN distribution_availability a ON a.tenant_id=e.tenant_id AND a.edition_id=e.id
+                AND EXISTS (SELECT 1 FROM distribution_connections c WHERE c.id=a.connection_id AND c.tenant_id=a.tenant_id AND c.archived_at IS NULL)
                 AND (%s::uuid IS NULL OR a.connection_id=%s)
             WHERE e.tenant_id=%s AND COALESCE(NULLIF(e.onix_product_form,''),e.product_form) IN ('BB','BC','BA','BH','BD','BE','BF','BG','BK')
                 AND (w.title ILIKE %s OR e.isbn13 ILIKE %s)

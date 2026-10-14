@@ -240,6 +240,8 @@ def run_once():
         with s.transaction() as cur:
             install=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE id=%s AND active FOR UPDATE',(job['installation_id'],))
             if not install:raise ValueError('Store disconnected')
+            # Serialize publication with distributor removal before any Shopify writes.
+            s.connection(cur,install['tenant_id'],job['connection_id'],lock=True)
             current=catalog(cur,install)
             if not current['can_publish']:raise ValueError('Approve write_products in Shopify')
             by_id={e['id']:e for e in current['editions']}

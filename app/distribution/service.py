@@ -23,7 +23,7 @@ def transaction():
 
 
 def connection(cur, tenant, connection_id, lock=False):
-    row=one(cur,'SELECT * FROM distribution_connections WHERE tenant_id=%s AND id=%s'+(' FOR NO KEY UPDATE' if lock else ''),(tenant,connection_id))
+    row=one(cur,'SELECT * FROM distribution_connections WHERE tenant_id=%s AND id=%s AND archived_at IS NULL'+(' FOR NO KEY UPDATE' if lock else ''),(tenant,connection_id))
     if not row: raise HTTPException(404,'Distributor connection not found.')
     return row
 

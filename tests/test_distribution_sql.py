@@ -101,6 +101,65 @@ class DistributionSQLTests(unittest.TestCase):
    self.assertEqual(err.exception.status_code,409)
    self.assertIn('Interrupted publication',err.exception.detail)
   self.assertEqual(rpc('SELECT count(*) AS n FROM distribution_shopify_publish_jobs WHERE installation_id=$1',[install['id']])['rows'][0]['n'],1)
+ def test_remove_connection_hides_setup_and_blocks_further_use(self):
+  from app.distribution.connections import remove_connection
+  from app.distribution.router import overview
+  rpc("UPDATE distribution_connections SET adapter='simulator',configuration='{\"simulated_stock\":{\"9780306406157\":20}}' WHERE id=$1",[self.connection])
+  with s.transaction() as cur:
+   s.enqueue(cur,self.tenant,self.connection,'TEST')
+   remove_connection(cur,self.tenant,self.connection,self.user)
+  row=rpc('SELECT archived_at,enabled,configuration FROM distribution_connections WHERE id=$1',[self.connection])['rows'][0]
+  self.assertTrue(row['archived_at']);self.assertFalse(row['enabled']);self.assertEqual(row['configuration'],{})
+  self.assertEqual(overview(self.ctx)['connections'],[])
+  with self.assertRaises(HTTPException):
+   with s.transaction() as cur:s.connection(cur,self.tenant,self.connection)
+  self.assertEqual(rpc('SELECT status FROM distribution_jobs WHERE connection_id=$1',[self.connection])['rows'][0]['status'],'FAILED')
+ def test_remove_connection_blocks_wrong_tenant_and_running_jobs(self):
+  from app.distribution.connections import remove_connection
+  with self.assertRaises(HTTPException):
+   with s.transaction() as cur:remove_connection(cur,self.other,self.connection,self.user)
+  rpc("INSERT INTO distribution_jobs(tenant_id,connection_id,kind,status) VALUES($1,$2,'TEST','RUNNING')",[self.tenant,self.connection])
+  with self.assertRaises(HTTPException) as err:
+   with s.transaction() as cur:remove_connection(cur,self.tenant,self.connection,self.user)
+  self.assertEqual(err.exception.status_code,409)
+  self.assertIsNone(rpc('SELECT archived_at FROM distribution_connections WHERE id=$1',[self.connection])['rows'][0]['archived_at'])
+ def test_remove_real_connection_blocks_unfinished_orders(self):
+  from app.distribution.connections import remove_connection
+  order=self.create()
+  rpc("UPDATE distribution_orders SET status='SUBMITTED' WHERE id=$1",[order['id']])
+  with self.assertRaises(HTTPException) as err:
+   with s.transaction() as cur:remove_connection(cur,self.tenant,self.connection,self.user)
+  self.assertEqual(err.exception.status_code,409)
+ def test_uninstall_removes_owned_simulator_preserves_publisher_connection(self):
+  from app.distribution.connections import uninstall_connections
+  _,install,_=self.publishing_fixture()
+  rpc("UPDATE distribution_connections SET adapter='simulator',shopify_installation_id=$1 WHERE id=$2",[install['id'],self.connection])
+  shared=str(uuid4())
+  rpc("INSERT INTO distribution_connections(id,tenant_id,display_name,adapter) VALUES($1,$2,'Publisher distributor','simulator')",[shared,self.tenant])
+  with s.transaction() as cur:uninstall_connections(cur,install)
+  self.assertTrue(rpc('SELECT archived_at FROM distribution_connections WHERE id=$1',[self.connection])['rows'][0]['archived_at'])
+  self.assertIsNone(rpc('SELECT archived_at FROM distribution_connections WHERE id=$1',[shared])['rows'][0]['archived_at'])
+ def test_uninstall_preserves_connection_used_by_another_store(self):
+  from app.distribution.connections import uninstall_connections
+  _,install,_=self.publishing_fixture()
+  _,other,_=self.publishing_fixture()
+  rpc("UPDATE distribution_connections SET adapter='simulator',shopify_installation_id=$1 WHERE id=$2",[install['id'],self.connection])
+  rpc("INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,connection_id) VALUES($1,$2,'v-shared',$3)",[self.tenant,other['id'],self.connection])
+  with s.transaction() as cur:uninstall_connections(cur,install)
+  row=rpc('SELECT archived_at,shopify_installation_id FROM distribution_connections WHERE id=$1',[self.connection])['rows'][0]
+  self.assertIsNone(row['archived_at']);self.assertIsNone(row['shopify_installation_id'])
+ def test_archived_connection_does_not_block_installation_privacy_deletion(self):
+  _,install,_=self.publishing_fixture()
+  rpc('UPDATE distribution_connections SET archived_at=now(),shopify_installation_id=$1 WHERE id=$2',[install['id'],self.connection])
+  rpc('DELETE FROM distribution_shopify_installations WHERE id=$1',[install['id']])
+  self.assertIsNone(rpc('SELECT shopify_installation_id FROM distribution_connections WHERE id=$1',[self.connection])['rows'][0]['shopify_installation_id'])
+ def test_removed_credentials_are_scheduled_for_cleanup(self):
+  from app.distribution.connections import cleanup_credentials
+  from app.distribution import secrets
+  rpc("UPDATE distribution_connections SET archived_at=now(),secret_reference='test-secret' WHERE id=$1",[self.connection])
+  with patch.object(secrets,'remove') as remove:
+   self.assertTrue(cleanup_credentials());remove.assert_called_once_with('test-secret')
+  self.assertIsNone(rpc('SELECT secret_reference FROM distribution_connections WHERE id=$1',[self.connection])['rows'][0]['secret_reference'])
  def test_preview_idempotent(self):
   order=self.create();self.assertEqual(order['id'],self.create()['id']);self.assertEqual(order['mode'],'preview')
   with self.assertRaises(HTTPException):

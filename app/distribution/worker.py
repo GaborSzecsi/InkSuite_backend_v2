@@ -74,9 +74,10 @@ if __name__=='__main__':
                 last_retention = time.monotonic() if processed < 100 else None
             from .shopify import process_inbox_once, sync_catalog_once
             from .publishing import run_once as publish_once
+            from .connections import cleanup_credentials
             # Give each queue a turn; a busy inventory feed must not starve paid orders.
             worked=False
-            for process in (privacy.run_once,process_inbox_once,run_once,sync_catalog_once,publish_once):
+            for process in (privacy.run_once,process_inbox_once,run_once,sync_catalog_once,publish_once,cleanup_credentials):
                 worked=bool(process()) or worked
             if not worked: time.sleep(5)
         except Exception:

@@ -114,7 +114,7 @@ def workspace(install=Depends(linked)):
     with s.transaction() as cur:
         tenant=install['tenant_id']
         from .router import public_connection
-        cur.execute('SELECT * FROM distribution_connections WHERE tenant_id=%s ORDER BY display_name',(tenant,));connections=[public_connection(c) for c in cur.fetchall()]
+        cur.execute('SELECT * FROM distribution_connections WHERE tenant_id=%s AND archived_at IS NULL AND (shopify_installation_id IS NULL OR shopify_installation_id=%s) ORDER BY display_name',(tenant,install['id']));connections=[public_connection(c) for c in cur.fetchall()]
         cur.execute("SELECT e.id,e.isbn13,w.title,COALESCE(NULLIF(e.onix_product_form,''),e.product_form) AS product_form FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id WHERE e.tenant_id=%s ORDER BY w.title LIMIT 1000",(tenant,));editions=cur.fetchall()
         cur.execute('SELECT variant_id,title,sku,edition_id,connection_id,catalog_metadata FROM distribution_shopify_variants WHERE tenant_id=%s AND installation_id=%s AND active ORDER BY title LIMIT 500',(tenant,install['id']));variants=cur.fetchall()
         cur.execute("SELECT o.id,o.external_order_id,o.status,o.created_at,COALESCE(sum(l.quantity),0) AS quantity FROM distribution_orders o LEFT JOIN distribution_order_items l ON l.order_id=o.id AND l.tenant_id=o.tenant_id WHERE o.tenant_id=%s AND o.source='SHOPIFY' AND o.source_account=%s GROUP BY o.id ORDER BY o.created_at DESC LIMIT 100",(tenant,install['shop']));orders=cur.fetchall()
@@ -164,7 +164,7 @@ def mapping(body:MapIn,install=Depends(linked)):
 @embedded.post('/connections')
 def connection(body:ConnectionIn,install=Depends(linked)):
     from .router import add_connection
-    return add_connection(body,ctx(install))
+    return add_connection(body,{**ctx(install),'shopify_installation_id':install['id']})
 
 
 class RetryIn(BaseModel):
@@ -201,7 +201,7 @@ from .models import ConfigurationIn, ExecutionIn, CredentialsIn
 
 class DistributorAction(BaseModel):
     connection_id:UUID
-    action:Literal['configure','credentials','test','sync','settings','retry','ship_simulation','simulate_order']
+    action:Literal['configure','credentials','test','sync','settings','retry','ship_simulation','simulate_order','remove']
     configuration:ConfigurationIn|None=None
     settings:ExecutionIn|None=None
     credentials:CredentialsIn|None=None
@@ -236,6 +236,7 @@ def distribution_action(body:DistributorAction,install=Depends(linked)):
         if not ready(cur): raise HTTPException(503,'Execution awaits migration 030.')
         conn=s.connection(cur,tenant,body.connection_id)
     context=ctx(install)
+    if body.action=='remove': return routes.remove_connection(body.connection_id,context)
     if body.action=='configure' and body.configuration:
         return routes.configure(body.connection_id,body.configuration,context)
     if body.action=='credentials' and body.credentials:
