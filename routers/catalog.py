@@ -12,6 +12,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from psycopg.rows import dict_row
 
 from app.core.db import db_conn
+from app.catalog_content import description_for_work
 
 from .catalog_shared import (
     _safe_str,
@@ -4118,6 +4119,8 @@ def _build_full_work_payload(cur, tenant_id: str, work_id: str) -> Dict[str, Any
     doc["about_diff_competitors"] = [x for x in doc["about_diff_competitors"] if x]
 
     editions = _fetch_editions(cur, tenant_id, work_id)
+    shared_description = description_for_work(cur, tenant_id, work_id)
+    doc.update(main_description=shared_description, description=shared_description, book_description=shared_description)
 
     # Table of Contents is canonical edition-level ONIX TextContent (TextType 04).
     # Keep the work-level aliases only as a compatibility view for Book Management.

@@ -350,8 +350,6 @@ def _upsert_supporting_resource(
                 WHERE r.tenant_id = %s::uuid
                   AND r.edition_id = %s::uuid
                   AND v.storage_key = %s
-                  AND r.tenant_id = %s::uuid
-                  AND e.work_id = %s::uuid
                 LIMIT 1
                 """,
                 (tenant_id, edition_id, storage_key),

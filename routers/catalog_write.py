@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.catalog_content import description_for_work, save_shared_description
+
 import re
 import uuid
 import json
@@ -2937,6 +2939,9 @@ def update_edition_descriptive_content(
             "DELETE FROM edition_texts WHERE tenant_id = %s AND edition_id = %s",
             (tenant_id, edition_uuid),
         )
+
+    shared_description = description_for_work(cur, tenant_id, work_id)
+    cur.execute("UPDATE works SET main_description=%s WHERE tenant_id=%s AND id=%s", (shared_description, tenant_id, work_id))
 
     return {"ok": True, "work_id": work_id, "edition_id": edition_uuid}
 
@@ -7086,6 +7091,7 @@ def _upsert_work_from_payload(conn, cur, tenant_id: str, body: Dict[str, Any]) -
     series_num = int(payload.get("volume_number") or payload.get("series_number") or 0)
     language = _safe_str(payload.get("language"))
     rights = _safe_str(payload.get("rights"))
+    previous_description = description_for_work(cur, tenant_id, work_id) if work_id else ""
     main_desc = _safe_str(
         payload.get("main_description")
         or payload.get("description")
@@ -7261,6 +7267,12 @@ def _upsert_work_from_payload(conn, cur, tenant_id: str, body: Dict[str, Any]) -
         print("ABOUT DB AFTER INSERT", dict(cur.fetchone() or {}))
 
     _replace_editions(cur, tenant_id, work_id, payload)
+    description_supplied = any(key in payload for key in ("main_description", "description", "book_description"))
+    if description_supplied and main_desc != previous_description:
+        save_shared_description(cur, tenant_id, work_id, main_desc)
+    else:
+        cur.execute("UPDATE works SET main_description=%s WHERE tenant_id=%s AND id=%s", (previous_description, tenant_id, work_id))
+
     _replace_foreign_rights_sold(cur, tenant_id, work_id, payload)
 
     author_info = _contributor_input(payload, "author")

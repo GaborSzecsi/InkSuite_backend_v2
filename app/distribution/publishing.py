@@ -1,4 +1,5 @@
 """Merchant-selected catalog publication. No orders, customers or inventory writes."""
+from app.catalog_content import DESCRIPTION_SQL
 import html
 import ipaddress
 import re
@@ -22,8 +23,8 @@ def image_url(value):
 
 
 def entries(cur,tenant,currency):
-    cur.execute('''SELECT e.id,e.work_id,e.isbn13,e.product_form,e.onix_product_form,e.cover_image_link,
-        w.title,w.subtitle,w.uid,w.main_description AS description FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
+    cur.execute(f'''SELECT e.id,e.work_id,e.isbn13,e.product_form,e.onix_product_form,e.cover_image_link,
+        w.title,w.subtitle,w.uid,{DESCRIPTION_SQL} AS description FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
         WHERE e.tenant_id=%s ORDER BY w.title,e.id''',(tenant,))
     rows=cur.fetchall()
     cur.execute("""SELECT d.edition_id,p.price_amount FROM edition_prices p JOIN edition_supply_details d
