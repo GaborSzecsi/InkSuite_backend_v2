@@ -122,10 +122,32 @@ def enqueue(install,edition_ids,connection):
         if any(e['status']=='Needs review' for e in selected):raise HTTPException(422,'Resolve the selected editions marked Needs review first.')
         grouped=defaultdict(list)
         for e in selected:grouped[e['work_id']].append(e)
+        jobs=[]
         for work,items in grouped.items():
-            cur.execute('''INSERT INTO distribution_shopify_publish_jobs(tenant_id,installation_id,work_id,connection_id,selection)
-              VALUES(%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING''',(install['tenant_id'],install['id'],work,connection,Jsonb(items)))
-        return {'queued':True,'titles':len(grouped)}
+            existing=s.one(cur,"""SELECT id,status,message FROM distribution_shopify_publish_jobs
+              WHERE tenant_id=%s AND installation_id=%s AND work_id=%s
+              AND status IN ('QUEUED','RUNNING','REVIEW_REQUIRED') FOR UPDATE""",
+              (install['tenant_id'],install['id'],work))
+            if existing and existing['status']=='REVIEW_REQUIRED':
+                # These exact failures occur before create_or_add makes any Shopify
+                # mutation. A new user-reviewed selection can safely replace them.
+                if existing['message'] not in (
+                    'InkSuite metadata changed; review selection again',
+                    'InkSuite artwork changed; review selection again',
+                ):
+                    raise HTTPException(409, 'Previous publication requires review: '+
+                        (existing['message'] or 'Inspect Shopify before retrying.'))
+                cur.execute("UPDATE distribution_shopify_publish_jobs SET status='SUPERSEDED',updated_at=now() WHERE id=%s",(existing['id'],))
+                existing=None
+            if existing:
+                jobs.append({'id':str(existing['id']),'status':existing['status']})
+                continue
+            cur.execute("""INSERT INTO distribution_shopify_publish_jobs(tenant_id,installation_id,work_id,connection_id,selection)
+              VALUES(%s,%s,%s,%s,%s) RETURNING id,status""",
+              (install['tenant_id'],install['id'],work,connection,Jsonb(items)))
+            created=cur.fetchone()
+            jobs.append({'id':str(created['id']),'status':created['status']})
+        return {'queued':True,'titles':len(grouped),'jobs':jobs}
 
 # Read the full live variant catalog before writes: stale local snapshots never authorize duplicates.
 def live_variants(cur,install):

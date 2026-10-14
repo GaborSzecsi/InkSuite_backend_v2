@@ -62,6 +62,45 @@ class DistributionSQLTests(unittest.TestCase):
   rpc("UPDATE distribution_connections SET enabled=true,mode='live',safety_buffer=0 WHERE id=$1",[self.connection])
   rpc("INSERT INTO distribution_inventory(tenant_id,connection_id,edition_id,distributor_quantity,sync_status,last_synced_at,marketplace_enabled) VALUES($1,$2,$3,1,'OK',now(),true) ON CONFLICT DO NOTHING",[self.tenant,self.connection,self.ed])
   rpc("UPDATE distribution_orders SET mode='live' WHERE id=$1",[order['id']])
+ def publishing_fixture(self):
+  from app.distribution import publishing
+  install={'id':str(uuid4()),'tenant_id':self.tenant}
+  rpc("INSERT INTO distribution_shopify_installations(id,tenant_id,shop,secret_reference) VALUES($1,$2,$3,'test')",[install['id'],self.tenant,str(uuid4())+'.myshopify.com'])
+  item={'id':self.ed,'work_id':self.work,'status':'Ready to add','isbn':'9780306406157'}
+  return publishing,install,item
+ def test_publish_metadata_review_can_be_resubmitted_with_fresh_selection(self):
+  publishing,install,item=self.publishing_fixture()
+  for message in ('InkSuite metadata changed; review selection again','InkSuite artwork changed; review selection again'):
+   rpc("DELETE FROM distribution_shopify_publish_jobs WHERE installation_id=$1",[install['id']])
+   with patch.object(publishing,'catalog',return_value={'can_publish':True,'editions':[item]}):
+    first=publishing.enqueue(install,[self.ed],self.connection)
+    rpc("UPDATE distribution_shopify_publish_jobs SET status='REVIEW_REQUIRED',message=$1 WHERE id=$2",[message,first['jobs'][0]['id']])
+    item['isbn']='9780140328721'
+    second=publishing.enqueue(install,[self.ed],self.connection)
+   self.assertNotEqual(first['jobs'][0]['id'],second['jobs'][0]['id'])
+   rows=rpc('SELECT status,selection,message FROM distribution_shopify_publish_jobs WHERE installation_id=$1 ORDER BY created_at',[install['id']])['rows']
+   self.assertEqual([r['status'] for r in rows],['SUPERSEDED','QUEUED'])
+   self.assertEqual(rows[0]['message'],message)
+   self.assertEqual(rows[1]['selection'][0]['isbn'],'9780140328721')
+ def test_publish_pending_submission_returns_existing_job_without_duplicate(self):
+  publishing,install,item=self.publishing_fixture()
+  with patch.object(publishing,'catalog',return_value={'can_publish':True,'editions':[item]}):
+   first=publishing.enqueue(install,[self.ed],self.connection)
+   second=publishing.enqueue(install,[self.ed],self.connection)
+   self.assertEqual(first['jobs'],second['jobs'])
+   rpc("UPDATE distribution_shopify_publish_jobs SET status='RUNNING' WHERE id=$1",[first['jobs'][0]['id']])
+   third=publishing.enqueue(install,[self.ed],self.connection)
+   self.assertEqual(third['jobs'][0]['status'],'RUNNING')
+  self.assertEqual(rpc('SELECT count(*) AS n FROM distribution_shopify_publish_jobs WHERE installation_id=$1',[install['id']])['rows'][0]['n'],1)
+ def test_publish_uncertain_shopify_outcome_returns_error_not_fake_queued(self):
+  publishing,install,item=self.publishing_fixture()
+  with patch.object(publishing,'catalog',return_value={'can_publish':True,'editions':[item]}):
+   first=publishing.enqueue(install,[self.ed],self.connection)
+   rpc("UPDATE distribution_shopify_publish_jobs SET status='REVIEW_REQUIRED',message='Interrupted publication: inspect Shopify before retrying' WHERE id=$1",[first['jobs'][0]['id']])
+   with self.assertRaises(HTTPException) as err:publishing.enqueue(install,[self.ed],self.connection)
+   self.assertEqual(err.exception.status_code,409)
+   self.assertIn('Interrupted publication',err.exception.detail)
+  self.assertEqual(rpc('SELECT count(*) AS n FROM distribution_shopify_publish_jobs WHERE installation_id=$1',[install['id']])['rows'][0]['n'],1)
  def test_preview_idempotent(self):
   order=self.create();self.assertEqual(order['id'],self.create()['id']);self.assertEqual(order['mode'],'preview')
   with self.assertRaises(HTTPException):
