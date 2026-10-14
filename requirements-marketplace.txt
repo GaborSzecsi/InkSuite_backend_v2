@@ -11,3 +11,6 @@ cryptography>=43
 
 # Protected ARC EPUB ingestion
 -r requirements-arc.txt
+
+# Messaging shared LISTEN/NOTIFY timeout and buffered notifications.
+psycopg[binary]>=3.2.4

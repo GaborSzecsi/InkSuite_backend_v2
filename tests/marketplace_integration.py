@@ -140,6 +140,7 @@ def seed(sql, params=()):
 
 try:
     rpc((root.parent / "migrations/012_reader_profile_contacts.sql").read_text(encoding="utf-8"), execute=True)
+    rpc((root.parent / "migrations/035_marketplace_messaging.sql").read_text(encoding="utf-8"), execute=True)
     tid = str(uuid4())
     tid2 = str(uuid4())
     work = str(uuid4())
@@ -377,6 +378,10 @@ try:
         [reader["id"]],
     )
     user = reader
+    call("POST", "conversations", {"actor_id": ra, "target_id": oa}, 403)
+    user = admin
+    call("PUT", "connections/" + connection, {"actor_id": oa, "action": "accept"})
+    user = reader
     conv = call("POST", "conversations", {"actor_id": ra, "target_id": oa})["id"]
     assert (
         call("POST", "conversations", {"actor_id": ra, "target_id": oa})["id"] == conv
@@ -387,7 +392,6 @@ try:
         {"actor_id": ra, "body": "Hello publisher"},
     )["id"]
     user = admin
-    call("PUT", "connections/" + connection, {"actor_id": oa, "action": "accept"})
     assert call("GET", "connection-notifications")["count"] == 0
     user = reader
     accepted = call("GET", "connection-notifications")

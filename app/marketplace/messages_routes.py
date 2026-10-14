@@ -13,10 +13,14 @@ def start(body: Relationship, user=Depends(current_user)):
 
 
 @router.get("/conversations")
-def inbox(
-    actor_id: UUID, offset: int = Query(0, ge=0, le=10000), user=Depends(current_user)
-):
-    return service.inbox(actor_id, offset, user)
+def inbox(actor_id: UUID, user=Depends(current_user)):
+    return service.inbox(actor_id, user=user)
+
+
+@router.get("/conversations/search")
+def search(actor_id: UUID, q: str = Query("",max_length=200), unread_only: bool = False,
+           offset: int = Query(0,ge=0,le=1000000), user=Depends(current_user)):
+    return service.inbox(actor_id,offset,user,q,unread_only,search=True)
 
 
 @router.get("/unread")
