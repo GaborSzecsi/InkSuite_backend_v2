@@ -27,6 +27,7 @@ from .catalog_royalties import (
 from .catalog_write import (
     _upsert_work_from_payload,
     create_first_work_edition,
+    create_additional_work_edition,
     update_edition_product_identity,
     update_work_titles_collections,
     update_edition_descriptive_content,
@@ -5690,6 +5691,20 @@ def save_product_identity(
         "edition": edition,
         "work": work,
     }
+
+
+@router.post("/works/{work_id}/editions")
+def create_additional_edition(work_id: str, payload: Dict[str, Any] = Body(...), tenant_slug: str = Query("marble-press")):
+    with db_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
+            try:
+                result = create_additional_work_edition(cur, tenant_id, work_id, payload)
+            except ValueError as exc:
+                message = str(exc)
+                raise HTTPException(404 if message == "Existing work not found" else 400, message)
+        conn.commit()
+    return result
 
 
 @router.post("/works/{work_id}/first-edition")

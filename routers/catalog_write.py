@@ -6191,6 +6191,29 @@ def update_edition_rights_restrictions(
 
 
 
+def create_additional_work_edition(cur, tenant_id: str, work_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist an additional format without replacing existing edition metadata."""
+    isbn = re.sub(r"[\s-]", "", str(payload.get("isbn13") or ""))
+    if not re.fullmatch(r"[0-9]{13}", isbn):
+        raise ValueError("Enter a 13-digit ISBN for the additional format")
+    forms = {"Hardcover": "BB", "Paperback": "BC", "E-Book": "EA", "Audio Book": "AJ", "Large Print": "BA"}
+    form = str(payload.get("format") or "")
+    if form not in forms:
+        raise ValueError("Select a supported format")
+    cur.execute("SELECT id FROM works WHERE tenant_id = %s AND id = %s FOR UPDATE", (tenant_id, work_id))
+    if not cur.fetchone():
+        raise ValueError("Existing work not found")
+    cur.execute("SELECT id FROM editions WHERE tenant_id = %s AND work_id = %s AND isbn13 = %s", (tenant_id, work_id, isbn))
+    if cur.fetchone():
+        raise ValueError("That ISBN already exists for this title")
+    cur.execute("""INSERT INTO editions
+        (tenant_id, work_id, isbn13, product_form, product_form_detail, onix_product_form,
+         publishing_status, notification_type, product_composition)
+        VALUES (%s, %s, %s, %s, %s, %s, '02', '02', '00') RETURNING id""",
+        (tenant_id, work_id, isbn, form, str(payload.get("product_form_detail") or form), forms[form]))
+    return {"ok": True, "edition_id": str(cur.fetchone()["id"]), "work_id": work_id}
+
+
 def create_first_work_edition(
     cur,
     tenant_id: str,
