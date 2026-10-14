@@ -147,7 +147,7 @@ def run_once():
         if request['topic'] == 'customers/data_request':
             cur.execute("UPDATE distribution_privacy_requests SET status='READY' WHERE id=%s", (request['id'],))
             return True
-        if request['topic'] == 'shop/redact' and install and install['active']:
+        if request['topic'] == 'shop/redact' and s.one(cur, 'SELECT id FROM distribution_shopify_installations WHERE tenant_id=%s AND shop=%s AND active', (request['tenant_id'],request['shop'])):
             cur.execute("UPDATE distribution_privacy_requests SET status='REVIEW_REQUIRED',error_code='STORE_STILL_ACTIVE' WHERE id=%s", (request['id'],))
             return True
         rows = matching_orders(cur, request)

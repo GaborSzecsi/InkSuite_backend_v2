@@ -168,6 +168,51 @@ class DistributionSQLTests(unittest.TestCase):
   with self.assertRaises(HTTPException):em.linked({**auth,'shop':'other.myshopify.com'})
   rpc("UPDATE memberships SET role='tenant_editor' WHERE tenant_id=$1",[self.tenant])
   with self.assertRaises(HTTPException):em.linked(auth)
+ def test_uninstall_releases_store_without_transferring_publisher_data(self):
+  import base64,hashlib,hmac,os
+  from app.distribution import embedded as em, shopify
+  rpc("INSERT INTO memberships VALUES($1,$2,'tenant_admin'),($3,$2,'tenant_admin')",[self.tenant,self.user,self.other])
+  auth={'shop':'reinstall-'+self.tenant+'.myshopify.com','sub':'42'}
+  other_ctx={**self.ctx,'tenant':{'id':self.other}}
+  app=FastAPI();app.include_router(shopify.public_router);client=TestClient(app)
+  body=b'{}';headers={'x-shopify-shop-domain':auth['shop'],'x-shopify-topic':'app/uninstalled','x-shopify-webhook-id':'uninstall-1','content-type':'application/json','x-shopify-hmac-sha256':base64.b64encode(hmac.new(b'test-secret',body,hashlib.sha256).digest()).decode()}
+  with patch.object(em,'exchange',return_value={'access_token':'test'}),patch.object(em.sh.secrets,'save',return_value='test-reference'),patch.dict(os.environ,{'DISTRIBUTION_SHOPIFY_APP_SECRET':'test'}),patch.object(shopify,'app_credentials',return_value={'client_secret':'test-secret'}):
+   em.link(em.LinkIn(code=em.link_code(self.ctx)['code']),auth)
+   old=em.linked(auth)
+   rpc("UPDATE distribution_shopify_installations SET location_id='old-location',inventory_push_enabled=true WHERE id=$1",[old['id']])
+   rpc("INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,title) VALUES($1,$2,'old-variant','Private old title')",[self.tenant,old['id']])
+   next_code=em.link_code(other_ctx)['code']
+   with self.assertRaises(HTTPException) as error:em.link(em.LinkIn(code=next_code),auth)
+   self.assertEqual(error.exception.status_code,409)
+   self.assertEqual(client.post('/api/distribution/shopify/webhooks',content=body,headers=headers).status_code,200)
+   with self.assertRaises(HTTPException):em.linked(auth)
+   previous=rpc('SELECT active,inventory_push_enabled,location_id FROM distribution_shopify_installations WHERE id=$1',[old['id']])['rows'][0]
+   self.assertEqual(previous,{'active':False,'inventory_push_enabled':False,'location_id':None})
+   em.link(em.LinkIn(code=next_code),auth)
+   new=em.linked(auth)
+   self.assertNotEqual(new['id'],old['id']);self.assertEqual(new['tenant_id'],self.other)
+   self.assertIsNone(new['location_id']);self.assertFalse(new['inventory_push_enabled'])
+   self.assertEqual(em.workspace(new)['variants'],[])
+   self.assertEqual(rpc('SELECT COUNT(*) AS n FROM distribution_shopify_users WHERE installation_id=$1',[old['id']])['rows'][0]['n'],0)
+   # Duplicate uninstall and delayed events must not disable the new connection.
+   self.assertEqual(client.post('/api/distribution/shopify/webhooks',content=body,headers=headers).status_code,200)
+   delayed={**headers,'x-shopify-webhook-id':'delayed-uninstall','x-shopify-triggered-at':'2020-01-01T00:00:00Z'}
+   self.assertEqual(client.post('/api/distribution/shopify/webhooks',content=body,headers=delayed).status_code,200)
+   self.assertEqual(em.linked(auth)['id'],new['id'])
+   # Privacy requests must still reach both publishers' retained installations.
+   privacy_body=json.dumps({'shop_domain':auth['shop'],'orders_to_redact':[100]}).encode()
+   privacy_headers={**headers,'x-shopify-topic':'customers/redact','x-shopify-webhook-id':'privacy-both','x-shopify-hmac-sha256':base64.b64encode(hmac.new(b'test-secret',privacy_body,hashlib.sha256).digest()).decode()}
+   self.assertEqual(client.post('/api/distribution/shopify/webhooks',content=privacy_body,headers=privacy_headers).status_code,200)
+   self.assertEqual(len(rpc("SELECT id FROM distribution_privacy_requests WHERE delivery_id='privacy-both' AND shop=$1",[auth['shop']])['rows']),2)
+ def test_same_publisher_reinstall_uses_fresh_installation(self):
+  from app.distribution import embedded as em
+  rpc("INSERT INTO memberships VALUES($1,$2,'tenant_admin')",[self.tenant,self.user])
+  auth={'shop':'same-'+self.tenant+'.myshopify.com','sub':'42'}
+  with patch.object(em,'exchange',return_value={'access_token':'test'}),patch.object(em.sh.secrets,'save',return_value='test-reference'):
+   em.link(em.LinkIn(code=em.link_code(self.ctx)['code']),auth);old=em.linked(auth)
+   rpc('UPDATE distribution_shopify_installations SET active=false WHERE id=$1',[old['id']])
+   em.link(em.LinkIn(code=em.link_code(self.ctx)['code']),auth)
+   self.assertNotEqual(em.linked(auth)['id'],old['id'])
  def test_embedded_workspace_excludes_other_stores_and_marketplace(self):
   from app.distribution import embedded as em
   install=self.privacy_install();install['user_id']=self.user;install['location_id']=None

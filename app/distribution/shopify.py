@@ -100,13 +100,13 @@ def callback(request:Request):
         if not row or row['shop']!=shop: raise HTTPException(401,'Invalid or expired Shopify connection session.')
         # Serialize by shop across tenants before exchanging/storing credentials.
         cur.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',('distribution-shop:'+shop,))
-        existing=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE shop=%s',(shop,))
+        existing=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE shop=%s AND active FOR UPDATE',(shop,))
         if existing and str(existing['tenant_id'])!=str(row['tenant_id']): raise HTTPException(409,'Store belongs to another publisher.')
         token=token_request(shop,{'code':q.get('code',''),'expiring':'1'},credentials)
         if not has_required_scopes(token.get('scope','')): raise HTTPException(403,'Required Shopify read permissions were not granted.')
         installation_id=existing['id'] if existing else uuid4()
         reference=secrets.save(row['tenant_id'],installation_id,token)
-        cur.execute('INSERT INTO distribution_shopify_installations(id,tenant_id,shop,secret_reference) VALUES(%s,%s,%s,%s) ON CONFLICT(shop) DO UPDATE SET secret_reference=excluded.secret_reference,active=true',(installation_id,row['tenant_id'],shop,reference))
+        cur.execute('INSERT INTO distribution_shopify_installations(id,tenant_id,shop,secret_reference) VALUES(%s,%s,%s,%s) ON CONFLICT(shop) WHERE active DO UPDATE SET secret_reference=excluded.secret_reference,active=true',(installation_id,row['tenant_id'],shop,reference))
         cur.execute('UPDATE distribution_oauth_states SET used_at=now() WHERE state_hash=%s',(row['state_hash'],))
     response=RedirectResponse('/app/financials/inventory',status_code=303)
     response.delete_cookie('distribution_oauth',path='/')
@@ -114,6 +114,8 @@ def callback(request:Request):
 
 
 def graphql(cur,installation,query,variables=None):
+    if not installation['active']:
+        raise HTTPException(403, 'Shopify app is uninstalled. Reinstall and link your publisher.')
     # Caller holds an installation lock, preventing concurrent refresh-token rotation.
     credentials=secrets.read(installation['secret_reference'])
     if credentials.get('expires_at',0)<time.time()+120:
@@ -145,14 +147,30 @@ async def webhook(request:Request):
     if topic in privacy.TOPICS and payload.get('shop_domain') != shop: raise HTTPException(400,'Privacy request store mismatch.')
     # Store only identifiers required to retrieve canonical GraphQL records. No customer payload archive.
     with s.transaction() as cur:
-        install=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE shop=%s FOR UPDATE',(shop,))
-        if not install:
-            if topic in privacy.TOPICS: return {'received':True}
-            raise HTTPException(404,'Store is not installed.')
+        # Serialize linking and uninstall delivery for this store.
+        cur.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',('distribution-shop:'+shop,))
+        cur.execute('SELECT * FROM distribution_shopify_installations WHERE shop=%s ORDER BY created_at FOR UPDATE',(shop,))
+        installations=cur.fetchall()
         if topic in privacy.TOPICS:
-            try: privacy.receive(cur,install,topic,delivery,payload)
-            except ValueError: raise HTTPException(400,'Invalid privacy request identifiers.') from None
+            for previous in installations:
+                try: privacy.receive(cur,previous,topic,delivery,payload)
+                except ValueError: raise HTTPException(400,'Invalid privacy request identifiers.') from None
             return {'received':True}
+        # A retried delivery from an old installation must not affect a new one.
+        if s.one(cur, 'SELECT w.id FROM distribution_webhooks w JOIN distribution_shopify_installations i ON i.id=w.installation_id WHERE i.shop=%s AND w.delivery_id=%s',(shop,delivery)):
+            return {'received':True}
+        install=next((i for i in installations if i['active']),None)
+        if not install: return {'received':True}
+        triggered=request.headers.get('x-shopify-triggered-at')
+        if triggered:
+            from datetime import datetime, timezone
+            try:
+                event_time=datetime.fromisoformat(triggered.replace('Z','+00:00'))
+                if event_time.tzinfo is None: raise ValueError()
+                installed=install['created_at']
+                if isinstance(installed,str): installed=datetime.fromisoformat(installed.replace('Z','+00:00'))
+                if event_time < installed: return {'received':True}
+            except ValueError: raise HTTPException(400,'Invalid webhook timestamp.') from None
         if not install['active'] and topic not in ('app/uninstalled','customers/redact','shop/redact'): return {'received':True}
         if topic.startswith('orders/'):
             order_id = privacy.numeric_id(payload.get('id'))
@@ -166,7 +184,7 @@ async def webhook(request:Request):
             minimal = {}  # Uninstall payloads need no merchant/customer fields.
         cur.execute('INSERT INTO distribution_webhooks(tenant_id,installation_id,delivery_id,topic,payload) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(installation_id,delivery_id) DO NOTHING',(install['tenant_id'],install['id'],delivery,topic,Jsonb(minimal)))
         if topic=='app/uninstalled':
-            cur.execute('UPDATE distribution_shopify_installations SET active=false WHERE id=%s',(install['id'],))
+            cur.execute('UPDATE distribution_shopify_installations SET active=false,inventory_push_enabled=false,location_id=NULL WHERE id=%s',(install['id'],))
             if s.one(cur, "SELECT to_regclass('public.distribution_shopify_users') AS ready")['ready']:
                 cur.execute('DELETE FROM distribution_shopify_users WHERE installation_id=%s',(install['id'],))
     return {'received':True}
