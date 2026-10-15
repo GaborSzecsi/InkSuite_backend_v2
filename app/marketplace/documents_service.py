@@ -39,25 +39,32 @@ def catalogs(org_id,user):
         return {'items':[view(a) for a in repo.assets(cur,o['tenant_id'])]}
 
 
+def upload_context(cur,edition_id,org_id,user):
+    if edition_id is not None:
+        e=required(repo.edition(cur,edition_id))
+        organization_permission(cur,user,e['organization_id'],admin=True)
+        tenant_id=e['tenant_id']; work_id=e['work_id']; slug=e['slug']
+        kind='marketing_material'
+        folder=f"tenants/{slug}/data/uploads/{e['uid'] or e['work_id']}/public/marketing/"
+    else:
+        organization_permission(cur,user,org_id,admin=True)
+        o=required(repo.organization(cur,org_id))
+        nullable=one(cur,"""SELECT is_nullable FROM information_schema.columns WHERE table_schema='public'
+          AND table_name='publishing_assets' AND column_name='work_id'""")
+        if not nullable or nullable['is_nullable']!='YES':
+            raise HTTPException(503,'Catalog uploads are awaiting migration 036_marketplace_public_documents.sql.')
+        tenant_id=o['tenant_id'];work_id=None;slug=o['tenant_slug'];kind='catalog'
+        folder=f'tenants/{slug}/assets/marketing/public/catalogs/'
+    return {'tenant_id':tenant_id,'work_id':work_id,'slug':slug,'kind':kind,'folder':folder,
+            'target':str(edition_id if edition_id is not None else org_id)}
+
+
 def upload(edition_id,org_id,user,filename,data):
     client=bucket=key=None
     try:
         with transaction() as cur:
-            if edition_id is not None:
-                e=required(repo.edition(cur,edition_id))
-                organization_permission(cur,user,e['organization_id'],admin=True)
-                tenant_id=e['tenant_id']; work_id=e['work_id']; slug=e['slug']
-                kind='marketing_material'
-                folder=f"tenants/{slug}/data/uploads/{e['uid'] or e['work_id']}/public/marketing/"
-            else:
-                organization_permission(cur,user,org_id,admin=True)
-                o=required(repo.organization(cur,org_id))
-                nullable=one(cur,"""SELECT is_nullable FROM information_schema.columns WHERE table_schema='public'
-                  AND table_name='publishing_assets' AND column_name='work_id'""")
-                if not nullable or nullable['is_nullable']!='YES':
-                    raise HTTPException(503,'Catalog uploads are awaiting migration 036_marketplace_public_documents.sql.')
-                tenant_id=o['tenant_id'];work_id=None;slug=o['tenant_slug'];kind='catalog'
-                folder=f'tenants/{slug}/assets/marketing/public/catalogs/'
+            context=upload_context(cur,edition_id,org_id,user)
+            tenant_id=context['tenant_id'];work_id=context['work_id'];kind=context['kind'];folder=context['folder']
             name=validate_pdf(filename,data)
             identity=uuid4();key=folder+str(identity)+'.pdf'
             client,bucket=storage()

@@ -48,3 +48,10 @@ Rollout
 Files
 Frontend: src/components/ARCUploadCard.tsx; src/features/marketplace/PublicPdfUploader.tsx (new); public-documents.css (new); Manage.tsx; Marketplace.tsx; MarketplaceSidebar.tsx; src/app/api/marketplace/[...path]/route.ts; tests/marketplace-messaging.test.cjs.
 Backend: app/marketplace/documents_repository.py, documents_service.py, documents_routes.py (new); routes.py; catalog_repository.py; catalog_service.py; migrations/036_marketplace_public_documents.sql (new); tests/marketplace_documents_integration.py (new); tests/messaging_integration.py; docs/MARKETPLACE_PUBLIC_DOCUMENTS.md (new).
+
+Direct PDF uploads (Amplify)
+Catalog and title marketing PDFs now use authenticated POST .../uploads, a signed S3 POST, then authenticated POST .../uploads/complete. Binary bytes bypass Amplify. Each PDF is limited to 50 MiB; file count remains unrestricted. Completion checks permissions again, validates the scoped private key, metadata, expiry, size and PDF signature, then publishes through the existing asset transaction. Staging stays outside assets and /public/ and is deleted after completion (including failed validation). Abandoned uploads can remain in document-staging; an S3 expiry lifecycle rule for that prefix is optional maintenance.
+
+Deploy backend and frontend together. No additional SQL migration is needed if 036 is already applied. The bucket-wide S3 POST CORS configured for ARC also covers these uploads; keep staging private and do not add public access. The backend role needs GetObject, PutObject and DeleteObject on its tenants' staging and destination prefixes. Existing multipart endpoints remain for compatibility, but browser PDF uploads no longer depend on their proxy body-size limit.
+
+Validation: 66 disposable REST/SQL requests pass, including direct 8 MiB catalog and marketing uploads, invalid PDFs, expired uploads, wrong destination and publisher isolation. Frontend tests verify large-file bytes reach S3 only, empty S3 success, safe XML-error handling and local file limits. Real browser/S3 verification remains a deployment check.

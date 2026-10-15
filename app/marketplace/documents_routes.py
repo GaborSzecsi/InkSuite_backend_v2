@@ -4,6 +4,8 @@ from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 from .core import current_user
 from . import documents_service as service
+from . import documents_upload_service as direct
+from pydantic import BaseModel, Field
 
 router=APIRouter()
 
@@ -36,3 +38,33 @@ def book_materials(slug: str):
 @router.get('/documents/{asset_id}/download')
 def download(asset_id: UUID):
     return RedirectResponse(service.download(asset_id),status_code=302,headers={'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer'})
+
+
+class BeginPdfUpload(BaseModel):
+    filename: str=Field(min_length=1,max_length=255)
+    size: int=Field(ge=1,le=service.MAX_PDF)
+
+
+class CompletePdfUpload(BaseModel):
+    key: str=Field(min_length=1,max_length=1000)
+    filename: str=Field(min_length=1,max_length=255)
+
+
+@router.post('/organizations/{org_id}/catalogs/uploads')
+def begin_catalog_upload(org_id: UUID,body: BeginPdfUpload,user=Depends(current_user)):
+    return direct.initiate(None,org_id,user,body.filename,body.size)
+
+
+@router.post('/organizations/{org_id}/catalogs/uploads/complete')
+def complete_catalog_upload(org_id: UUID,body: CompletePdfUpload,user=Depends(current_user)):
+    return direct.complete(None,org_id,user,body)
+
+
+@router.post('/editions/{edition_id}/marketing-materials/uploads')
+def begin_material_upload(edition_id: UUID,body: BeginPdfUpload,user=Depends(current_user)):
+    return direct.initiate(edition_id,None,user,body.filename,body.size)
+
+
+@router.post('/editions/{edition_id}/marketing-materials/uploads/complete')
+def complete_material_upload(edition_id: UUID,body: CompletePdfUpload,user=Depends(current_user)):
+    return direct.complete(edition_id,None,user,body)

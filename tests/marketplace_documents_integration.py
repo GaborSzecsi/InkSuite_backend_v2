@@ -152,7 +152,15 @@ try:
     seed("INSERT INTO editions(id,work_id,tenant_id,isbn13,product_form) VALUES($1,$2,$3,'9781234567890','BC'),($4,$5,$6,'9781234567891','BC')",[eid,work,tid,eid2,work2,tid2])
     seed("INSERT INTO marketplace_organizations(id,tenant_id,organization_type,name,slug,status) VALUES($1,$2,'publisher','Publisher','publisher','active'),($3,$4,'publisher','Other','other','active')",[org,tid,org2,tid2])
     seed("INSERT INTO marketplace_books(id,publisher_organization_id,work_id,slug,marketplace_status) VALUES($1,$2,$3,'public-book','public')",[bid,org,work])
+    from io import BytesIO
     class Store:
+        exceptions=SimpleNamespace(NoSuchKey=KeyError)
+        def generate_presigned_post(self,**kwargs):
+            assert kwargs["ExpiresIn"]==900
+            return {"url":"https://storage.example.invalid","fields":{"key":kwargs["Key"],**kwargs["Fields"]}}
+        def get_object(self,**kwargs):
+            obj=self.objects[kwargs["Key"]]
+            return {"Body":BytesIO(obj["Body"]),"ContentLength":len(obj["Body"]),"Metadata":obj["Metadata"]}
         def __init__(self): self.objects={};self.meta=SimpleNamespace(region_name='us-east-2');self.deleted=[]
         def put_object(self,**kwargs): self.objects[kwargs['Key']]=kwargs
         def delete_object(self,**kwargs):self.deleted.append(kwargs['Key']);self.objects.pop(kwargs['Key'],None)
@@ -231,6 +239,34 @@ try:
     assert len(call('GET',f'organizations/{org}/catalogs')['items'])==18
     with patch.object(docs,'MAX_PDF',10):
         upload(f'editions/{eid}/marketing-materials','Too large.pdf',pdf,413)
+
+    # Large files travel directly to storage; only metadata reaches API routes.
+    def stage(path,data=pdf):
+        target=call('POST',path+'/uploads',{'filename':'Large.pdf','size':len(data)})
+        fields=target['upload']['fields']
+        assert '/public/' not in target['key'] and '/assets/' not in target['key']
+        metadata={k.removeprefix('x-amz-meta-'):v for k,v in fields.items() if k.startswith('x-amz-meta-')}
+        store.put_object(Key=target['key'],Body=data,Metadata=metadata,ContentType='application/pdf')
+        return target['key']
+    catalog_path=f'organizations/{org}/catalogs'
+    material_path=f'editions/{eid}/marketing-materials'
+    for path in [catalog_path,material_path]:
+        key=stage(path,b'%PDF-1.7\n'+b' '* (8*1024*1024)+b'\n%%EOF')
+        result=call('POST',path+'/uploads/complete',{'key':key,'filename':'Large.pdf'})
+        assert key not in store.objects
+        assert client.get(result['url'],follow_redirects=False).status_code==302
+    key=stage(catalog_path,b'not a PDF')
+    call('POST',catalog_path+'/uploads/complete',{'key':key,'filename':'Bad.pdf'},status=422)
+    assert key not in store.objects
+    key=stage(catalog_path)
+    call('POST',material_path+'/uploads/complete',{'key':key,'filename':'Wrong.pdf'},status=403)
+    assert key in store.objects
+    store.objects[key]['Metadata']['upload-expires']='1'
+    call('POST',catalog_path+'/uploads/complete',{'key':key,'filename':'Expired.pdf'},status=410)
+    assert key not in store.objects
+    user=outsider
+    call('POST',catalog_path+'/uploads',{'filename':'No.pdf','size':len(pdf)},status=403)
+    call('POST',material_path+'/uploads',{'filename':'No.pdf','size':len(pdf)},status=403)
 
     print(f'PASS: {checks} document REST/SQL requests plus anonymous download, public visibility, tenant isolation, PDF validation, unique filenames and storage rollback checks. No live database or S3 writes.')
 finally:
