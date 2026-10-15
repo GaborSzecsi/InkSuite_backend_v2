@@ -55,3 +55,23 @@ This is controlled access and watermarking, not absolute DRM. Content already di
 
 ## Deployment and maintenance
 Deploy backend, frontend, dependency lockfile and SQL together. Do not remove the ARC exclusion from the legacy file listing when rolling back UI code. Retain version/audit/history records. Expired session rows may be deleted periodically after an appropriate operational retention period; never delete Library history as session cleanup. Failed uploads before a DB commit can leave an unreferenced private object; reconcile private objects against version storage keys before any administrative cleanup. No email invitations or notifications were sent during development.
+
+
+## Amplify-compatible direct ARC uploads
+
+The ARC form now obtains a signed POST from `POST /api/marketplace/arc/editions/{edition_id}/uploads`, sends the EPUB directly to the existing private S3 bucket, and completes with a small JSON request to `POST /api/marketplace/arc/editions/{edition_id}/uploads/complete`. Binary EPUB data does not pass through the Amplify/Next.js upload route. The existing multipart endpoint remains available for older clients.
+
+The signed policy binds the random staging key, exact byte size, encryption, user, edition and 15-minute expiry. Completion rechecks publisher administration, validates signed S3 metadata and the full EPUB, then reuses the existing ARC transaction/replacement logic. Staging objects are private and deleted after completion, including failed validation. Uploads abandoned before completion may leave private staging objects; include those in the existing storage retention/cleanup process. No database migration is required.
+
+After deploying backend and frontend, configure the bucket's CORS for the exact website origin. The helper preserves other rules and defaults to a read-only preview:
+
+```bash
+cd /home/ubuntu/inksuite/app
+sudo .venv/bin/python scripts/configure_arc_upload_cors.py --origin https://www.inksuite.io
+sudo .venv/bin/python scripts/configure_arc_upload_cors.py --origin https://www.inksuite.io --apply
+sudo systemctl restart inksuite-api
+```
+
+The operator needs `s3:GetBucketCORS` and `s3:PutBucketCORS` on the existing bucket. This adds browser POST CORS permission only; it does not change public access, ACLs, or bucket object permissions. Existing ARC PutObject/GetObject/DeleteObject permissions remain required. Redeploy Amplify as well; a backend-only restart cannot replace the old browser upload code.
+
+Verification: 48 endpoint checks passed using the supplied 16,354,906-byte EPUB through disposable SQL/fake S3, including existing ARC access/history behavior and direct upload expiry/ownership/validation checks. Seven frontend tests cover direct transfer, empty S3 responses, JSON/non-JSON errors and retained upload settings. No production EPUB upload or CORS mutation was performed during development.

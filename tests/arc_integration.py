@@ -168,13 +168,23 @@ try:
     import io
 
     objects = {}
+    metadata = {}
+    from types import SimpleNamespace
 
     class S3:
+        exceptions = SimpleNamespace(NoSuchKey=KeyError)
+
+        def generate_presigned_post(self, **kw):
+            return {"url":"https://private-upload.example.invalid","fields":{"key":kw["Key"],**kw["Fields"]}}
+
+        def delete_object(self, **kw):
+            objects.pop(kw["Key"],None);metadata.pop(kw["Key"],None)
+
         def put_object(self, **kw):
             objects[kw["Key"]] = kw["Body"]
 
         def get_object(self, **kw):
-            return {"Body": io.BytesIO(objects[kw["Key"]])}
+            return {"Body": io.BytesIO(objects[kw["Key"]]), "ContentLength":len(objects[kw["Key"]]), "Metadata":metadata.get(kw["Key"],{})}
 
     arc_service.storage = lambda: (S3(), "private-test")
     rpc(
@@ -242,7 +252,34 @@ try:
 
     user = admin
     upload(edition2, 403)
-    aid = upload(edition)["id"]
+    # The browser transfers bytes to S3, then sends only JSON to completion.
+    call("POST",f"arc/editions/{edition2}/uploads",{"filename":"test.epub","size":len(data)},403)
+    call("POST",f"arc/editions/{edition}/uploads",{"filename":"bad.pdf","size":len(data)},422)
+    def stage_bytes(payload=data):
+        signed=call("POST",f"arc/editions/{edition}/uploads",{"filename":"test.epub","size":len(payload)})
+        key=signed['key'];fields=signed['upload']['fields']
+        assert '/arc/staging/' in key and '/public/' not in key
+        objects[key]=payload
+        metadata[key]={k.removeprefix('x-amz-meta-'):v for k,v in fields.items() if k.startswith('x-amz-meta-')}
+        return key
+    key=stage_bytes()
+    user=outsider
+    call("POST",f"arc/editions/{edition}/uploads/complete",{"key":key,"filename":"test.epub"},403)
+    assert key in objects
+    user=admin
+    aid=call("POST",f"arc/editions/{edition}/uploads/complete",{"key":key,"filename":"test.epub"})['id']
+    assert key not in objects
+    call("POST",f"arc/editions/{edition}/uploads/complete",{"key":key,"filename":"test.epub"},404)
+    call("POST",f"arc/editions/{edition}/uploads/complete",{"key":"tenants/other/private.epub","filename":"test.epub"},403)
+    expired=stage_bytes();metadata[expired]['upload-expires']='1'
+    call("POST",f"arc/editions/{edition}/uploads/complete",{"key":expired,"filename":"test.epub","replace":True},410)
+    assert expired not in objects
+    invalid=stage_bytes(b'not an EPUB')
+    call("POST",f"arc/editions/{edition}/uploads/complete",{"key":invalid,"filename":"test.epub","replace":True},422)
+    assert invalid not in objects
+    short=stage_bytes();metadata[short]['upload-size']=str(len(data)+1)
+    call("POST",f"arc/editions/{edition}/uploads/complete",{"key":short,"filename":"test.epub","replace":True},413)
+    assert short not in objects
     upload(edition, 409)
     user = reader
     call("POST", f"library/{bid}/reading-session", status=404)
@@ -371,6 +408,17 @@ try:
     )
     assert len(call("GET", "arc-library")["items"]) == 1
     call("DELETE", f"library/{bid}", status=409)
+    # Optional local regression using a supplied EPUB; storage and SQL remain disposable.
+    import os
+    supplied=os.environ.get('ARC_TEST_EPUB_PATH')
+    if supplied:
+        payload=Path(supplied).read_bytes()
+        user=admin
+        key=stage_bytes(payload)
+        result=call('POST',f'arc/editions/{edition}/uploads/complete',
+                    {'key':key,'filename':Path(supplied).name,'replace':True})
+        assert result['revision']==3 and key not in objects
+        print(f'Supplied EPUB direct upload validated and persisted in disposable fixtures: {len(payload)} bytes')
     print(
         f"ARC integration passed: {checks} endpoint checks plus resource, ownership, migration, storage and history assertions"
     )

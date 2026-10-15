@@ -6,6 +6,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from .core import current_user
 from . import arc_service as service
+from . import arc_upload_service as uploads
 
 router = APIRouter()
 
@@ -140,3 +141,27 @@ def preview(asset_id: UUID, user=Depends(current_user)):
 @router.get("/reader/{session_id}/status")
 def session_status(session_id: UUID, user=Depends(current_user)):
     return service.session_status(session_id, user)
+
+
+class BeginUpload(BaseModel):
+    filename: str = Field(min_length=1,max_length=255)
+    size: int = Field(ge=1,le=uploads.MAX_UPLOAD)
+
+
+class CompleteUpload(BaseModel):
+    key: str = Field(min_length=1,max_length=1000)
+    filename: str = Field(min_length=1,max_length=255)
+    replace: bool = False
+    request_enabled: bool = True
+    available_from: datetime | None = None
+    available_until: datetime | None = None
+
+
+@router.post('/arc/editions/{edition_id}/uploads')
+def begin_upload(edition_id: UUID,body: BeginUpload,user=Depends(current_user)):
+    return uploads.initiate(edition_id,user,body.filename,body.size)
+
+
+@router.post('/arc/editions/{edition_id}/uploads/complete')
+def complete_upload(edition_id: UUID,body: CompleteUpload,user=Depends(current_user)):
+    return uploads.complete(edition_id,user,body)
