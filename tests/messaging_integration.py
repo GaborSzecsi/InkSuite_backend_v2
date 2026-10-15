@@ -210,6 +210,18 @@ try:
     call('GET',f'conversations/{conversations[1]}/messages?actor_id={actors[1]}',status=404)
     call('GET',f'conversations/search?actor_id={me}&q=Historical',status=403)
     user=owners[0]
+    page_id=str(uuid4());other_page=str(uuid4())
+    call('POST',f'messaging/heartbeat?actor_id={me}&session_id={page_id}')
+    call('POST',f'messaging/heartbeat?actor_id={me}&session_id={other_page}')
+    call('DELETE',f'messaging/session?actor_id={me}&session_id={page_id}')
+    user=owners[1]
+    assert call('GET',f'messaging/connections?actor_id={actors[1]}&q=Participant%200')['items'][0]['online']
+    call('POST',f'messaging/heartbeat?actor_id={actors[1]}&session_id={other_page}',status=403)
+    user=owners[0]
+    call('DELETE',f'messaging/session?actor_id={me}&session_id={other_page}')
+    user=owners[1]
+    assert not call('GET',f'messaging/connections?actor_id={actors[1]}&q=Participant%200')['items'][0]['online']
+    user=owners[0]
     call('PUT','block',{'actor_id':me,'target_id':actors[1]})
     call('POST',f'conversations/{old}/messages',{'actor_id':me,'body':'blocked'},403)
     assert not call('GET',f'messaging/connections?actor_id={me}&q=Participant%201')['items'][0]['id']==actors[1]

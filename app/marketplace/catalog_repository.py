@@ -252,7 +252,7 @@ def remove_library_query_1(cur, book_id, user):
 def publisher_catalogs_query_1(cur, org):
     return rows(
         cur,
-        "SELECT id,asset_name,public_url,file_format FROM publishing_assets\n            WHERE tenant_id=%s AND is_public AND is_active AND lower(asset_type) IN ('catalog','catalogue')\n            ORDER BY created_at DESC,id",
+        "SELECT id,asset_name,public_url,file_format,storage_key FROM publishing_assets\n            WHERE tenant_id=%s AND is_public AND is_active AND lower(asset_type) IN ('catalog','catalogue')\n            ORDER BY created_at DESC,id",
         (org["tenant_id"],),
     )
 

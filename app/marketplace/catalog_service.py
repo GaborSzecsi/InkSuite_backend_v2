@@ -334,7 +334,9 @@ def publisher_catalogs(slug: str):
                 {
                     "id": a["id"],
                     "name": a["asset_name"] or "Publisher catalog",
-                    "url": safe_url(a["public_url"]),
+                    "url": (f"/api/marketplace/documents/{a['id']}/download"
+                            if "/assets/marketing/public/catalogs/" in a.get("storage_key", "") and a["file_format"].lower()=="pdf"
+                            else safe_url(a["public_url"])),
                     "format": a["file_format"],
                 }
                 for a in assets
