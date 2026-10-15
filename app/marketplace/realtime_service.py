@@ -24,6 +24,49 @@ def ready(cur):
         raise HTTPException(503,"Messaging is awaiting migration 035_marketplace_messaging.sql.")
 
 
+def notify_presence(cur, actor_id, user_id):
+    # Refresh only accepted peers of this actor and the session owner's personal identity.
+    peers = rows(cur,"""SELECT DISTINCT CASE WHEN c.requester_actor_id=a.id THEN c.recipient_actor_id
+      ELSE c.requester_actor_id END AS id FROM marketplace_actors a JOIN marketplace_connections c
+      ON a.id IN (c.requester_actor_id,c.recipient_actor_id)
+      WHERE (a.id=%s OR a.user_id=%s) AND c.status='accepted'""",(actor_id,user_id))
+    if peers:
+        cur.execute("SELECT pg_notify('marketplace_messaging',%s)",
+                    (json.dumps({'type':'presence','actors':[str(p['id']) for p in peers]}),))
+
+
+def page_heartbeat(actor_id: UUID, session_id: UUID, user):
+    with transaction() as cur:
+        actor(cur,user,actor_id,messaging=True)
+        ready(cur)
+        existing = one(cur,'SELECT actor_id,user_id FROM marketplace_messaging_sessions WHERE id=%s',(session_id,))
+        if existing and (str(existing['actor_id']) != str(actor_id) or str(existing['user_id']) != str(user['id'])):
+            raise HTTPException(403,'This session belongs to another identity.')
+        was_online = one(cur,"SELECT 1 FROM marketplace_messaging_sessions WHERE user_id=%s AND connected AND heartbeat_at>now()-interval '90 seconds' LIMIT 1",(user['id'],))
+        if not existing:
+            cur.execute("DELETE FROM marketplace_messaging_sessions WHERE heartbeat_at<now()-interval '5 minutes'")
+            count = one(cur,'SELECT count(*) AS n FROM marketplace_messaging_sessions WHERE user_id=%s',(user['id'],))['n']
+            if count>=20:
+                raise HTTPException(429,'Too many messaging sessions.')
+        cur.execute("""INSERT INTO marketplace_messaging_sessions(id,actor_id,user_id,connected)
+          VALUES(%s,%s,%s,true) ON CONFLICT(id) DO UPDATE SET connected=true,heartbeat_at=now()
+          WHERE marketplace_messaging_sessions.actor_id=EXCLUDED.actor_id AND marketplace_messaging_sessions.user_id=EXCLUDED.user_id""",
+          (session_id,actor_id,user['id']))
+        if not was_online:
+            notify_presence(cur,actor_id,user['id'])
+        return {'ok':True}
+
+
+def end_page_session(actor_id: UUID, session_id: UUID, user):
+    with transaction() as cur:
+        actor(cur,user,actor_id,messaging=True)
+        ready(cur)
+        cur.execute('DELETE FROM marketplace_messaging_sessions WHERE id=%s AND actor_id=%s AND user_id=%s',
+                    (session_id,actor_id,user['id']))
+        notify_presence(cur,actor_id,user['id'])
+        return {'ok':True}
+
+
 def session(actor_id: UUID, user=Depends(current_user)):
     ticket = secrets.token_urlsafe(32)
     with transaction() as cur:
@@ -50,6 +93,7 @@ def consume(ticket):
             raise HTTPException(401,'Expired messaging ticket.')
         user = one(cur,'SELECT id,platform_role FROM users WHERE id=%s',(s['user_id'],))
         actor(cur,user,s['actor_id'],messaging=True)
+        notify_presence(cur,s['actor_id'],s['user_id'])
         s['user'] = user
         return s
 
@@ -66,6 +110,7 @@ def heartbeat(s, update=True):
 def disconnect(s):
     with transaction() as cur:
         cur.execute('DELETE FROM marketplace_messaging_sessions WHERE id=%s',(s['id'],))
+        notify_presence(cur,s['actor_id'],s['user_id'])
 
 
 def connections(actor_id: UUID, q: str = Query('',max_length=200), offset: int = Query(0,ge=0,le=1000000), user=Depends(current_user)):
@@ -73,7 +118,7 @@ def connections(actor_id: UUID, q: str = Query('',max_length=200), offset: int =
         actor(cur,user,actor_id,messaging=True)
         ready(cur)
         pattern = '%' + q.replace('\\','\\\\').replace('%','\\%').replace('_','\\_') + '%'
-        data = rows(cur,"""SELECT a.id,EXISTS(SELECT 1 FROM marketplace_messaging_sessions s WHERE s.actor_id=a.id
+        data = rows(cur,"""SELECT a.id,EXISTS(SELECT 1 FROM marketplace_messaging_sessions s WHERE (s.actor_id=a.id OR (a.user_id IS NOT NULL AND s.user_id=a.user_id))
           AND s.connected AND s.heartbeat_at>now()-interval '90 seconds') AS online,
           (SELECT max(c.last_message_at) FROM marketplace_conversations c WHERE
           (c.actor_low_id=%s AND c.actor_high_id=a.id) OR (c.actor_high_id=%s AND c.actor_low_id=a.id)) AS contacted

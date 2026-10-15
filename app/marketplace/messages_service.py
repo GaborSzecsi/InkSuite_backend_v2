@@ -14,7 +14,7 @@ def presence(cur, other, viewer):
         return False
     if not one(cur,"SELECT to_regclass('public.marketplace_messaging_sessions') AS ready")['ready']:
         return False
-    return bool(one(cur,"SELECT 1 FROM marketplace_messaging_sessions WHERE actor_id=%s AND connected AND heartbeat_at>now()-interval '90 seconds' LIMIT 1",(other,)))
+    return bool(one(cur,"SELECT 1 FROM marketplace_messaging_sessions s JOIN marketplace_actors a ON a.id=%s WHERE (s.actor_id=a.id OR (a.user_id IS NOT NULL AND s.user_id=a.user_id)) AND s.connected AND s.heartbeat_at>now()-interval '90 seconds' LIMIT 1",(other,)))
 
 
 def require_messaging_schema(cur):

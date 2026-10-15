@@ -55,8 +55,15 @@ def inbox_query_1(cur, actor_id, offset=0, q="", unread_only=False, search=False
 
 
 def unread_query_1(cur, actor_id):
-    # Badge convention: unread conversations, including those outside the Inbox.
-    return one(cur,"SELECT count(DISTINCT m.conversation_id) AS count FROM marketplace_messages m JOIN marketplace_conversation_participants p ON p.conversation_id=m.conversation_id WHERE p.actor_id=%s AND " + UNREAD,(actor_id,))
+    # Include the newest unread incoming message for quiet REST recovery when
+    # the live transport is unavailable. The cursor never advances on read events.
+    return one(cur,"""WITH unread_messages AS (
+      SELECT m.id,m.conversation_id,m.sender_actor_id,m.created_at FROM marketplace_messages m
+      JOIN marketplace_conversation_participants p ON p.conversation_id=m.conversation_id
+      WHERE p.actor_id=%s AND """ + UNREAD + """)
+      SELECT count(DISTINCT conversation_id) AS count,
+      (SELECT json_build_object('id',id,'conversation_id',conversation_id,'sender_actor_id',sender_actor_id,'created_at',created_at)
+       FROM unread_messages ORDER BY created_at DESC,id DESC LIMIT 1) AS latest_incoming FROM unread_messages""",(actor_id,))
 
 
 def history_query_1(cur, where, params):

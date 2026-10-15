@@ -277,19 +277,19 @@ class DistributionSQLTests(unittest.TestCase):
   with patch.object(em,'exchange',return_value={'access_token':'test'}),patch.object(em.sh.secrets,'save',return_value='test-reference'),patch.dict(os.environ,{'DISTRIBUTION_SHOPIFY_APP_SECRET':'test'}),patch.object(shopify,'app_credentials',return_value={'client_secret':'test-secret'}):
    em.link(em.LinkIn(code=em.link_code(self.ctx)['code']),auth)
    old=em.linked(auth)
-   rpc("UPDATE distribution_shopify_installations SET location_id='old-location',inventory_push_enabled=true WHERE id=$1",[old['id']])
+   rpc("UPDATE distribution_shopify_installations SET location_id='old-location',inventory_push_enabled=true,simulated_inventory_connection_id=$2 WHERE id=$1",[old['id'],self.connection])
    rpc("INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,title) VALUES($1,$2,'old-variant','Private old title')",[self.tenant,old['id']])
    next_code=em.link_code(other_ctx)['code']
    with self.assertRaises(HTTPException) as error:em.link(em.LinkIn(code=next_code),auth)
    self.assertEqual(error.exception.status_code,409)
    self.assertEqual(client.post('/api/distribution/shopify/webhooks',content=body,headers=headers).status_code,200)
    with self.assertRaises(HTTPException):em.linked(auth)
-   previous=rpc('SELECT active,inventory_push_enabled,location_id FROM distribution_shopify_installations WHERE id=$1',[old['id']])['rows'][0]
-   self.assertEqual(previous,{'active':False,'inventory_push_enabled':False,'location_id':None})
+   previous=rpc('SELECT active,inventory_push_enabled,location_id,simulated_inventory_connection_id FROM distribution_shopify_installations WHERE id=$1',[old['id']])['rows'][0]
+   self.assertEqual(previous,{'active':False,'inventory_push_enabled':False,'location_id':None,'simulated_inventory_connection_id':None})
    em.link(em.LinkIn(code=next_code),auth)
    new=em.linked(auth)
    self.assertNotEqual(new['id'],old['id']);self.assertEqual(new['tenant_id'],self.other)
-   self.assertIsNone(new['location_id']);self.assertFalse(new['inventory_push_enabled'])
+   self.assertIsNone(new['location_id']);self.assertFalse(new['inventory_push_enabled']);self.assertIsNone(new['simulated_inventory_connection_id'])
    self.assertEqual(em.workspace(new)['variants'],[])
    self.assertEqual(rpc('SELECT COUNT(*) AS n FROM distribution_shopify_users WHERE installation_id=$1',[old['id']])['rows'][0]['n'],0)
    # Duplicate uninstall and delayed events must not disable the new connection.

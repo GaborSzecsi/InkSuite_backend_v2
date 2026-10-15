@@ -14,3 +14,11 @@ def connections(actor_id: UUID,q: str=Query('',max_length=200),offset: int=Query
 @router.websocket('/messaging/live')
 async def live(ws: WebSocket):
     await service.live(ws)
+
+@router.post('/messaging/heartbeat')
+def page_heartbeat(actor_id: UUID,session_id: UUID,user=Depends(current_user)):
+    return service.page_heartbeat(actor_id,session_id,user)
+
+@router.delete('/messaging/session')
+def end_page_session(actor_id: UUID,session_id: UUID,user=Depends(current_user)):
+    return service.end_page_session(actor_id,session_id,user)
