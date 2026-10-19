@@ -3373,7 +3373,7 @@ def update_edition_publishing_dates(
             or row.get("date")
         )
         compact = date_text.replace("-", "")
-        date_value = _parse_date_or_none(compact) if re.fullmatch(r"\\d{8}", compact) else None
+        date_value = _parse_date_or_none(compact) if re.fullmatch(r"\d{8}", compact) else None
         note = _safe_str(row.get("note") or row.get("date_note") or row.get("dateNote"))
         item_order = _to_int_or_none(
             row.get("item_order") or row.get("sequence_number") or row.get("sequenceNumber")
