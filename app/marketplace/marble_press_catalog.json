@@ -281,7 +281,9 @@
   {
     "title": "Confessions of an Accidental Dime-Store Heroine",
     "audience": "adult",
-    "genres": [],
+    "genres": [
+      "nonfiction"
+    ],
     "isbns": [
       "9780744324303"
     ]
