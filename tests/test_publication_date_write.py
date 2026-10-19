@@ -4,7 +4,7 @@ import unittest
 import uuid
 from datetime import date
 from pathlib import Path
-from routers.catalog_shared import _safe_str, _parse_date_or_none, _to_int_or_none
+from routers.catalog_shared import _safe_str, _parse_date_or_none, _to_int_or_none, _to_float_or_none, _normalize_isbn13
 
 source = Path(__file__).parents[1] / "routers/catalog_write.py"
 node = next(n for n in ast.parse(source.read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef) and n.name == "update_edition_publishing_dates")
@@ -31,5 +31,30 @@ class PublicationDateTests(unittest.TestCase):
         self.assertEqual(result["publication_date"],"")
         self.assertIsNone(cur.inserts[0][3])
         self.assertEqual(cur.inserts[0][4],"202710")
+
+
+
+class RetailPriceTests(unittest.TestCase):
+    def test_book_management_prices_are_retail_and_blank_cad_is_not_free(self):
+        edition_node = next(n for n in ast.parse(source.read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef) and n.name == "_replace_editions")
+        ns = dict(namespace, _to_float_or_none=_to_float_or_none, _normalize_isbn13=_normalize_isbn13)
+        tree = ast.fix_missing_locations(ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), edition_node], type_ignores=[]))
+        exec(compile(tree,str(source),"exec"),ns)
+        class PriceCursor:
+            def __init__(self): self.calls=[]; self.sql=""
+            def execute(self,sql,params): self.sql=sql; self.calls.append((sql,params))
+            def fetchone(self):
+                if "FROM editions" in self.sql: return {"id":"edition"}
+                if "FROM edition_supply_details" in self.sql: return {"id":"supply"}
+                return None
+        cur=PriceCursor()
+        ns["_replace_editions"](cur,"tenant","work",{"formats":[{"format":"Hardcover","isbn":"9780744324303","price_us":19.99,"price_can":0}]})
+        inserts=[(sql,p) for sql,p in cur.calls if "INSERT INTO edition_prices" in sql]
+        self.assertEqual(len(inserts),1)
+        self.assertIn("price_type_code",inserts[0][0])
+        self.assertIn("'USD', '01'",inserts[0][0])
+        self.assertEqual(inserts[0][1][-1],19.99)
+        lookup=next(sql for sql,p in cur.calls if "FROM edition_prices" in sql)
+        self.assertIn("IN ('', '01', '02')",lookup)
 
 if __name__ == "__main__": unittest.main()

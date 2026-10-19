@@ -6600,7 +6600,7 @@ def _replace_editions(cur, tenant_id: str, work_id: str, payload: Dict[str, Any]
                     supply_detail_id = sd_created and sd_created.get("id")
 
                 if supply_detail_id:
-                    if price_us is not None:
+                    if price_us is not None and price_us > 0:
                         cur.execute(
                             """
                             SELECT id
@@ -6608,40 +6608,7 @@ def _replace_editions(cur, tenant_id: str, work_id: str, payload: Dict[str, Any]
                             WHERE tenant_id = %s
                               AND supply_detail_id = %s
                               AND upper(coalesce(currency_code, '')) = 'USD'
-                            LIMIT 1
-                            """,
-                            (tenant_id, supply_detail_id),
-                        )
-                        row = cur.fetchone()
-                        if row:
-                            cur.execute(
-                                """
-                                UPDATE edition_prices
-                                SET price_amount = %s
-                                WHERE tenant_id = %s
-                                  AND id = %s
-                                """,
-                                (price_us, tenant_id, row["id"]),
-                            )
-                        else:
-                            cur.execute(
-                                """
-                                INSERT INTO edition_prices (
-                                    tenant_id, supply_detail_id, price_amount, currency_code
-                                )
-                                VALUES (%s, %s, %s, 'USD')
-                                """,
-                                (tenant_id, supply_detail_id, price_us),
-                            )
-
-                    if price_can is not None:
-                        cur.execute(
-                            """
-                            SELECT id
-                            FROM edition_prices
-                            WHERE tenant_id = %s
-                              AND supply_detail_id = %s
-                              AND upper(coalesce(currency_code, '')) IN ('CAD', 'CAN')
+                              AND coalesce(price_type_code, '') IN ('', '01', '02')
                             LIMIT 1
                             """,
                             (tenant_id, supply_detail_id),
@@ -6652,7 +6619,44 @@ def _replace_editions(cur, tenant_id: str, work_id: str, payload: Dict[str, Any]
                                 """
                                 UPDATE edition_prices
                                 SET price_amount = %s,
-                                    currency_code = 'CAD'
+                                    price_type_code = COALESCE(NULLIF(price_type_code, ''), '01')
+                                WHERE tenant_id = %s
+                                  AND id = %s
+                                """,
+                                (price_us, tenant_id, row["id"]),
+                            )
+                        else:
+                            cur.execute(
+                                """
+                                INSERT INTO edition_prices (
+                                    tenant_id, supply_detail_id, price_amount, currency_code, price_type_code
+                                )
+                                VALUES (%s, %s, %s, 'USD', '01')
+                                """,
+                                (tenant_id, supply_detail_id, price_us),
+                            )
+
+                    if price_can is not None and price_can > 0:
+                        cur.execute(
+                            """
+                            SELECT id
+                            FROM edition_prices
+                            WHERE tenant_id = %s
+                              AND supply_detail_id = %s
+                              AND upper(coalesce(currency_code, '')) IN ('CAD', 'CAN')
+                              AND coalesce(price_type_code, '') IN ('', '01', '02')
+                            LIMIT 1
+                            """,
+                            (tenant_id, supply_detail_id),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            cur.execute(
+                                """
+                                UPDATE edition_prices
+                                SET price_amount = %s,
+                                    currency_code = 'CAD',
+                                    price_type_code = COALESCE(NULLIF(price_type_code, ''), '01')
                                 WHERE tenant_id = %s
                                   AND id = %s
                                 """,
@@ -6662,9 +6666,9 @@ def _replace_editions(cur, tenant_id: str, work_id: str, payload: Dict[str, Any]
                             cur.execute(
                                 """
                                 INSERT INTO edition_prices (
-                                    tenant_id, supply_detail_id, price_amount, currency_code
+                                    tenant_id, supply_detail_id, price_amount, currency_code, price_type_code
                                 )
-                                VALUES (%s, %s, %s, 'CAD')
+                                VALUES (%s, %s, %s, 'CAD', '01')
                                 """,
                                 (tenant_id, supply_detail_id, price_can),
                             )
