@@ -1,6 +1,7 @@
 """Marketplace catalog service; transactions and mutation boundaries live here."""
 
 from . import catalog_repository as _repository
+from .catalog_taxonomy import verified_filter
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from .core import (
@@ -130,40 +131,50 @@ def books(
               JOIN parties p ON p.id=c.party_id AND p.tenant_id=c.tenant_id WHERE c.work_id=w.id AND c.tenant_id=w.tenant_id AND p.display_name ILIKE %s))"""
             params += ["%" + q + "%"] * 3
         edition_join = """FROM marketplace_book_editions be JOIN editions e ON e.id=be.edition_id AND e.work_id=w.id AND e.tenant_id=w.tenant_id"""
-        audience_codes = {"adult": "01", "young-adult": "03", "children": "02"}
-        if audience in audience_codes:
-            where += (
-                " AND EXISTS(SELECT 1 "
-                + edition_join
-                + " JOIN edition_audience a ON a.edition_id=e.id AND a.tenant_id=e.tenant_id WHERE be.marketplace_book_id=b.id AND a.onix_audience_code=%s)"
-            )
-            params.append(audience_codes[audience])
-        category_terms = {
-            "Sci-Fi & Fantasy": ["Science Fiction", "Fantasy"],
-            "Mystery & Thrillers": ["Mystery", "Thriller", "Suspense"],
-            "Romance": ["Romance"],
-            "Historical": ["Historical"],
-            "Adventure": ["Adventure"],
-            "Paranormal": ["Paranormal"],
-            "Horror": ["Horror"],
-            "Literary": ["Literary"],
-            "Picture Books": ["Picture Book"],
-            "Middle Grade": ["Middle Grade"],
-            "Graphic Novels": ["Graphic Novel", "Comics"],
-            "Nonfiction": ["Nonfiction", "Non-fiction"],
-            "Emotions": ["Emotion", "Feeling"],
-            "Body Safety": ["Body Safety", "Personal Safety"],
-        }
-        if category in category_terms:
-            terms = category_terms[category]
-            where += (
-                " AND EXISTS(SELECT 1 "
-                + edition_join
-                + " JOIN edition_subjects s ON s.edition_id=e.id AND s.tenant_id=e.tenant_id WHERE be.marketplace_book_id=b.id AND ("
-                + " OR ".join(["s.heading_text ILIKE %s"] * len(terms))
-                + "))"
-            )
-            params.extend(["%" + term + "%" for term in terms])
+        verified = verified_filter(publisher, audience, category, edition_join)
+        if verified is not None:
+            clause, values = verified
+            where += clause
+            params.extend(values)
+        else:
+            audience_codes = {"adult": "01", "young-adult": "03", "children": "02"}
+            if audience in audience_codes:
+                where += (
+                    " AND EXISTS(SELECT 1 "
+                    + edition_join
+                    + " JOIN edition_audience a ON a.edition_id=e.id AND a.tenant_id=e.tenant_id WHERE be.marketplace_book_id=b.id AND a.onix_audience_code=%s)"
+                )
+                params.append(audience_codes[audience])
+            category_terms = {
+                "Sci-Fi & Fantasy": ["Science Fiction", "Fantasy"],
+                "Fantasy": ["Fantasy"],
+                "Science Fiction": ["Science Fiction"],
+                "Mystery": ["Mystery"],
+                "Thrillers": ["Thriller", "Suspense"],
+                "Mystery & Thrillers": ["Mystery", "Thriller", "Suspense"],
+                "Romance": ["Romance"],
+                "Historical": ["Historical"],
+                "Adventure": ["Adventure"],
+                "Paranormal": ["Paranormal"],
+                "Horror": ["Horror"],
+                "Literary": ["Literary"],
+                "Picture Books": ["Picture Book"],
+                "Middle Grade": ["Middle Grade"],
+                "Graphic Novels": ["Graphic Novel", "Comics"],
+                "Nonfiction": ["Nonfiction", "Non-fiction"],
+                "Emotions": ["Emotion", "Feeling"],
+                "Body Safety": ["Body Safety", "Personal Safety", "Abuse"],
+            }
+            if category in category_terms:
+                terms = category_terms[category]
+                where += (
+                    " AND EXISTS(SELECT 1 "
+                    + edition_join
+                    + " JOIN edition_subjects s ON s.edition_id=e.id AND s.tenant_id=e.tenant_id WHERE be.marketplace_book_id=b.id AND ("
+                    + " OR ".join(["s.heading_text ILIKE %s"] * len(terms))
+                    + "))"
+                )
+                params.extend(["%" + term + "%" for term in terms])
         if period in ("coming", "new"):
             where += (
                 " AND EXISTS(SELECT 1 "
