@@ -38,6 +38,7 @@ class Target(BaseModel):
         return value
 
 class Post(BaseModel):
+    keep_media_in_library: bool = False
     campaign_id: UUID | None = None
     title: str = Field(default='', max_length=250)
     content_text: str = Field(default='', max_length=63000)

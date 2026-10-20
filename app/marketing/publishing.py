@@ -19,6 +19,14 @@ def recalculate(cur,post_id,tenant):
     targets=s.rows(cur,'SELECT provider_status FROM social_post_targets WHERE post_id=%s AND tenant_id=%s',(post_id,tenant))
     status=aggregate([t['provider_status'] for t in targets])
     cur.execute("UPDATE social_posts SET status=%s,published_at=CASE WHEN %s='published' THEN COALESCE(published_at,now()) ELSE published_at END,updated_at=now() WHERE id=%s AND tenant_id=%s",(status,status,post_id,tenant))
+    if status=='published':
+        cur.execute('''UPDATE social_media_assets a SET library_visible=false FROM social_post_assets pa, social_posts p
+            WHERE pa.asset_id=a.id AND pa.tenant_id=a.tenant_id AND p.id=pa.post_id AND p.tenant_id=pa.tenant_id
+            AND p.id=%s AND p.tenant_id=%s AND NOT p.keep_media_in_library AND a.source_type<>'title_public_asset'
+            AND NOT EXISTS (SELECT 1 FROM social_post_assets other_pa JOIN social_posts other_p
+                ON other_p.id=other_pa.post_id AND other_p.tenant_id=other_pa.tenant_id
+                WHERE other_pa.asset_id=a.id AND other_pa.tenant_id=a.tenant_id
+                AND other_p.keep_media_in_library AND other_p.status<>'cancelled')''',(post_id,tenant))
 
 def schedule(cur,ctx,post_id,body=None):
     tenant=ctx['tenant']['id'];post=s.post_view(cur,s.owned(cur,'social_posts',post_id,tenant,True))

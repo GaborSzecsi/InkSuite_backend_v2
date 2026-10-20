@@ -5,9 +5,34 @@
       "Sid": "DenyAnonymousPrivateVideoReads",
       "Effect": "Deny",
       "Principal": "*",
-      "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
       "Resource": "arn:aws:s3:::inksuite-data/tenants/*/assets/marketing/private/video/*",
-      "Condition": {"StringEquals": {"aws:PrincipalAccount": "anonymous"}}
+      "Condition": {
+        "StringNotEquals": {
+          "s3:authType": [
+            "REST-HEADER",
+            "REST-QUERY-STRING"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyOtherAccountsPrivateVideoReads",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::inksuite-data/tenants/*/assets/marketing/private/video/*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:PrincipalAccount": "316762121526"
+        }
+      }
     }
   ]
 }

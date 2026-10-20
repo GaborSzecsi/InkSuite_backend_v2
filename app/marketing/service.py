@@ -83,5 +83,6 @@ def save_post(cur, body, ctx, post_id=None):
         cur.execute("INSERT INTO social_post_assets(id,tenant_id,post_id,asset_id,role) VALUES(%s,%s,%s,%s,'cover')",(uid(),tenant,post_id,asset))
     for target in body.targets:
         cur.execute('INSERT INTO social_post_targets(id,tenant_id,post_id,social_account_id,provider,provider_payload) VALUES(%s,%s,%s,%s,%s,%s)',(uid(),tenant,post_id,target.social_account_id,accounts[target.social_account_id]['provider'],Jsonb(target.provider_payload)))
+    cur.execute('UPDATE social_posts SET keep_media_in_library=%s WHERE id=%s AND tenant_id=%s',(body.keep_media_in_library,post_id,tenant))
     audit(cur,ctx,post_id,'draft_saved')
     return post_view(cur,owned(cur,'social_posts',post_id,tenant))

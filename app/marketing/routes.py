@@ -146,7 +146,7 @@ def title_assets(work_id:UUID,campaign_id:UUID|None=None,ctx=Depends(s.access)):
         originals=assets.discover(cur,ctx,work_id)
         if campaign_id: s.owned(cur,'marketing_campaigns',campaign_id,ctx['tenant']['id'])
         generated=s.rows(cur,"""SELECT * FROM social_media_assets WHERE tenant_id=%s
-          AND work_id=%s AND source_type='generated_derivative'
+          AND work_id=%s AND source_type='generated_derivative' AND library_visible
           AND (campaign_id IS NULL OR campaign_id=%s) ORDER BY created_at DESC""",
           (ctx['tenant']['id'],work_id,campaign_id))
         return generated+originals
@@ -157,12 +157,13 @@ def reference(body:schemas.AssetReference,ctx=Depends(s.access)):
 
 @router.get('/assets/publisher')
 @router.get('/assets/campaign/{campaign_id}')
-def list_assets(campaign_id:UUID|None=None,ctx=Depends(s.access)):
+def list_assets(campaign_id:UUID|None=None,scope:str='library',ctx=Depends(s.access)):
+    if scope not in ('library','posts'): raise HTTPException(422,'Choose library or posts media.')
     with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:
         if campaign_id: s.owned(cur,'marketing_campaigns',campaign_id,ctx['tenant']['id'])
         from app.video.service import hydrate
         return [hydrate(a) for a in s.rows(cur,'''SELECT * FROM social_media_assets WHERE tenant_id=%s AND
-        ((%s::uuid IS NULL AND campaign_id IS NULL AND source_type IN ('publisher_asset','generated_derivative')) OR campaign_id=%s) ORDER BY created_at DESC''',(ctx['tenant']['id'],campaign_id,campaign_id))]
+        library_visible=%s AND ((%s::uuid IS NULL AND campaign_id IS NULL AND source_type IN ('publisher_asset','generated_derivative')) OR campaign_id=%s) ORDER BY created_at DESC''',(ctx['tenant']['id'],scope=='library',campaign_id,campaign_id))]
 
 @router.post('/assets/upload')
 async def upload(file:UploadFile=File(...),campaign_id:UUID|None=Form(None),category:str=Form('general'),ctx=Depends(s.access)):
@@ -204,14 +205,26 @@ def clear_storage(confirmation:str='',ctx=Depends(s.admin)):
     return {'deleted':deleted,'protected':protected,'failed':failed,**storage.usage(ctx)}
 
 @router.delete('/assets/{asset_id}')
-def delete_asset(asset_id:UUID,ctx=Depends(s.admin)):
+def delete_asset(asset_id:UUID,confirmation:str|None=None,ctx=Depends(s.admin)):
+    from . import asset_removal
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        return asset_removal.remove(cur,ctx,asset_id,confirmation)
+
+@router.get('/assets/{asset_id}/deletion')
+def asset_deletion_preview(asset_id:UUID,ctx=Depends(s.admin)):
+    from . import asset_removal
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        return asset_removal.preview(cur,ctx,asset_id)
+
+@router.post('/assets/{asset_id}/library')
+def restore_library_asset(asset_id:UUID,visible:bool=True,ctx=Depends(s.access)):
     from . import storage
     with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
-        storage.lock(cur,ctx)
-        a=s.owned(cur,'social_media_assets',asset_id,ctx['tenant']['id'])
-        if a['source_type']=='title_public_asset': raise HTTPException(403,'Title assets cannot be deleted from Marketing.')
-        if a['s3_bucket']!=assets.bucket(): raise HTTPException(409,'This asset belongs to a different storage bucket.')
-        return storage.delete_key(cur,ctx,a['s3_key'])
+        storage.lock(cur,ctx);s.owned(cur,'social_media_assets',asset_id,ctx['tenant']['id'])
+        if not visible and not s.one(cur,'SELECT id FROM social_post_assets WHERE tenant_id=%s AND asset_id=%s LIMIT 1',(ctx['tenant']['id'],asset_id)):
+            raise HTTPException(422,'Only media attached to a post can move to Post media.')
+        cur.execute('UPDATE social_media_assets SET library_visible=%s WHERE id=%s AND tenant_id=%s',(visible,asset_id,ctx['tenant']['id']))
+        return {'ok':True}
 
 @router.get('/social/accounts')
 def accounts(ctx=Depends(s.access)):
