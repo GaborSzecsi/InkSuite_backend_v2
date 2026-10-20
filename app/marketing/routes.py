@@ -122,6 +122,19 @@ def save_post(body:schemas.Post,post_id:UUID|None=None,ctx=Depends(s.access)):
     with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
         return s.save_post(cur,body,ctx,post_id)
 
+@router.delete('/social/posts/{post_id}')
+def delete_draft(post_id:UUID,ctx=Depends(s.access)):
+    from . import storage
+    tenant=ctx['tenant']['id']
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        storage.lock(cur,ctx)
+        post=s.owned(cur,'social_posts',post_id,tenant,True)
+        if post['status']!='draft': raise HTTPException(409,'Only drafts can be deleted.')
+        cur.execute('DELETE FROM social_publish_jobs WHERE tenant_id=%s AND post_target_id IN (SELECT id FROM social_post_targets WHERE post_id=%s AND tenant_id=%s)',(tenant,post_id,tenant))
+        cur.execute('DELETE FROM social_posts WHERE id=%s AND tenant_id=%s',(post_id,tenant))
+        s.audit(cur,ctx,post_id,'draft_deleted')
+        return {'deleted':str(post_id)}
+
 @router.get('/social/posts/{post_id}')
 def post(post_id:UUID,ctx=Depends(s.access)):
     with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:

@@ -47,3 +47,22 @@ def test_book_search_matches_contributor_names_with_tenant_scope(monkeypatch):
     assert 'w.title ILIKE %s OR names.author ILIKE %s' in query
     assert 'wc.tenant_id=w.tenant_id' in query and 'p.tenant_id=wc.tenant_id' in query
     assert args==('tenant','%Writer%','%Writer%')
+
+def test_delete_draft_preserves_uploaded_assets(monkeypatch):
+    cur=database(monkeypatch)
+    monkeypatch.setattr(routes.s,'owned',Mock(return_value={'status':'draft'}))
+    monkeypatch.setattr(routes.s,'audit',Mock())
+    post=uuid4();tenant=uuid4()
+    assert routes.delete_draft(post,{'tenant':{'id':tenant}})=={'deleted':str(post)}
+    statements=[call.args[0] for call in cur.execute.call_args_list]
+    assert any('DELETE FROM social_posts' in query for query in statements)
+    assert not any('DELETE FROM social_media_assets' in query for query in statements)
+
+
+@pytest.mark.parametrize('status',['scheduled','published','partially_published','failed','cancelled'])
+def test_delete_draft_rejects_other_statuses(monkeypatch,status):
+    cur=database(monkeypatch)
+    monkeypatch.setattr(routes.s,'owned',Mock(return_value={'status':status}))
+    with pytest.raises(HTTPException) as raised: routes.delete_draft(uuid4(),{'tenant':{'id':uuid4()}})
+    assert raised.value.status_code==409
+    assert not any('DELETE' in call.args[0] for call in cur.execute.call_args_list)
