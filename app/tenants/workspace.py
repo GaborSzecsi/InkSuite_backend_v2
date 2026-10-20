@@ -89,7 +89,9 @@ def select_workspace(request, claims):
 def enforce_legacy_boundary(path, selected):
     # These handlers still use process-wide files/indexes. Do not expose those
     # files to a new tenant while their storage migration is being completed.
-    shared = ('/api/books', '/api/contracts', '/api/ingest', '/api/royalty/statements', '/api/royalty/render')
+    # Contracts now use tenant-scoped PostgreSQL records and S3 prefixes.
+    # Authentication and workspace membership still apply before dispatch.
+    shared = ('/api/books', '/api/ingest', '/api/royalty/statements', '/api/royalty/render')
     if selected.slug != 'marble-press' and (
         any(path == p or path.startswith(p + '/') for p in shared)
         or path in ('/api/financials/upload', '/api/financials/uploads')

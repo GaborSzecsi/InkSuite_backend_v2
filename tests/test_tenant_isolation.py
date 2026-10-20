@@ -107,10 +107,25 @@ class TenantBoundaryTests(unittest.TestCase):
         self.assertEqual(self.entered, [])
 
     def test_shared_legacy_files_are_not_available_to_new_tenants(self):
-        for path in ['/api/contracts/templates', '/api/contracts/drafts', '/api/books', '/api/financials/uploads', '/api/financials/upload', '/api/royalty/statements/author/Test', '/api/royalty/render']:
+        for path in ['/api/books', '/api/financials/uploads', '/api/financials/upload', '/api/royalty/statements/author/Test', '/api/royalty/render']:
             response = self.client.get(path, headers=self.headers())
             self.assertEqual(response.status_code, 409, response.text)
         self.assertEqual(self.entered, [])
+
+    def test_migrated_contract_routes_use_authenticated_workspace(self):
+        paths = ['/api/contracts/templates', '/api/contracts/drafts',
+                 '/api/contracts/dealmemos', '/api/contracts/draft-contracts',
+                 '/api/contracts/generate']
+        for path in paths:
+            for method in ['GET', 'POST']:
+                with self.subTest(path=path, method=method):
+                    response = self.client.request(method, path, headers=self.headers())
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()['tenant_id'], 'tenant-b')
+                    self.assertEqual(response.json()['query'], 'inksuite-demo')
+                    self.assertEqual(self.client.request(method, path).status_code, 401)
+                    self.assertEqual(self.client.request(method, path, headers=self.headers('unknown')).status_code, 403)
+                    self.assertEqual(self.client.request(method, path+'?tenant_slug=marble-press', headers=self.headers()).status_code, 403)
 
     def test_recipient_token_exceptions_are_exact_and_method_specific(self):
         for method, path in [('GET', 'request'), ('POST', 'otp'), ('POST', 'verify'), ('PUT', 'bank-account')]:
@@ -175,12 +190,12 @@ class ContractStorageTests(unittest.TestCase):
         from typing import List
         from app.tenants import contract_storage as storage
         tree = ast.parse((ROOT / 'routers/contract_docs.py').read_text(encoding='utf-8-sig'))
-        names = {'draft_index_key', 'draft_index_path', '_load_index', '_save_index'}
+        names = {'draft_index_key', 'draft_index_path', '_load_index', '_save_index', '_read_cloud_index'}
         nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
         objects = {}
         def put(key, data, **kwargs):
             objects[key] = data
-        namespace = {'List': List, 'json': json, '_S3_AVAILABLE': True, 'draft_prefix': storage.draft_prefix,
+        namespace = {'List': List, 'json': json, 'HTTPException': HTTPException, 'storage_client': lambda: type('Client', (), {'exceptions': type('Exceptions', (), {'NoSuchKey': KeyError})})(), '_S3_AVAILABLE': True, 'draft_prefix': storage.draft_prefix,
                      'draft_directory': storage.draft_directory, 'get_bytes': lambda key: objects[key], 'put_bytes': put}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), 'contract_docs.py', 'exec'), namespace)
         namespace['_save_index']([{'id': 'same-id', 'title': 'Demo contract'}])
