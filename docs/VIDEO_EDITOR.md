@@ -57,7 +57,7 @@ Merge deploy/video-private-policy-statement.json into the existing bucket policy
 
 ## Validation and limits
 
-Final focused suite: 34 backend tests and 6 frontend tests passed. The modified video/marketing/proxy files have no TypeScript errors; the broader repository still has existing unrelated type errors.
+Final focused suite including cleanup: 47 backend tests and 8 frontend tests passed. The modified video/marketing/proxy files have no TypeScript errors; the broader repository still has existing unrelated type errors.
 
 
 Automated tests cover generic schema, invalid timing/types, tenant isolation, revision conflicts, animation/keyframe evaluation, split timing, undo/redo, snapping, export resolutions, H.264/AAC streams, image-only export, audio mixing and cancellation. PostgreSQL transaction QA exercised create/save/reopen/list/duplicate/delete, revision conflicts, queueing and cancellation, then rolled all test data back. A real worker/S3 test created an encrypted MP4 in the existing asset system and verified signed download; it discovered the anonymous access issue above, so the run is not reported as a privacy pass.
@@ -65,3 +65,29 @@ Automated tests cover generic schema, invalid timing/types, tenant isolation, re
 Browser QA exercised the actual editor component with synthetic media and a test-only API adapter: text editing, aspect ratio change, save, frame stepping and splitting. The temporary QA route and media fixtures were removed. No authentication was bypassed on real app routes.
 
 Browser preview uses Canvas and native media elements; final rendering uses Pillow/FFmpeg. Timing equations, project format and font files match, but antialiasing, font metrics and color-filter implementations can differ slightly between browser and export. V1 does not claim pixel-identical rendering. The encoded export is authoritative. Large/high-layer projects can preview below 30 fps on slower tablets. There is no supplied commercial music catalog, advanced color grading, stabilization, real-time collaboration, mobile UI, AI editing, or AI generation. Saved branding/template projects replace a separate brand-management UI in this version.
+## Optional cleanup after export
+
+After a successful composition export, **Keep finished video only…** opens a review dialog. Keeping the editable project remains the default. The dialog lists each file, its size, and whether it will be deleted or kept, and includes a final-video preview. Nothing is deleted merely by exporting, downloading, or using a video in a social post.
+
+By default, cleanup deletes only media explicitly imported into that project from inside the editor, along with the editable project. A separate unchecked option, **Also remove unused original uploads from Assets**, includes exclusive original library inputs such as a video originally dropped onto Assets. Book assets, campaign library assets, licensed music, finished exports, sources owned by other projects, and files referenced by any social post or another active project/render remain protected.
+
+Cleanup requires a completed export of the current project revision, no active exports for that project, a current server-generated confirmation token, and a nonempty finished object verified in S3. Tenant administrators perform deletion, matching existing asset-deletion permissions. The backend recomputes the plan and rechecks references before each file deletion. Failed removals are reported; remaining files can be reviewed in Assets. The completed video remains a normal reusable asset. Re-editing it later starts a new edit from the flattened video, rather than recovering the removed layers.
+
+Migration **039_video_project_cleanup.sql** adds working-project ownership and a durable finished-video marker to existing video asset metadata. The worker marks new composition exports as finished and associates normalization copies with the project that requested them. Existing legacy prepared assets are conservatively retained. Editor uploads without a reliable ownership marker are kept by default and require the explicit original-upload option.
+
+Deploy backend, worker, and frontend together after applying migration 039. In an existing psql session connected to the `inksuite` database:
+
+```sql
+\i /home/ubuntu/inksuite/app/migrations/039_video_project_cleanup.sql
+```
+
+Then restart both services after pulling the code:
+
+```bash
+sudo systemctl restart inksuite-api inksuite-video-worker
+sudo systemctl status inksuite-api inksuite-video-worker --no-pager -l
+```
+
+Migration 039 was validated twice inside a rolled-back transaction, and cleanup endpoints were exercised against PostgreSQL with synthetic records and mocked S3 operations. No actual customer objects or projects were removed. The migration has **not** been permanently applied, and this cleanup feature has **not** been deployed.
+
+Cleanup validation: 47 focused backend tests and 8 frontend tests passed. Browser QA verified the review dialog and completed cleanup flow with a test-only API adapter. The temporary QA route was removed.

@@ -62,7 +62,7 @@ def tick(job_id=None):
                 if current['cancel_requested'] or current['status']!='running': raise Cancelled()
                 export_name=(next(iter(media.values()))['filename']+' · Editing copy') if normalizing else job['project_name']+' · Export'
                 asset=s.one(cur,'''INSERT INTO social_media_assets(id,tenant_id,source_type,s3_bucket,s3_key,public_url,filename,display_name,mime_type,media_type,width,height,duration_seconds,filesize_bytes,created_by) VALUES(%s,%s,'generated_derivative',%s,%s,'',%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *''',(identity,job['tenant_id'],assets.bucket(),key,f"{identity}.{'mp4' if kind=='video' else 'm4a'}",export_name,'video/mp4' if kind=='video' else 'audio/mp4',kind,video.get('width'),video.get('height'),float(info['format']['duration']),output.stat().st_size,job['created_by']))
-                cur.execute('INSERT INTO video_asset_metadata(asset_id,tenant_id,project_id,codec_info) VALUES(%s,%s,%s,%s)',(identity,job['tenant_id'],job['project_id'],Jsonb(info)))
+                cur.execute('INSERT INTO video_asset_metadata(asset_id,tenant_id,project_id,codec_info,working_project_id,is_finished_video) VALUES(%s,%s,%s,%s,%s,%s)',(identity,job['tenant_id'],None if normalizing else job['project_id'],Jsonb(info),job['project_id'] if normalizing else None,not normalizing))
                 cur.execute("UPDATE video_render_jobs SET status='completed',progress=100,output_asset_id=%s,completed_at=now(),heartbeat_at=now() WHERE id=%s AND tenant_id=%s",(identity,job['id'],job['tenant_id']))
                 s.audit(cur,ctx,job['project_id'] or job['normalize_asset_id'],'video_export_completed',{'asset_id':str(identity),'revision':job['project_revision']})
             key=None

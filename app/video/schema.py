@@ -116,3 +116,9 @@ class MusicLicense(Model):
     attribution:str=Field('',max_length=2000)
     permitted_usage:str=Field(min_length=1,max_length=2000)
     approved:bool=False
+
+class CleanupRequest(Model):
+    render_id:UUID
+    revision:int=Field(ge=1)
+    include_originals:bool=False
+    confirmation:str=Field(pattern=r'^[a-f0-9]{64}$')

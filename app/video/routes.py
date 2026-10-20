@@ -11,7 +11,7 @@ from app.marketing import service as s,assets
 from app.marketing.storage import lock
 from app.marketing.domain import tenant_root
 from . import service as v
-from .schema import ProjectSave,Document,RenderRequest,MusicLicense
+from .schema import ProjectSave,Document,RenderRequest,MusicLicense,CleanupRequest
 from .render import probe,FONT
 from .privacy import ensure_private_storage
 
@@ -61,7 +61,7 @@ def media(ctx=Depends(s.access)):
         return [v.hydrate(a) for a in items]
 
 @router.post('/media')
-async def upload(file:UploadFile=File(...),ctx=Depends(s.access)):
+async def upload(file:UploadFile=File(...),project_id:UUID|None=Form(None),ctx=Depends(s.access)):
     try: ensure_private_storage(ctx)
     except ValueError as error: raise HTTPException(503,str(error)) from None
     data=await file.read(500*1024*1024+1)
@@ -85,11 +85,13 @@ async def upload(file:UploadFile=File(...),ctx=Depends(s.access)):
             mime,kind,w,h='audio/'+('mpeg' if audio['codec_name']=='mp3' else 'wav' if audio['codec_name'].startswith('pcm_') else 'mp4' if audio['codec_name']=='aac' else 'ogg'),'audio',None,None
         else: raise HTTPException(422,'No compatible audio or video stream found.')
     with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
-        lock(cur,ctx);identity=s.uid();key=v.private_key(ctx['tenant']['slug'],tenant_root(ctx['tenant']['slug'])+f'assets/marketing/private/video/originals/{identity}/{filename}')
+        lock(cur,ctx)
+        if project_id: v.project(cur,project_id,ctx['tenant']['id'],True)
+        identity=s.uid();key=v.private_key(ctx['tenant']['slug'],tenant_root(ctx['tenant']['slug'])+f'assets/marketing/private/video/originals/{identity}/{filename}')
         assets.s3().put_object(Bucket=assets.bucket(),Key=key,Body=data,ContentType=mime,ServerSideEncryption='AES256')
         try:
             a=s.one(cur,'''INSERT INTO social_media_assets(id,tenant_id,source_type,s3_bucket,s3_key,public_url,filename,mime_type,media_type,width,height,duration_seconds,filesize_bytes,created_by) VALUES(%s,%s,'publisher_asset',%s,%s,'',%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *''',(identity,ctx['tenant']['id'],assets.bucket(),key,filename,mime,kind,w,h,duration,len(data),ctx['user']['id']))
-            cur.execute('INSERT INTO video_asset_metadata(asset_id,tenant_id,codec_info) VALUES(%s,%s,%s)',(identity,ctx['tenant']['id'],Jsonb(info)))
+            cur.execute('INSERT INTO video_asset_metadata(asset_id,tenant_id,codec_info,working_project_id) VALUES(%s,%s,%s,%s)',(identity,ctx['tenant']['id'],Jsonb(info),project_id))
             return v.hydrate(a)
         except Exception: assets.s3().delete_object(Bucket=assets.bucket(),Key=key);raise
 
@@ -131,16 +133,58 @@ def cancel(identity:UUID,ctx=Depends(s.access)):
 def recent_renders(identity:UUID,ctx=Depends(s.access)):
     with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:
         v.project(cur,identity,ctx['tenant']['id'])
-        jobs=s.rows(cur,'SELECT id,status,progress,error,output_asset_id FROM video_render_jobs WHERE project_id=%s AND tenant_id=%s ORDER BY created_at DESC LIMIT 10',(identity,ctx['tenant']['id']))
+        jobs=s.rows(cur,'SELECT id,job_kind,project_revision,status,progress,error,output_asset_id FROM video_render_jobs WHERE project_id=%s AND tenant_id=%s ORDER BY created_at DESC LIMIT 10',(identity,ctx['tenant']['id']))
         for job in jobs:
             if job['output_asset_id']: job['asset']=v.hydrate(s.owned(cur,'social_media_assets',job['output_asset_id'],ctx['tenant']['id']))
         return jobs
 
 @router.post('/media/{identity}/normalize')
-def normalize(identity:UUID,ctx=Depends(s.access)):
+def normalize(identity:UUID,project_id:UUID|None=None,ctx=Depends(s.access)):
     with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
         lock(cur,ctx);a=v.validate_asset(cur,ctx,identity)
+        if project_id: v.project(cur,project_id,ctx['tenant']['id'])
         if a['media_type'] not in ('video','audio'): raise HTTPException(422,'Select video or audio media.')
         if float(a.get('duration_seconds') or 0)>300: raise HTTPException(422,'Editing copies are limited to five minutes. Trim this longer source in a project before exporting it.')
         if s.one(cur,"SELECT count(*) AS n FROM video_render_jobs WHERE tenant_id=%s AND status IN ('queued','running')",(ctx['tenant']['id'],))['n']>=2: raise HTTPException(409,'Two exports are already queued or running.')
-        return s.one(cur,"INSERT INTO video_render_jobs(id,tenant_id,project_revision,document,resolution,created_by,normalize_asset_id,job_kind) VALUES(%s,%s,0,'{}',1080,%s,%s,'normalize') RETURNING *",(s.uid(),ctx['tenant']['id'],ctx['user']['id'],identity))
+        return s.one(cur,"INSERT INTO video_render_jobs(id,tenant_id,project_revision,document,resolution,created_by,normalize_asset_id,job_kind,project_id) VALUES(%s,%s,0,'{}',1080,%s,%s,'normalize',%s) RETURNING *",(s.uid(),ctx['tenant']['id'],ctx['user']['id'],identity,project_id))
+
+
+@router.get('/projects/{identity}/cleanup')
+def cleanup_preview(identity:UUID,render_id:UUID,include_originals:bool=False,ctx=Depends(s.admin)):
+    from .cleanup import preview
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        lock(cur,ctx)
+        return preview(cur,ctx,identity,render_id,include_originals)
+
+
+@router.post('/projects/{identity}/cleanup')
+def cleanup_project(identity:UUID,body:CleanupRequest,ctx=Depends(s.admin)):
+    from .cleanup import preview,protected_reason
+    from app.marketing import storage
+    tenant=ctx['tenant']['id']
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        lock(cur,ctx);plan=preview(cur,ctx,identity,body.render_id,body.include_originals)
+        if plan['revision']!=body.revision or plan['confirmation']!=body.confirmation: raise HTTPException(409,'The cleanup list changed. Review it again before deleting anything.')
+        output=v.validate_asset(cur,ctx,plan['output_asset_id'])
+        try: head=assets.s3().head_object(Bucket=output['s3_bucket'],Key=output['s3_key'])
+        except Exception: raise HTTPException(409,'The finished video could not be verified in storage. The editable project has been kept.') from None
+        if not head.get('ContentLength'): raise HTTPException(409,'The finished video is empty. The editable project has been kept.')
+        cur.execute('DELETE FROM video_render_jobs WHERE project_id=%s AND tenant_id=%s',(identity,tenant))
+        cur.execute('DELETE FROM video_projects WHERE id=%s AND tenant_id=%s',(identity,tenant))
+        s.audit(cur,ctx,identity,'video_project_finished_only',{'output_asset_id':plan['output_asset_id'],'candidates':[f['id'] for f in plan['files'] if f['delete']]})
+    deleted=[];kept=[f for f in plan['files'] if not f['delete']];failed=[]
+    for item in plan['files']:
+        if not item['delete']: continue
+        try:
+            with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+                lock(cur,ctx)
+                a=s.one(cur,'''SELECT a.*,m.music_license,m.project_id,m.working_project_id,m.is_finished_video FROM social_media_assets a LEFT JOIN video_asset_metadata m ON m.asset_id=a.id AND m.tenant_id=a.tenant_id WHERE a.id=%s AND a.tenant_id=%s FOR UPDATE OF a''',(item['id'],tenant))
+                if not a: kept.append({**item,'reason':'Already removed'});continue
+                reason=protected_reason(cur,tenant,a,identity)
+                if reason: kept.append({**item,'reason':reason});continue
+                v.validate_asset(cur,ctx,a['id'])
+                storage.delete_key(cur,ctx,a['s3_key'])
+            deleted.append(item)
+        except Exception:
+            failed.append({**item,'reason':'Could not complete cleanup. Review this file in Assets.'})
+    return {'project_deleted':True,'output_asset_id':plan['output_asset_id'],'deleted':deleted,'kept':kept,'failed':failed}

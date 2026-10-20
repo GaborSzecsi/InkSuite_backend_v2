@@ -4,9 +4,9 @@ After=network.target
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/InkSuite_backend_v2
-EnvironmentFile=/home/ubuntu/InkSuite_backend_v2/.env
-ExecStart=/home/ubuntu/InkSuite_backend_v2/.venv/bin/python -m app.video.worker
+WorkingDirectory=/home/ubuntu/inksuite/app
+EnvironmentFile=/etc/inksuite-api.env
+ExecStart=/home/ubuntu/inksuite/app/.venv/bin/python -m app.video.worker
 Restart=on-failure
 RestartSec=5
 MemoryMax=3G
