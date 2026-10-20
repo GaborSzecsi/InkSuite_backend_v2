@@ -57,7 +57,12 @@ def summary(zone:str='UTC',ctx=Depends(s.access)):
 @router.get('/works')
 def works(q:str='',ctx=Depends(s.access)):
     with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:
-        return s.rows(cur,'SELECT id,uid,title FROM works WHERE tenant_id=%s AND title ILIKE %s ORDER BY title LIMIT 100',(ctx['tenant']['id'],'%'+q+'%'))
+        return s.rows(cur,'''SELECT w.id,w.uid,w.title,COALESCE(names.author,'') AS author FROM works w
+        LEFT JOIN LATERAL (SELECT string_agg(DISTINCT p.display_name, ', ') AS author
+          FROM work_contributors wc JOIN parties p ON p.id=wc.party_id AND p.tenant_id=wc.tenant_id
+          WHERE wc.work_id=w.id AND wc.tenant_id=w.tenant_id) names ON true
+        WHERE w.tenant_id=%s AND (w.title ILIKE %s OR names.author ILIKE %s)
+        ORDER BY w.title LIMIT 100''',(ctx['tenant']['id'],'%'+q+'%','%'+q+'%'))
 
 @router.get('/campaigns')
 def campaigns(q:str='',work_id:UUID|None=None,ctx=Depends(s.access)):
@@ -81,6 +86,18 @@ def save_campaign(body:schemas.Campaign,campaign_id:UUID|None=None,ctx=Depends(s
         for w in set(body.work_ids): cur.execute('INSERT INTO marketing_campaign_works(id,tenant_id,campaign_id,work_id) VALUES(%s,%s,%s,%s)',(s.uid(),tenant,campaign_id,w))
         s.audit(cur,ctx,campaign_id,'campaign_saved')
         return s.campaign_view(cur,s.owned(cur,'marketing_campaigns',campaign_id,tenant))
+
+@router.delete('/campaigns/{campaign_id}')
+def delete_campaign(campaign_id:UUID,ctx=Depends(s.access)):
+    tenant=ctx['tenant']['id']
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        s.owned(cur,'marketing_campaigns',campaign_id,tenant,True)
+        # Keep posts, publication history, and media when removing their campaign.
+        cur.execute('UPDATE social_posts SET campaign_id=NULL,updated_at=now() WHERE campaign_id=%s AND tenant_id=%s',(campaign_id,tenant))
+        cur.execute('UPDATE social_media_assets SET campaign_id=NULL WHERE campaign_id=%s AND tenant_id=%s',(campaign_id,tenant))
+        cur.execute('DELETE FROM marketing_campaigns WHERE id=%s AND tenant_id=%s',(campaign_id,tenant))
+        s.audit(cur,ctx,campaign_id,'campaign_deleted')
+        return {'deleted':str(campaign_id)}
 
 @router.get('/campaigns/{campaign_id}')
 def campaign(campaign_id:UUID,ctx=Depends(s.access)):
