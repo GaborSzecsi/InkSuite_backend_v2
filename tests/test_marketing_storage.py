@@ -10,7 +10,7 @@ def test_inventory_is_marketing_only(monkeypatch,ctx):
     client=Mock();client.get_paginator.return_value.paginate.return_value=[{'Contents':[{'Key':'tenants/marble/assets/marketing/public/a','Size':20}]}]
     monkeypatch.setattr(assets,'s3',lambda:client)
     assert storage.usage(ctx)['used_bytes']==20
-    assert client.get_paginator.return_value.paginate.call_args.kwargs['Prefix']=='tenants/marble/assets/marketing/public/'
+    assert [c.kwargs['Prefix'] for c in client.get_paginator.return_value.paginate.call_args_list]==['tenants/marble/assets/marketing/public/','tenants/marble/assets/marketing/private/video/']
 
 def test_unlimited_upload_does_not_scan_storage(monkeypatch,ctx):
     cur=Mock()
@@ -35,7 +35,7 @@ def test_active_post_protects_file(monkeypatch,ctx):
 
 def test_old_asset_deleted_without_deleting_derivatives(monkeypatch,ctx):
     client=Mock();cur=Mock();monkeypatch.setattr(assets,'s3',lambda:client)
-    monkeypatch.setattr(storage.s,'one',Mock(side_effect=[{'id':'asset','source_type':'publisher_asset'},None]))
+    monkeypatch.setattr(storage.s,'one',Mock(side_effect=[{'id':'asset','source_type':'publisher_asset'},None,None]))
     key='tenants/marble/assets/marketing/public/a'
     storage.delete_key(cur,ctx,key)
     assert client.delete_object.call_args.kwargs['Key']==key

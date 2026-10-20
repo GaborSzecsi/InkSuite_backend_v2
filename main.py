@@ -404,3 +404,6 @@ async def meetings_provider_error(request, exc):
 # Marketplace migrations are applied manually, never during startup.
 from app.marketplace.routes import router as marketplace_router
 app.include_router(marketplace_router, prefix='/api')
+
+from app.video.routes import router as video_editor_router
+app.include_router(video_editor_router, prefix="/api")

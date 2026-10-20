@@ -1,5 +1,6 @@
 """Tenant-scoped Marketing storage accounting and deletion."""
 from fastapi import HTTPException
+from psycopg.types.json import Jsonb
 from . import service as s
 from .domain import tenant_root, public_key
 
@@ -12,9 +13,9 @@ def lock(cur, ctx):
 
 def inventory(ctx):
     from .assets import s3, bucket
-    prefix=tenant_root(ctx['tenant']['slug'])+'assets/marketing/public/'
-    return [item for page in s3().get_paginator('list_objects_v2').paginate(Bucket=bucket(),Prefix=prefix)
-            for item in page.get('Contents',[]) if not item['Key'].endswith('/')]
+    prefixes=[tenant_root(ctx['tenant']['slug'])+'assets/marketing/'+folder for folder in ('public/','private/video/')]
+    return [item for prefix in prefixes for page in s3().get_paginator('list_objects_v2').paginate(Bucket=bucket(),Prefix=prefix)
+            for item in page.get('Contents',[]) if item['Key'].startswith(prefix) and not item['Key'].endswith('/')]
 
 
 def usage(ctx):
@@ -29,7 +30,10 @@ def require_space(cur,ctx,size):
 def delete_key(cur,ctx,key):
     from .assets import s3,bucket
     lock(cur,ctx)
-    public_key(ctx['tenant']['slug'],key)
+    if '/assets/marketing/private/video/' in key:
+        from app.video.service import private_key
+        private_key(ctx['tenant']['slug'],key)
+    else: public_key(ctx['tenant']['slug'],key)
     asset=s.one(cur,'SELECT * FROM social_media_assets WHERE tenant_id=%s AND s3_bucket=%s AND s3_key=%s FOR UPDATE',
         (ctx['tenant']['id'],bucket(),key))
     if asset:
@@ -38,6 +42,8 @@ def delete_key(cur,ctx,key):
             ON p.id=pa.post_id AND p.tenant_id=pa.tenant_id WHERE pa.asset_id=%s AND pa.tenant_id=%s
             AND p.status NOT IN ('published','cancelled') LIMIT 1""",(asset['id'],ctx['tenant']['id'])):
             raise HTTPException(409,'This file is used by a draft, scheduled or unfinished post. Remove it from the draft or cancel the post first.')
+        if s.one(cur,"SELECT id FROM video_projects WHERE tenant_id=%s AND (source_asset_id=%s OR document->'clips' @> %s::jsonb OR document->'canvas'->>'background_asset_id'=%s) UNION ALL SELECT id FROM video_render_jobs WHERE tenant_id=%s AND status IN ('queued','running') AND (normalize_asset_id=%s OR document->'clips' @> %s::jsonb OR document->'canvas'->>'background_asset_id'=%s) LIMIT 1",(ctx['tenant']['id'],asset['id'],Jsonb([{'asset_id':str(asset['id'])}]),str(asset['id']),ctx['tenant']['id'],asset['id'],Jsonb([{'asset_id':str(asset['id'])}]),str(asset['id']))):
+            raise HTTPException(409,'This file is used by an editable video project. Remove it from the project or delete the project first.')
     # Remove only this exact object. Never delete the tenant root or title folder.
     s3().delete_object(Bucket=bucket(),Key=key)
     if asset:

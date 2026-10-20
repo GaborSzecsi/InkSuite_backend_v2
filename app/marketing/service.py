@@ -46,6 +46,8 @@ def post_view(cur, post):
     post['targets']=rows(cur, '''SELECT t.id,t.social_account_id,t.provider,t.provider_payload,t.provider_status,t.provider_post_url,t.last_error_code,t.last_error_message,t.attempt_count,a.display_name FROM social_post_targets t JOIN social_accounts a ON a.id=t.social_account_id AND a.tenant_id=t.tenant_id WHERE t.post_id=%s AND t.tenant_id=%s ORDER BY t.created_at''',args)
     post['works']=rows(cur,'''SELECT w.id,w.uid,w.title FROM social_post_works pw JOIN works w ON w.id=pw.work_id AND w.tenant_id=pw.tenant_id WHERE pw.post_id=%s AND pw.tenant_id=%s''',args)
     post['assets']=rows(cur,'''SELECT a.*,pa.role FROM social_post_assets pa JOIN social_media_assets a ON a.id=pa.asset_id AND a.tenant_id=pa.tenant_id WHERE pa.post_id=%s AND pa.tenant_id=%s ORDER BY pa.sort_order''',args)
+    from app.video.service import hydrate
+    post['assets']=[hydrate(a) for a in post['assets']]
     return post
 
 def save_post(cur, body, ctx, post_id=None):

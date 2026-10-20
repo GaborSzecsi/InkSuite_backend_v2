@@ -160,8 +160,9 @@ def reference(body:schemas.AssetReference,ctx=Depends(s.access)):
 def list_assets(campaign_id:UUID|None=None,ctx=Depends(s.access)):
     with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:
         if campaign_id: s.owned(cur,'marketing_campaigns',campaign_id,ctx['tenant']['id'])
-        return s.rows(cur,'''SELECT * FROM social_media_assets WHERE tenant_id=%s AND
-        ((%s::uuid IS NULL AND campaign_id IS NULL AND source_type IN ('publisher_asset','generated_derivative')) OR campaign_id=%s) ORDER BY created_at DESC''',(ctx['tenant']['id'],campaign_id,campaign_id))
+        from app.video.service import hydrate
+        return [hydrate(a) for a in s.rows(cur,'''SELECT * FROM social_media_assets WHERE tenant_id=%s AND
+        ((%s::uuid IS NULL AND campaign_id IS NULL AND source_type IN ('publisher_asset','generated_derivative')) OR campaign_id=%s) ORDER BY created_at DESC''',(ctx['tenant']['id'],campaign_id,campaign_id))]
 
 @router.post('/assets/upload')
 async def upload(file:UploadFile=File(...),campaign_id:UUID|None=Form(None),category:str=Form('general'),ctx=Depends(s.access)):

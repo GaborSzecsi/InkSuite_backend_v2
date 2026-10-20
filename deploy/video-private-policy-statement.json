@@ -1,0 +1,13 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyAnonymousPrivateVideoReads",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+      "Resource": "arn:aws:s3:::inksuite-data/tenants/*/assets/marketing/private/video/*",
+      "Condition": {"StringEquals": {"aws:PrincipalAccount": "anonymous"}}
+    }
+  ]
+}

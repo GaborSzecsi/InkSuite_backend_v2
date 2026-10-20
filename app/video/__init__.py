@@ -1,0 +1,1 @@
+"""InkSuite shared video platform."""

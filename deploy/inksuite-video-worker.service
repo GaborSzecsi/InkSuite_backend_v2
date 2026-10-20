@@ -1,0 +1,18 @@
+[Unit]
+Description=InkSuite video rendering worker
+After=network.target
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/InkSuite_backend_v2
+EnvironmentFile=/home/ubuntu/InkSuite_backend_v2/.env
+ExecStart=/home/ubuntu/InkSuite_backend_v2/.venv/bin/python -m app.video.worker
+Restart=on-failure
+RestartSec=5
+MemoryMax=3G
+TasksMax=64
+Nice=10
+PrivateTmp=true
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target
