@@ -171,6 +171,30 @@ async def upload(file:UploadFile=File(...),campaign_id:UUID|None=Form(None),cate
     with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
         return assets.upload(cur,ctx,file.filename or 'image',data,campaign_id,category)
 
+@router.post('/assets/uploads')
+def start_asset_upload(body:schemas.AssetUploadStart,ctx=Depends(s.access)):
+    from . import uploads
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        return uploads.initiate(cur,ctx,body)
+
+@router.post('/assets/uploads/{session_id}/part')
+def sign_asset_part(session_id:UUID,body:schemas.AssetUploadPart,ctx=Depends(s.access)):
+    from . import uploads
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        return uploads.sign_part(cur,ctx,session_id,body.part_number)
+
+@router.post('/assets/uploads/{session_id}/complete')
+def complete_asset_upload(session_id:UUID,ctx=Depends(s.access)):
+    from . import uploads
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        return uploads.complete(cur,ctx,session_id)
+
+@router.delete('/assets/uploads/{session_id}')
+def abort_asset_upload(session_id:UUID,ctx=Depends(s.access)):
+    from . import uploads
+    with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:
+        return uploads.abort(cur,ctx,session_id)
+
 @router.patch('/assets/{asset_id}')
 def metadata(asset_id:UUID,body:schemas.AssetMetadata,ctx=Depends(s.access)):
     with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur:

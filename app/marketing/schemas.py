@@ -77,3 +77,14 @@ class OAuthCallback(BaseModel):
 class OAuthSelection(BaseModel):
     selection_token: str = Field(min_length=1,max_length=2000000)
     account_ids: list[str] = Field(min_length=1,max_length=500)
+
+
+class AssetUploadStart(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    filesize_bytes: int = Field(gt=0, le=500*1024*1024)
+    campaign_id: UUID | None = None
+    category: Literal['logos','branding','holidays','seasonal','events','backgrounds','templates','general'] = 'general'
+
+
+class AssetUploadPart(BaseModel):
+    part_number: int = Field(ge=1, le=10000)

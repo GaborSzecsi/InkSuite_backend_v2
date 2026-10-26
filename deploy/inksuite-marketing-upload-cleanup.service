@@ -1,0 +1,11 @@
+[Unit]
+Description=Clean expired InkSuite Marketing upload sessions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/inksuite/app
+EnvironmentFile=/etc/inksuite-api.env
+ExecStart=/home/ubuntu/inksuite/app/.venv/bin/python -m app.marketing.uploads

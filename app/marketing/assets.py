@@ -12,14 +12,22 @@ def public_url(key):
     return f'https://{bucket()}.s3.{region}.amazonaws.com/{quote(key,safe="/")}'
 
 def inspect_media(data,filename):
+    # Keep the legacy endpoint while sharing the file-based validator.
     if len(data)>500*1024*1024: raise HTTPException(422,'Media exceeds the 500 MB upload limit.')
+    with tempfile.NamedTemporaryFile(suffix='.media',delete=False) as tmp:
+        tmp.write(data);path=tmp.name
+    try: return inspect_media_file(path,filename)
+    finally: os.unlink(path)
+
+
+def inspect_media_file(path,filename):
+    size=os.path.getsize(path)
+    if size>500*1024*1024: raise HTTPException(422,'Media exceeds the 500 MB upload limit.')
     guessed=mimetypes.guess_type(filename)[0] or ''
     if guessed.startswith('video/'):
-        path=None
         try:
-            with tempfile.NamedTemporaryFile(suffix='.media',delete=False) as tmp: tmp.write(data);path=tmp.name
             from .media_prepare import binary
-            result=subprocess.run([binary('ffprobe'),'-protocol_whitelist','file,pipe','-format_whitelist','mov,matroska,webm','-v','error','-show_streams','-show_format','-of','json',path],capture_output=True,text=True,timeout=40,check=True)
+            result=subprocess.run([binary('ffprobe'),'-protocol_whitelist','file,pipe','-format_whitelist','mov,matroska,webm','-v','error','-show_streams','-show_format','-of','json',str(path)],capture_output=True,text=True,timeout=40,check=True)
             info=json.loads(result.stdout);stream=next(x for x in info['streams'] if x.get('codec_type')=='video')
             duration=float(info['format'].get('duration') or stream.get('duration') or 0)
             if duration<=0: raise ValueError('Missing duration')
@@ -29,16 +37,15 @@ def inspect_media(data,filename):
             return mime,'video',stream['width'],stream['height'],duration
         except FileNotFoundError: raise HTTPException(422,'Configure FFPROBE_BINARY before adding video media.') from None
         except (ValueError,KeyError,StopIteration,subprocess.SubprocessError): raise HTTPException(422,'Use a valid MP4 or WebM video with a readable duration.') from None
-        finally:
-            if path: os.unlink(path)
-    if len(data)>25*1024*1024: raise HTTPException(422,'Image exceeds 25 MB.')
+    if size>25*1024*1024: raise HTTPException(422,'Image exceeds 25 MB.')
     try:
-        with Image.open(io.BytesIO(data)) as image: image.verify()
-        with Image.open(io.BytesIO(data)) as image:
+        with Image.open(path) as image: image.verify()
+        with Image.open(path) as image:
             mime=Image.MIME.get(image.format);width,height=image.size
         if mime not in ('image/jpeg','image/png','image/webp'): raise ValueError()
         return mime,'image',width,height,None
     except Exception: raise HTTPException(422,'Use a valid JPEG, PNG, WebP, MP4 or WebM file.') from None
+
 
 def discover(cur,ctx,work_id):
     work=s.owned(cur,'works',work_id,ctx['tenant']['id'])
