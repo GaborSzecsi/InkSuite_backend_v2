@@ -304,6 +304,24 @@ class PinterestPublisher(SocialPublisher):
         d=request('POST',pinterest_api_base() + '/v5/pins',token,json=body)
         pid=str(d['id']);return Result('published',{},pid,'https://www.pinterest.com/pin/'+pid+'/')
 
+def tiktok_upload_chunks(video_size: int) -> tuple[int, int]:
+    """Return FILE_UPLOAD chunk size/count; the last chunk absorbs trailing bytes.
+
+    https://developers.tiktok.com/docs/en/content-posting-api-media-transfer-guide
+    Use the whole file for single-chunk uploads. Multi-chunk counts are rounded
+    down, not up, so the final request contains the remainder as well.
+    """
+    if isinstance(video_size, bool) or not isinstance(video_size, int) or video_size <= 0:
+        raise ProviderError('validation','TikTok video size must be a positive integer.')
+    if video_size <= 64 * 1024 * 1024:
+        return video_size, 1
+    chunk_size = 10 * 1024 * 1024
+    count = video_size // chunk_size
+    if count > 1000:
+        raise ProviderError('validation','TikTok video requires too many upload chunks.')
+    return chunk_size, count
+
+
 class TikTokPublisher(SocialPublisher):
     provider='tiktok'
     base='https://open.tiktokapis.com/v2/post/publish/'
@@ -373,9 +391,8 @@ class TikTokPublisher(SocialPublisher):
             body={'post_info':info,'source_info':{'source':'PULL_FROM_URL','video_url':media[0]['public_url']}}
             prefixes=[x.strip() for x in os.getenv('MARKETING_TIKTOK_VERIFIED_URL_PREFIXES','').split(',') if x.strip()]
             if not any(media[0]['public_url'].startswith(prefix.rstrip('/')+'/') for prefix in prefixes):
-                total=media[0]['filesize_bytes'];chunk=min(total,10*1024*1024)
-                # Last chunk may be larger; avoid creating a tiny trailing chunk.
-                count=max(1,total//chunk)
+                total=media[0]['filesize_bytes']
+                chunk,count=tiktok_upload_chunks(total)
                 body['source_info']={'source':'FILE_UPLOAD','video_size':total,'chunk_size':chunk,'total_chunk_count':count}
         else:
             info.update(title=(opts.get('title') or p['title'])[:90],description=content(p,t))

@@ -154,7 +154,8 @@ def test_tiktok_video_upload_fallback(monkeypatch,post,target):
     adapter=TikTokPublisher();adapter.validate_post(post,target,video)
     result=adapter.advance({'tenant_id':'tenant'},'secret',post,target,video)
     assert calls[-1]['json']['source_info']['source']=='FILE_UPLOAD'
-    assert result.state['total_chunk_count']==2
+    assert result.state['total_chunk_count']==1
+    assert result.state['chunk_size']==video[0]['filesize_bytes']
     assert 'upload-secret' not in str(result.state)
 
 def test_expired_credentials_without_refresh(monkeypatch):
