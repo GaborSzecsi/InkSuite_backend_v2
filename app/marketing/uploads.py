@@ -104,14 +104,18 @@ def object_head(row):
 
 
 def assembled_object(row):
-    # A previous request may have completed S3 but lost its DB transaction/response.
-    head = object_head(row)
-    if head is None:
-        try:
-            parts = [part for page in client().get_paginator('list_parts').paginate(**arguments(row))
-                     for part in page.get('Parts', [])]
-        except client().exceptions.NoSuchUpload:
+    # Inspect the multipart upload first. Before completion there is no object
+    # to HEAD, and a restricted role gets 403 (not 404) for that missing key.
+    try:
+        parts = [part for page in client().get_paginator('list_parts').paginate(**arguments(row))
+                 for part in page.get('Parts', [])]
+    except client().exceptions.NoSuchUpload:
+        # S3 may have completed successfully before a lost DB transaction/response.
+        # Verify the assembled object instead of trying to complete it again.
+        head = object_head(row)
+        if head is None:
             raise HTTPException(409, 'Upload is missing. Choose the file again.') from None
+    else:
         expected = (row['filesize_bytes'] + row['part_size'] - 1) // row['part_size']
         if len(parts) != expected or any(
             part['PartNumber'] != number or part['Size'] != part_length(row, number)

@@ -99,12 +99,13 @@ def test_expired_session_cannot_sign(setup):
                                    [{'PartNumber': 2, 'Size': 12, 'ETag': 'x'}]])
 def test_wrong_or_missing_parts_never_complete(setup, parts):
     ctx, row, client, cur = setup
-    client.head_object.side_effect = ClientError({'ResponseMetadata': {'HTTPStatusCode': 404}}, 'HeadObject')
+    client.head_object.side_effect = ClientError({'ResponseMetadata': {'HTTPStatusCode': 403}}, 'HeadObject')
     client.get_paginator.return_value.paginate.return_value = [{'Parts': parts}]
     with pytest.raises(HTTPException) as error:
         u.assembled_object(row)
     assert error.value.status_code == 422
     client.complete_multipart_upload.assert_not_called()
+    client.head_object.assert_not_called()
 
 
 @pytest.mark.parametrize('already_assembled', [False, True])
@@ -115,11 +116,16 @@ def test_complete_inspects_then_publishes_and_is_retryable(setup, monkeypatch, a
     row['filesize_bytes'] = len(data.getvalue())
     head = {'ContentLength': row['filesize_bytes'], 'ETag': 'etag',
         'Metadata': {'upload-session': str(row['id'])}}
+    client.head_object.return_value = head
     if already_assembled:
-        client.head_object.return_value = head
+        client.get_paginator.return_value.paginate.side_effect = client.exceptions.NoSuchUpload()
     else:
-        client.head_object.side_effect = [ClientError({'ResponseMetadata': {'HTTPStatusCode': 404}}, 'HeadObject'), head]
         client.get_paginator.return_value.paginate.return_value = [{'Parts': [{'PartNumber': 1, 'Size': row['filesize_bytes'], 'ETag': 'part-etag'}]}]
+        def head_after_completion(**kwargs):
+            if not client.complete_multipart_upload.called:
+                raise ClientError({'ResponseMetadata': {'HTTPStatusCode': 403}}, 'HeadObject')
+            return head
+        client.head_object.side_effect = head_after_completion
     stream = io.BytesIO(data.getvalue())
     client.get_object.return_value = {'Body': stream}
     result = {'id': row['asset_id']}
@@ -142,6 +148,7 @@ def test_complete_inspects_then_publishes_and_is_retryable(setup, monkeypatch, a
 
 def test_invalid_media_never_published(setup):
     ctx, row, client, cur = setup
+    client.get_paginator.return_value.paginate.side_effect = client.exceptions.NoSuchUpload()
     client.head_object.return_value = {'ContentLength': 12, 'ETag': 'etag',
         'Metadata': {'upload-session': str(row['id'])}}
     stream = io.BytesIO(b'invalid file')
@@ -175,3 +182,21 @@ def test_s3_rules_preserve_existing_rules_and_scope_cleanup():
     assert lifecycle['Rules'][0] == existing_lifecycle
     assert lifecycle['Rules'][1]['Filter'] == {'Prefix': 'marketing-upload-staging/'}
     assert merge(cors['CORSRules'], lifecycle['Rules'], 'https://www.inksuite.io') == (cors, lifecycle)
+
+
+def test_completed_upload_does_not_swallow_real_head_permission_failure(setup):
+    ctx, row, client, cur = setup
+    client.get_paginator.return_value.paginate.side_effect = client.exceptions.NoSuchUpload()
+    client.head_object.side_effect = ClientError({'ResponseMetadata': {'HTTPStatusCode': 403}}, 'HeadObject')
+    with pytest.raises(ClientError):
+        u.assembled_object(row)
+    client.complete_multipart_upload.assert_not_called()
+
+
+def test_missing_upload_and_object_returns_conflict(setup):
+    ctx, row, client, cur = setup
+    client.get_paginator.return_value.paginate.side_effect = client.exceptions.NoSuchUpload()
+    client.head_object.side_effect = ClientError({'ResponseMetadata': {'HTTPStatusCode': 404}}, 'HeadObject')
+    with pytest.raises(HTTPException) as error:
+        u.assembled_object(row)
+    assert error.value.status_code == 409
