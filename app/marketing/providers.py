@@ -86,11 +86,7 @@ def request(method, url, token=None, **kwargs):
                     if isinstance(error, dict)
                     else None
                 ),
-                'message': (
-                    error.get('message')
-                    if isinstance(error, dict)
-                    else None
-                ),
+                'message': provider_message,
             },
         )
 
@@ -105,10 +101,16 @@ def request(method, url, token=None, **kwargs):
             'access_token_expired',
         }
 
-        if r.status_code == 401 or code in auth_error_codes:
+        if code in auth_error_codes:
             msg = (
                 'Authorization expired or was revoked. '
                 'Reconnect the account.'
+            )
+
+        elif r.status_code == 401:
+            msg = (
+                provider_message
+                or 'The provider rejected authentication for this operation.'
             )
 
         elif code == 'unaudited_client_can_only_post_to_private_accounts':
