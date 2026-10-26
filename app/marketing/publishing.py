@@ -39,7 +39,12 @@ def schedule(cur,ctx,post_id,body=None):
         for target in post['targets']:
             account=s.owned(cur,'social_accounts',target['social_account_id'],tenant)
             if account['status']!='connected': raise ValueError('Reconnect all selected destinations.')
-            publisher(target['provider']).validate_post(post,target,media_for_target(post,target))
+            adapter=publisher(target['provider'])
+            adapter.validate_post(post,target,media_for_target(post,target))
+            if target['provider']=='tiktok':
+                # Check fresh creator permissions before accepting a publish/schedule
+                # request; advance() checks them again before initializing delivery.
+                adapter.validate_creator(target['provider_payload'],adapter.creator(credentials(cur,account)))
     except (ValueError,KeyError,ProviderError) as e: raise HTTPException(422,str(e)) from None
     zone=body.timezone if body else post['timezone']
     cur.execute("UPDATE social_posts SET status='scheduled',scheduled_at=%s,timezone=%s,publish_mode=%s,scheduled_by=%s,scheduling_timestamp=now(),updated_at=now() WHERE id=%s AND tenant_id=%s",(due,zone,'schedule' if body else 'now',ctx['user']['id'],post_id,tenant))

@@ -308,9 +308,24 @@ class TikTokPublisher(SocialPublisher):
     provider='tiktok'
     base='https://open.tiktokapis.com/v2/post/publish/'
     def creator(self,token): return request('POST',self.base+'creator_info/query/',token,json={})['data']
+    def validate_disclosures(self,opts):
+        if opts.get('consent') is not True or not opts.get('privacy_level'):
+            raise ProviderError('validation','Choose TikTok visibility and authorize sending this content.')
+        branded=opts.get('brand_content_toggle') is True
+        own_brand=opts.get('brand_organic_toggle') is True
+        if opts.get('commercial_content_disclosure') is True and not (branded or own_brand):
+            raise ProviderError('validation','Indicate whether this content promotes your business, another business, or both.')
+        if branded and opts['privacy_level']=='SELF_ONLY':
+            raise ProviderError('validation','Paid partnership content cannot use Only me visibility. Choose another permitted visibility or remove the paid partnership disclosure.')
+
+    def validate_creator(self,opts,creator):
+        self.validate_disclosures(opts)
+        if opts['privacy_level'] not in (creator.get('privacy_level_options') or []):
+            raise ProviderError('validation','TikTok visibility options changed. Reopen the composer and choose a permitted visibility.')
+
     def validate_post(self,p,t,a):
         super().validate_post(p,t,a);opts=t['provider_payload']
-        if not opts.get('consent') or not opts.get('privacy_level'): raise ProviderError('validation','Choose TikTok visibility and authorize sending this content.')
+        self.validate_disclosures(opts)
         if not a or len(a)>35: raise ProviderError('validation','TikTok needs a video or 1–35 photos.')
         if any(x['media_type']=='video' for x in a) and len(a)!=1: raise ProviderError('validation','Use one TikTok video or a set of photos.')
         prefixes=[x.strip() for x in os.getenv('MARKETING_TIKTOK_VERIFIED_URL_PREFIXES','').split(',') if x.strip()]
@@ -347,8 +362,9 @@ class TikTokPublisher(SocialPublisher):
                 return Result('published',state,str(ids[0]) if ids else state['publish_id'])
             if d['status']=='FAILED': raise ProviderError('processing_failed','TikTok could not publish this content. Check account and media settings.')
             return Result('submitted',state)
+        self.validate_disclosures(opts)
         creator=self.creator(token)
-        if opts['privacy_level'] not in creator['privacy_level_options']: raise ProviderError('validation','TikTok visibility options changed. Reopen the composer.')
+        self.validate_creator(opts,creator)
         info={'privacy_level':opts['privacy_level'],'disable_comment':creator.get('comment_disabled',False) or not opts.get('allow_comment',False),'brand_content_toggle':bool(opts.get('brand_content_toggle')),'brand_organic_toggle':bool(opts.get('brand_organic_toggle'))}
         video=media[0]['media_type']=='video'
         if video:

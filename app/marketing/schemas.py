@@ -31,7 +31,7 @@ class Target(BaseModel):
     def settings_types(cls,value):
         for key in ('text','title','link','board_id','privacy_level'):
             if key in value and not isinstance(value[key],str): raise ValueError(f'{key} must be text.')
-        for key in ('consent','allow_comment','allow_duet','allow_stitch','brand_content_toggle','brand_organic_toggle','is_aigc'):
+        for key in ('commercial_content_disclosure','consent','allow_comment','allow_duet','allow_stitch','brand_content_toggle','brand_organic_toggle','is_aigc'):
             if key in value and not isinstance(value[key],bool): raise ValueError(f'{key} must be a boolean.')
         if any(key in value for key in ('access_token','refresh_token','client_secret')): raise ValueError('Credentials must not be supplied in post settings.')
         if 'asset_ids' in value and (not isinstance(value['asset_ids'],list) or any(not isinstance(x,str) for x in value['asset_ids'])): raise ValueError('Invalid media override.')
