@@ -6,7 +6,7 @@ from psycopg.rows import dict_row
 from app.core.db import db_conn
 from . import service as s, schemas, assets
 from . import oauth, publishing
-from .providers import publisher, ProviderError, request as provider_request
+from .providers import publisher, ProviderError, request as provider_request, pinterest_api_base
 
 router=APIRouter(prefix='/tenants/{tenant_slug}/marketing',tags=['Marketing'])
 
@@ -273,7 +273,7 @@ def boards(account_id:UUID,ctx=Depends(s.admin)):
             if a['provider']!='pinterest': raise HTTPException(422,'Select a Pinterest account.')
             token=publishing.credentials(cur,a);result=[];bookmark=None
             for _ in range(20):
-                data=provider_request('GET','https://api-sandbox.pinterest.com/v5/boards',token,params={'page_size':100,**({'bookmark':bookmark} if bookmark else {})})
+                data=provider_request('GET',pinterest_api_base() + '/v5/boards',token,params={'page_size':100,**({'bookmark':bookmark} if bookmark else {})})
                 result.extend({'id':b['id'],'name':b['name']} for b in data.get('items',[]));bookmark=data.get('bookmark')
                 if not bookmark: break
             return result

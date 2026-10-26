@@ -4,6 +4,12 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 import requests
 
+def pinterest_api_base():
+    return os.getenv(
+        "MARKETING_PINTEREST_API_BASE",
+        "https://api.pinterest.com"
+    ).rstrip("/")
+
 class ProviderError(Exception):
     def __init__(self,code,message,retryable=False,uncertain=False):
         super().__init__(message); self.code=code; self.retryable=retryable; self.uncertain=uncertain
@@ -293,7 +299,7 @@ class PinterestPublisher(SocialPublisher):
     def advance(self,a,token,p,t,media):
         opts=t['provider_payload'];body={'board_id':opts['board_id'],'title':opts.get('title') or p['title'],'description':content(p,t),'media_source':{'source_type':'image_url','url':media[0]['public_url']},'alt_text':media[0].get('alt_text') or ''}
         if opts.get('link'): body['link']=opts['link']
-        d=request('POST','https://api-sandbox.pinterest.com/v5/pins',token,json=body)
+        d=request('POST',pinterest_api_base() + '/v5/pins',token,json=body)
         pid=str(d['id']);return Result('published',{},pid,'https://www.pinterest.com/pin/'+pid+'/')
 
 class TikTokPublisher(SocialPublisher):

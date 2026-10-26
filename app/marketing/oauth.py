@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from psycopg.types.json import Jsonb
 
 from . import service as s
-from .providers import request, graph, ProviderError
+from .providers import request, graph, ProviderError, pinterest_api_base
 
 
 def cipher():
@@ -218,7 +218,7 @@ def token_exchange(provider, body):
     if provider == "pinterest":
         return request(
             "POST",
-            "https://api-sandbox.pinterest.com/v5/oauth/token",
+            pinterest_api_base() + "/v5/oauth/token",
             auth=(client, secret),
             data=body,
         )
@@ -465,7 +465,7 @@ def finish(cur, ctx, provider, code):
     elif provider == "pinterest":
         item = request(
             "GET",
-            "https://api-sandbox.pinterest.com/v5/user_account",
+            pinterest_api_base() + "/v5/user_account",
             tokens["access_token"],
         )
 
