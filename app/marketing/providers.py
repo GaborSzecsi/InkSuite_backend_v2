@@ -304,6 +304,20 @@ class PinterestPublisher(SocialPublisher):
         d=request('POST',pinterest_api_base() + '/v5/pins',token,json=body)
         pid=str(d['id']);return Result('published',{},pid,'https://www.pinterest.com/pin/'+pid+'/')
 
+def validate_tiktok_upload_url(upload_url: str) -> None:
+    """Validate a TikTok-issued upload URL without logging its bearer query."""
+    try:
+        parsed = urlparse(upload_url)
+        host = parsed.hostname or ''
+        allowed = host.endswith('.tiktokapis.com') or host == 'open-upload.tiktokapis.us'
+        valid = (parsed.scheme == 'https' and allowed and parsed.port in (None, 443)
+                 and parsed.username is None and parsed.password is None and not parsed.fragment)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ProviderError('upload_url','TikTok returned an unexpected upload destination.')
+
+
 def tiktok_upload_chunks(video_size: int) -> tuple[int, int]:
     """Return FILE_UPLOAD chunk size/count; the last chunk absorbs trailing bytes.
 
@@ -357,8 +371,8 @@ class TikTokPublisher(SocialPublisher):
         if state.get('upload_url_encrypted') and state.get('upload_offset',0)<media[0]['filesize_bytes']:
             from .oauth import decrypt
             from routers.storage_s3 import s3
-            upload_url=decrypt(state['upload_url_encrypted'],a['tenant_id']);parsed=urlparse(upload_url)
-            if parsed.scheme!='https' or not (parsed.hostname or '').endswith('.tiktokapis.com'): raise ProviderError('upload_url','TikTok returned an unexpected upload destination.')
+            upload_url=decrypt(state['upload_url_encrypted'],a['tenant_id'])
+            validate_tiktok_upload_url(upload_url)
             offset=state.get('upload_offset',0);total=media[0]['filesize_bytes']
             last_chunk=offset//state['chunk_size']>=state['total_chunk_count']-1
             end=total-1 if last_chunk else offset+state['chunk_size']-1

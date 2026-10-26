@@ -2,7 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from app.marketing.providers import TikTokPublisher, ProviderError, tiktok_upload_chunks
+from app.marketing.providers import TikTokPublisher, ProviderError, tiktok_upload_chunks, validate_tiktok_upload_url
 
 MIB = 1024 * 1024
 
@@ -31,8 +31,9 @@ def test_invalid_sizes_rejected(total):
         tiktok_upload_chunks(total)
 
 
+@pytest.mark.parametrize('upload_host', ['open-upload.tiktokapis.com', 'upload.us.tiktokapis.com', 'open-upload.tiktokapis.us'])
 @pytest.mark.parametrize('total', [12_800_000, int(12.8*MIB), 65*MIB, 70*MIB+1])
-def test_init_and_sequential_transfer_agree(monkeypatch, total):
+def test_init_and_sequential_transfer_agree(monkeypatch, total, upload_host):
     from app.marketing import oauth
     import routers.storage_s3 as storage
 
@@ -41,9 +42,10 @@ def test_init_and_sequential_transfer_agree(monkeypatch, total):
         'privacy_level_options': ['SELF_ONLY'], 'max_video_post_duration_sec': 60})
     monkeypatch.delenv('MARKETING_TIKTOK_VERIFIED_URL_PREFIXES', raising=False)
     monkeypatch.setattr(oauth, 'encrypt', lambda *args: 'encrypted-upload-url')
-    monkeypatch.setattr(oauth, 'decrypt', lambda *args: 'https://upload.tiktokapis.com/video/')
+    upload_url = f'https://{upload_host}/video/?upload_token=secret'
+    monkeypatch.setattr(oauth, 'decrypt', lambda *args: upload_url)
     initialize = Mock(return_value={'data': {'publish_id': 'publish-id',
-        'upload_url': 'https://upload.tiktokapis.com/video/'}})
+        'upload_url': upload_url}})
     monkeypatch.setattr('app.marketing.providers.request', initialize)
     post = {'title': 'Book review', 'content_text': 'Review'}
     target = {'provider_payload': {'privacy_level': 'SELF_ONLY', 'consent': True}, 'provider_state': {}}
@@ -77,6 +79,9 @@ def test_init_and_sequential_transfer_agree(monkeypatch, total):
     sent = []
 
     def put(url, *, data, headers, **kwargs):
+        assert url == upload_url
+        assert kwargs['allow_redirects'] is False
+        assert 'Authorization' not in headers
         start = sum(sent)
         size = len(data)
         assert headers['Content-Length'] == str(size)
@@ -95,3 +100,33 @@ def test_init_and_sequential_transfer_agree(monkeypatch, total):
     assert all(body.close.call_count == 1 for body in streams)
     # Initialization is never repeated during chunk delivery.
     assert initialize.call_count == 1
+
+
+@pytest.mark.parametrize('url', [
+    'https://open-upload.tiktokapis.us/video/?upload_token=secret',
+    'https://open-upload.tiktokapis.com/video/?upload_token=secret',
+    'https://upload.us.tiktokapis.com/video/?upload_token=secret',
+    'https://open-upload.tiktokapis.us:443/video/?upload_token=secret',
+])
+def test_upload_destination_accepts_global_and_observed_us_host(url):
+    validate_tiktok_upload_url(url)
+
+
+@pytest.mark.parametrize('url', [
+    'http://open-upload.tiktokapis.us/video/?upload_token=secret',
+    'https://open-upload.tiktokapis.us.attacker.example/video/?upload_token=secret',
+    'https://evil-tiktokapis.com/video/?upload_token=secret',
+    'https://tiktokapis.com.attacker.example/video/?upload_token=secret',
+    'https://unapproved.tiktokapis.us/video/?upload_token=secret',
+    'https://open-upload.tiktokapis.us:8443/video/?upload_token=secret',
+    'https://user:secret@open-upload.tiktokapis.us/video/',
+    'https://127.0.0.1/video/?upload_token=secret',
+    'https://open-upload.tiktokapis.us:invalid/video/?upload_token=secret',
+    'https://open-upload.tiktokapis.us/video/#secret',
+    'not-a-url-secret',
+])
+def test_upload_destination_rejects_unexpected_hosts_without_leaking_credentials(url):
+    with pytest.raises(ProviderError) as error:
+        validate_tiktok_upload_url(url)
+    assert error.value.code == 'upload_url'
+    assert 'secret' not in str(error.value)
