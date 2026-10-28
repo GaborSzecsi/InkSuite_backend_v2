@@ -81,14 +81,15 @@ def provider_error(error, mutation=False):
     raise HTTPException(422, 'The platform could not complete this action. The post or comment may have changed, or this action is not supported.') from None
 
 
-def comment_view(item, target, tenant, reply_to=None):
+def comment_view(item, target, tenant, reply_to=None, read_account=None):
     instagram = target['provider'] == 'instagram'
     flags = dict(reply=True if instagram else item.get('can_comment') is True,
                  hide=True if instagram else item.get('can_hide') is True,
                  delete=True if instagram else item.get('can_remove') is True)
     comment_id = identifier(item.get('id'))
     return dict(id=comment_id,
-                handle=seal(target, tenant, 'comment', comment=comment_id, reply_to=reply_to or comment_id, capabilities=flags),
+                handle=seal(target, tenant, 'comment', comment=comment_id, reply_to=reply_to or comment_id,
+                            capabilities=flags, **({'read_account': str(read_account)} if read_account else {})),
                 author=item.get('username') if instagram else (item.get('from') or {}).get('name'),
                 text=item.get('text' if instagram else 'message') or '',
                 created_at=item.get('timestamp' if instagram else 'created_time'),
@@ -96,10 +97,69 @@ def comment_view(item, target, tenant, reply_to=None):
                 capabilities=flags)
 
 
+def reported_comment_count(account, token, post_id):
+    """A counter is not proof that Meta exposes the underlying comment bodies."""
+    fields = 'comments_count' if account['provider'] == 'instagram' else 'comments.limit(0).summary(true)'
+    try:
+        result = call(account, token, 'GET', post_id, params={'fields': fields})
+        if not isinstance(result, dict):
+            return None
+        value = (result.get('comments_count') if account['provider'] == 'instagram'
+                 else ((result.get('comments') or {}).get('summary') or {}).get('total_count'))
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    except ProviderError:
+        return None
+
+
+def owner_id(item):
+    owner = item.get('owner') if isinstance(item, dict) else None
+    return str(owner.get('id') if isinstance(owner, dict) else owner or '')
+
+
+def facebook_read_source(cur, ctx, target, account, token, selected=None):
+    """Bridge the same owned media across Meta's two Instagram ID namespaces.
+
+    No username matching, token copying, or cross-workspace credential lookup.
+    The original IG token must prove ownership before any Page can be used.
+    """
+    if target['provider'] != 'instagram':
+        return None
+    try:
+        original = call(account, token, 'GET', target['provider_post_id'], params={'fields': 'id,owner'})
+    except ProviderError:
+        return None
+    if (not isinstance(original, dict) or str(original.get('id')) != target['provider_post_id']
+            or owner_id(original) != str(account['provider_account_id'])):
+        return None
+    query = "SELECT * FROM social_accounts WHERE tenant_id=%s AND provider='facebook' AND status='connected'"
+    args = (ctx['tenant']['id'],)
+    if selected:
+        query += ' AND id=%s'
+        args += (selected,)
+    for page in s.rows(cur, query + ' ORDER BY id', args):
+        try:
+            page_token = credentials(cur, page, redact_errors=True)
+            linked = call(page, page_token, 'GET', identifier(page['provider_account_id']),
+                          params={'fields': 'instagram_business_account{id}'})
+            linked_id = ((linked.get('instagram_business_account') or {}).get('id')
+                         if isinstance(linked, dict) else None)
+            if not linked_id:
+                continue
+            media = call(page, page_token, 'GET', target['provider_post_id'], params={'fields': 'id,owner'})
+            if (isinstance(media, dict) and str(media.get('id')) == target['provider_post_id']
+                    and owner_id(media) == str(linked_id)):
+                return page, page_token
+        except ProviderError:
+            continue
+    return None
+
+
 def listing(cur, ctx, target_id, cursor=None, parent=None):
     target, account = destination(cur, ctx, target_id)
     tenant = ctx['tenant']['id']
-    parent_id = unseal(parent, target, tenant, 'comment')['comment'] if parent else None
+    parent_data = unseal(parent, target, tenant, 'comment') if parent else {}
+    parent_id = parent_data.get('comment')
+    read_account = parent_data.get('read_account')
     edge = 'replies' if parent_id and target['provider'] == 'instagram' else 'comments'
     subject = identifier(parent_id or target['provider_post_id'])
     params = dict(fields=FIELDS[target['provider']], limit=25)
@@ -109,17 +169,40 @@ def listing(cur, ctx, target_id, cursor=None, parent=None):
         position = unseal(cursor, target, tenant, 'cursor')
         if position.get('parent') != parent_id:
             raise HTTPException(409, 'Refresh this comment thread before loading more replies.')
+        if parent and position.get('read_account') != read_account:
+            raise HTTPException(409, 'Refresh this comment thread before loading more replies.')
+        read_account = position.get('read_account')
         params['after'] = position['after']
     try:
         token = credentials(cur, account, redact_errors=True)
-        result = call(account, token, 'GET', subject + '/' + edge, params=params)
+        source = facebook_read_source(cur, ctx, target, account, token, read_account) if read_account else None
+        if read_account and not source:
+            raise HTTPException(409, 'The linked Facebook connection changed. Refresh comments or reconnect Facebook in this workspace.')
+        result = call(*(source or (account, token)), 'GET', subject + '/' + edge, params=params)
     except ProviderError as error:
         provider_error(error)
+    if not isinstance(result, dict) or not isinstance(result.get('data'), list):
+        raise HTTPException(502, 'The platform returned an incomplete comment list. Refresh and try again.')
+    reported_count = (reported_comment_count(account, token, target['provider_post_id'])
+                      if not result['data'] and not parent and not cursor else None)
+    if not result['data'] and reported_count and target['provider'] == 'instagram':
+        source = facebook_read_source(cur, ctx, target, account, token)
+        if source:
+            try:
+                alternative = call(*source, 'GET', subject + '/' + edge, params=params)
+            except ProviderError:
+                alternative = None
+            if isinstance(alternative, dict) and isinstance(alternative.get('data'), list) and alternative['data']:
+                result = alternative
+                read_account = str(source[0]['id'])
     paging = result.get('paging') or {}
     after = (paging.get('cursors') or {}).get('after')
-    return dict(comments=[comment_view(item, target, tenant, reply_to=parent_id) for item in result.get('data', [])],
-                next_cursor=seal(target, tenant, 'cursor', parent=parent_id, after=after)
+    return dict(comments=[comment_view(item, target, tenant, reply_to=parent_id, read_account=read_account) for item in result.get('data', [])],
+                next_cursor=seal(target, tenant, 'cursor', parent=parent_id, after=after,
+                                 **({'read_account': read_account} if read_account else {}))
                 if paging.get('next') and isinstance(after, str) and len(after) < 4096 else None,
+                reported_count=reported_count,
+                visibility='not_returned' if not result['data'] and reported_count else 'unknown' if not result['data'] and reported_count is None else 'available',
                 can_manage=ctx['membership_role'] in ('superadmin', 'tenant_admin'))
 
 

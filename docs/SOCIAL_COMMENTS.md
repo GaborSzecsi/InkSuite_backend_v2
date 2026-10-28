@@ -87,3 +87,51 @@ are design previews, not evidence that live Meta mutations have been accepted.
 
 Deployment is pending user approval. After deployment/reconnect, use a disposable
 comment to validate live actions on each platform and record the review screencast.
+
+## Empty lists versus unavailable comment content
+
+An empty comments edge does not establish that a post has no comments. The first
+empty page is now cross-checked with the provider's comment counter. The API returns
+reported_count and visibility (available, not_returned, or unknown). Nonzero counters
+with an empty list display a Meta visibility/access message; a verified zero can
+show No comments yet. Counter failure remains unknown. Malformed list responses
+are errors rather than silently coerced to an empty array. No API retry loop or
+extra moderation action is performed. Counter requests are limited to empty first
+pages, not every loaded comment or pagination request.
+
+Instagram reconnection now records permission/scope values only if Meta actually
+returns them in its OAuth token responses. The previous fixed basic/publish list
+was not a reliable record of granted comment access. Missing metadata is left
+unknown; a requested permission is never recorded as a confirmed grant.
+
+Read-only investigation on October 28, 2026: Meta reported 11 comments on New deal
+Katie Horwitch and 3 on PUB DAY: Chasing the Light, but returned empty Instagram
+comments lists even with fields=id. The Facebook test post returned 1 like and 0
+comments; its empty comment list matched the live counter. The Facebook Page token
+was valid and had pages_read_user_content and pages_manage_engagement granted.
+Instagram's remaining empty-list cause needs the app's mode/access level checked;
+no definitive missing permission or development-mode diagnosis has been established.
+No live comments were changed and no production source/configuration was modified.
+
+## Verified Facebook-linked read fallback for Instagram
+
+An October 28 follow-up reproduced five readable Instagram comments through
+graph.facebook.com using the workspace's existing Facebook Page credential,
+while graph.instagram.com returned an empty list for that same media. The
+comment reader now attempts that path when the original first page is empty
+and Meta reports a nonzero count. It does not copy test tokens or replace
+stored Instagram credentials, and does not change publishing or analytics.
+
+The original Instagram credential must first verify that the target media's
+owner matches the connected Instagram account. Only connected Facebook Pages
+in the same tenant are candidates. Each Page's linked Instagram ID must match
+the owner returned for that exact media through Facebook Graph. This bridges
+the different Instagram ID namespaces without matching mutable usernames.
+No Page from another workspace can supply credentials.
+
+The selected read account is sealed into comment and cursor handles. Replies
+and subsequent pages revalidate that connected Page and both ownership checks;
+disconnect or linkage changes invalidate the view. Moderation continues using
+the original Instagram connection and its Instagram Login comment permission.
+This is a read fallback, not proof that the legacy moderation permission has
+been granted or credited by App Review. No migration or new dependency is needed.

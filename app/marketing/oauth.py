@@ -208,6 +208,26 @@ def begin(cur, ctx, provider, analytics=True):
     }
 
 
+def returned_grants(*responses):
+    """Persist provider-returned grants, never infer consent from requested scopes."""
+    for response in responses:
+        for key in ('permissions', 'scope'):
+            raw = response.get(key)
+            if raw is None:
+                continue
+            if isinstance(raw, str):
+                return ','.join(dict.fromkeys(raw.replace(',', ' ').split()))
+            if isinstance(raw, list):
+                names = []
+                for value in raw:
+                    if isinstance(value, str):
+                        names.extend(value.replace(',', ' ').split())
+                    elif isinstance(value, dict) and value.get('status') == 'granted' and value.get('permission'):
+                        names.append(value['permission'])
+                return ','.join(dict.fromkeys(names))
+    return ''
+
+
 def token_exchange(provider, body, redact_errors=False):
     client, secret, redirect = config(provider)
 
@@ -439,13 +459,18 @@ def finish(cur, ctx, provider, code):
         account_tokens = {
             "access_token": access_token,
             "expires_in": long_token.get("expires_in"),
-            "scope": ",".join(
-                [
-                    "instagram_business_basic",
-                    "instagram_business_content_publish",
-                ]
-            ),
+            "scope": returned_grants(tokens, long_token),
         }
+
+        # Record only permission diagnostics; never log tokens or OAuth responses.
+        reported = set(account_tokens['scope'].split(',')) - {''}
+        metadata_present = any(key in response for response in (tokens, long_token)
+                               for key in ('permissions', 'scope'))
+        print('INSTAGRAM AUTHORIZATION:', {
+            'grant_metadata_returned': metadata_present,
+            'comment_permission_reported': ('instagram_business_manage_comments' in reported)
+                                           if metadata_present else None,
+        }, flush=True)
 
         print(
             "INSTAGRAM DESTINATION:",

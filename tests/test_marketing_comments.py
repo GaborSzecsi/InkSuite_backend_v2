@@ -177,3 +177,148 @@ def test_non_admin_can_read_but_is_not_offered_management(env,monkeypatch):
     monkeypatch.setattr(c,'request',lambda *a,**k:{'data':[response()]})
     result=c.listing(pg,{**ctx,'membership_role':'member'},target_id)
     assert result['comments'] and result['can_manage'] is False
+
+@pytest.mark.parametrize('provider,count',[('instagram',11),('facebook',3),('instagram',0)])
+def test_empty_list_is_checked_against_provider_count(env,monkeypatch,provider,count):
+    pg,data,ctx,target_id=env
+    pg.execute('UPDATE social_accounts SET provider=%s WHERE id=%s',(provider,data['account']))
+    pg.execute('UPDATE social_post_targets SET provider=%s WHERE id=%s',(provider,target_id))
+    def request(method,url,*args,**kwargs):
+        if url.endswith('/comments'):return {'data':[]}
+        return {'comments_count':count} if provider=='instagram' else {'comments':{'summary':{'total_count':count}}}
+    monkeypatch.setattr(c,'request',request)
+    page=c.listing(pg,ctx,target_id)
+    assert page['comments']==[] and page['reported_count']==count
+    assert page['visibility']==('not_returned' if count else 'available')
+
+
+def test_counter_failure_does_not_claim_zero_comments(env,monkeypatch):
+    pg,data,ctx,target_id=env
+    def request(method,url,*args,**kwargs):
+        if url.endswith('/comments'):return {'data':[]}
+        raise ProviderError('10','Redacted permission failure')
+    monkeypatch.setattr(c,'request',request)
+    page=c.listing(pg,ctx,target_id)
+    assert page['reported_count'] is None and page['visibility']=='unknown'
+
+
+def test_malformed_comment_response_is_not_an_empty_list(env,monkeypatch):
+    pg,data,ctx,target_id=env
+    monkeypatch.setattr(c,'request',lambda *a,**k:{'success':True})
+    with pytest.raises(HTTPException) as err:c.listing(pg,ctx,target_id)
+    assert err.value.status_code==502
+
+
+def test_instagram_grants_use_only_returned_permissions():
+    from app.marketing.oauth import returned_grants
+    assert returned_grants({'permissions':['instagram_business_basic','instagram_business_manage_comments']})=='instagram_business_basic,instagram_business_manage_comments'
+    assert returned_grants({'scope':'instagram_business_basic instagram_business_manage_insights'})=='instagram_business_basic,instagram_business_manage_insights'
+    assert returned_grants({'permissions':[{'permission':'instagram_business_basic','status':'granted'},{'permission':'instagram_business_manage_comments','status':'declined'}]})=='instagram_business_basic'
+    assert returned_grants({'access_token':'not-a-real-token'},{'expires_in':1})==''
+
+@pytest.mark.parametrize('grants',[['instagram_business_basic','instagram_business_manage_comments'],None])
+def test_instagram_callback_persists_actual_grants_without_logging_tokens(monkeypatch,capsys,grants):
+    from app.marketing import oauth
+    short={'access_token':'fake-short-secret'}
+    if grants is not None:short['permissions']=grants
+    monkeypatch.setattr(oauth,'config',lambda _:('client','fake-client-secret','https://example.test/callback'))
+    monkeypatch.setattr(oauth,'token_exchange',lambda *a,**k:short)
+    responses=iter([{'access_token':'fake-long-secret','expires_in':3600},{'id':'123','username':'sample_publisher','account_type':'BUSINESS'}])
+    monkeypatch.setattr(oauth,'request',lambda *a,**k:next(responses))
+    captured={}
+    def persist(cur,ctx,provider,result):
+        captured['tokens']=result[0][1];return {'connected':1}
+    monkeypatch.setattr(oauth,'persist_accounts',persist)
+    assert oauth.finish(Mock(),{'tenant':{'id':'tenant'},'user':{'id':'user'}},'instagram','fake-code')=={'connected':1}
+    assert captured['tokens']['scope']==(','.join(grants) if grants is not None else '')
+    output=capsys.readouterr().out
+    assert 'INSTAGRAM AUTHORIZATION' in output
+    assert 'fake-short-secret' not in output and 'fake-long-secret' not in output and 'fake-client-secret' not in output
+
+def test_existing_popup_receives_restriction_instead_of_false_empty(env,monkeypatch):
+    pg,data,ctx,target_id=env
+    app=FastAPI();app.include_router(routes.router)
+    app.dependency_overrides[service.access]=lambda:ctx
+    class Conn:
+        def transaction(self):return nullcontext()
+        def cursor(self,**kwargs):return pg
+    monkeypatch.setattr(routes,'db_conn',lambda:nullcontext(Conn()))
+    monkeypatch.setattr(c,'listing',lambda *a,**k:{'comments':[],'reported_count':11,'visibility':'not_returned'})
+    result=TestClient(app).get(f'/social/targets/{target_id}/comments')
+    assert result.status_code==409 and result.headers['cache-control']=='no-store'
+    assert 'Meta reports 11 comments' in result.json()['detail']
+
+
+def add_page(pg, data, tenant=None, status='connected'):
+    page=str(uuid4())
+    pg.execute("""INSERT INTO social_accounts(id,tenant_id,provider,provider_account_id,display_name,
+        account_type,access_token_encrypted,connected_by,status,scopes)
+        VALUES(%s,%s,'facebook','555','Example Page','page','encrypted',%s,%s,'[]')""",
+        (page,tenant or data['tenant'],data['user'],status))
+    return page
+
+
+def linked_requests(data, calls, original_owner=None, linked_owner='999', paginated=False):
+    def request(method,url,*args,**kwargs):
+        calls.append((method,url,kwargs))
+        fields=kwargs.get('params',{}).get('fields')
+        if method!='GET':return {'success':True}
+        if 'graph.instagram.com' in url:
+            if url.endswith('/comments'):return {'data':[]}
+            if fields=='comments_count':return {'comments_count':5}
+            return {'id':'123','owner':{'id':original_owner or data['account']}}
+        if url.endswith('/555'):return {'instagram_business_account':{'id':'999'}}
+        if url.endswith('/123'):return {'id':'123','owner':{'id':linked_owner}}
+        result={'data':[response()]}
+        if paginated:result['paging']={'next':'https://untrusted.invalid','cursors':{'after':'position'}}
+        return result
+    return request
+
+
+def test_linked_facebook_read_fallback_pagination_replies_and_original_mutation(env,monkeypatch):
+    pg,data,ctx,target_id=env;page_id=add_page(pg,data);calls=[]
+    monkeypatch.setattr(c,'request',linked_requests(data,calls,paginated=True))
+    result=c.listing(pg,ctx,target_id)
+    assert result['visibility']=='available' and result['comments'][0]['text']=='A real question'
+    target,_=c.destination(pg,ctx,target_id)
+    parent=result['comments'][0]['handle']
+    assert c.unseal(parent,target,data['tenant'],'comment')['read_account']==page_id
+    assert c.unseal(result['next_cursor'],target,data['tenant'],'cursor')['read_account']==page_id
+    c.listing(pg,ctx,target_id,cursor=result['next_cursor'])
+    assert calls[-1][1]=='https://graph.facebook.com/v25.0/123/comments'
+    assert calls[-1][2]['params']['after']=='position'
+    c.listing(pg,ctx,target_id,parent=parent)
+    assert calls[-1][1]=='https://graph.facebook.com/v25.0/456/replies'
+    c.act(pg,ctx,target_id,parent,'hide')
+    assert calls[-1][0:2]==('POST','https://graph.instagram.com/v25.0/456')
+    pg.execute("UPDATE social_accounts SET status='disconnected' WHERE id=%s",(page_id,))
+    with pytest.raises(HTTPException) as err:c.listing(pg,ctx,target_id,parent=parent)
+    assert err.value.status_code==409
+
+
+@pytest.mark.parametrize('reason',['foreign_workspace','disconnected','original_owner_mismatch','linked_owner_mismatch'])
+def test_linked_read_fails_closed_for_wrong_workspace_connection_or_owner(env,monkeypatch,reason):
+    pg,data,ctx,target_id=env
+    add_page(pg,data,tenant=data['other'] if reason=='foreign_workspace' else None,
+             status='disconnected' if reason=='disconnected' else 'connected')
+    calls=[]
+    monkeypatch.setattr(c,'request',linked_requests(data,calls,
+        original_owner='wrong' if reason=='original_owner_mismatch' else None,
+        linked_owner='wrong' if reason=='linked_owner_mismatch' else '999'))
+    result=c.listing(pg,ctx,target_id)
+    assert result['comments']==[] and result['visibility']=='not_returned'
+    assert not any('graph.facebook.com' in url and url.endswith('/comments') for _,url,_ in calls)
+    if reason in ('foreign_workspace','disconnected','original_owner_mismatch'):
+        assert not any('graph.facebook.com' in url for _,url,_ in calls)
+
+
+def test_linked_read_provider_failure_preserves_diagnostic_and_avoids_fabrication(env,monkeypatch):
+    pg,data,ctx,target_id=env;add_page(pg,data);calls=[]
+    original=linked_requests(data,calls)
+    def request(method,url,*args,**kwargs):
+        if 'graph.facebook.com' in url and url.endswith('/comments'):
+            raise ProviderError('10','private provider error')
+        return original(method,url,*args,**kwargs)
+    monkeypatch.setattr(c,'request',request)
+    result=c.listing(pg,ctx,target_id)
+    assert result['comments']==[] and result['reported_count']==5 and result['visibility']=='not_returned'

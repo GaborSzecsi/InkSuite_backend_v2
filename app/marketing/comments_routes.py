@@ -1,6 +1,6 @@
 from uuid import UUID
 from typing import Literal
-from fastapi import APIRouter, Depends, Response, Query
+from fastapi import APIRouter, Depends, Response, Query, HTTPException
 from pydantic import BaseModel, Field
 from psycopg.rows import dict_row
 from app.core.db import db_conn
@@ -30,7 +30,12 @@ def preview(target_id: UUID, ctx=Depends(s.access)):
 def listing(target_id: UUID, cursor: str | None = Query(default=None, max_length=16384),
             parent: str | None = Query(default=None, max_length=16384), ctx=Depends(s.access)):
     with db_conn() as conn, conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-        return comments.listing(cur, ctx, target_id, cursor, parent)
+        result = comments.listing(cur, ctx, target_id, cursor, parent)
+        # Existing clients must not turn a restricted empty edge into "no comments".
+        if result.get('visibility') == 'not_returned' and not result['comments']:
+            count = result['reported_count']
+            raise HTTPException(409, f'Meta reports {count} comments, but is not providing their content to InkSuite. Comment access or platform visibility restrictions may apply.', headers={'Cache-Control': 'no-store'})
+        return result
 
 
 @router.post('/{target_id}/comments/actions')
