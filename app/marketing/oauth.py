@@ -144,6 +144,7 @@ def begin(cur, ctx, provider, analytics=True):
                 "pages_show_list",
                 "pages_read_engagement",
                 "pages_manage_posts",
+                "pages_manage_engagement",
                 "business_management",
             ]
         )
@@ -163,6 +164,7 @@ def begin(cur, ctx, provider, analytics=True):
             [
                 "instagram_business_basic",
                 "instagram_business_content_publish",
+                "instagram_business_manage_comments",
             ]
         )
 

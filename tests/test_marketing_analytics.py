@@ -178,12 +178,12 @@ def test_unsupported_metric_does_not_stop_other_metrics(monkeypatch):
 
 
 @pytest.mark.parametrize('provider,required',[
-    ('facebook',{'pages_manage_posts','read_insights','pages_read_engagement','pages_read_user_content'}),
-    ('instagram',{'instagram_business_basic','instagram_business_content_publish','instagram_business_manage_insights'}),
+    ('facebook',{'pages_manage_posts','read_insights','pages_read_engagement','pages_read_user_content','pages_manage_engagement'}),
+    ('instagram',{'instagram_business_basic','instagram_business_content_publish','instagram_business_manage_insights','instagram_business_manage_comments'}),
     ('pinterest',{'pins:write','pins:read','boards:read','user_accounts:read'}),
     ('tiktok',{'user.info.basic','video.publish','video.list','user.info.stats'}),
 ])
-def test_single_connection_includes_analytics_without_management(monkeypatch,provider,required):
+def test_single_connection_includes_analytics_and_comments_without_messaging(monkeypatch,provider,required):
     monkeypatch.setenv('MARKETING_META_API_VERSION','v25.0')
     monkeypatch.setattr(oauth,'config',lambda _:('client','secret','redirect'));monkeypatch.setattr(oauth,'cipher',Mock())
     from urllib.parse import urlparse,parse_qs
@@ -192,7 +192,7 @@ def test_single_connection_includes_analytics_without_management(monkeypatch,pro
     for kwargs in ({},{'analytics':False},{'analytics':True}):
         requested=parse_qs(urlparse(oauth.begin(Mock(),ctx,provider,**kwargs)['url']).query)['scope'][0].split(',')
         assert required.issubset(requested)
-        assert not {'instagram_business_manage_comments','instagram_business_manage_messages','pages_manage_engagement','pages_messaging'}.intersection(requested)
+        assert not {'instagram_business_manage_messages','pages_messaging'}.intersection(requested)
         assert len(requested)==len(set(requested))
 
 

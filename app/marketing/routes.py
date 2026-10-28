@@ -11,6 +11,8 @@ from .providers import publisher, ProviderError, request as provider_request, pi
 router=APIRouter(prefix='/tenants/{tenant_slug}/marketing',tags=['Marketing'])
 from .analytics_routes import router as analytics_router
 router.include_router(analytics_router)
+from .comments_routes import router as comments_router
+router.include_router(comments_router)
 
 def work_facts(cur,tenant,work_id):
     from routers.catalog import _build_full_work_payload

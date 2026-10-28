@@ -1,11 +1,10 @@
 # Social analytics
 
-Initial analytics implementation: October 27, 2026. Migration 042 and the analytics
-worker were subsequently installed in production with authorization. The compact
-presentation, combined connection scopes and Facebook authorization fixes below
-remain local pending approval. No new migration, platform permission grants or
-App Review submissions were performed for this update. Collector implementation
-does not establish live access; see the verification limits below.
+Analytics dashboard, combined analytics authorization, migration 042 and the worker
+are deployed. The published-post comment-management update described at the end of
+this document remains local pending approval. No new migration is required for
+comments. Platform permission grants and App Review submissions are separate from
+implementation. Collector availability does not establish live access.
 
 ## Architecture and schema review
 
@@ -106,7 +105,8 @@ existing publishing path's behavior is preserved.
   existing `pages_show_list`. Publishing scopes are retained in the same connection flow.
 
 Comment summary counts are analytics, not comment text, replies or moderation.
-No comment-management permissions are requested.
+The analytics collector performs no moderation. The shared connection now also
+requests comment-management scopes for the History popup (see SOCIAL_COMMENTS.md).
 
 ### Instagram Login (Graph Instagram v25.0)
 
@@ -120,7 +120,8 @@ No comment-management permissions are requested.
   `total_interactions`, collected independently with lifetime semantics.
 - Analytics authorization adds `instagram_business_manage_insights` to the
   existing `instagram_business_basic` and `instagram_business_content_publish`.
-  It does not add comments, messaging, or Facebook-Login Instagram scopes.
+  The analytics portion adds no messaging or Facebook-Login Instagram scopes.
+  The History popup also requests `instagram_business_manage_comments`.
 
 Metrics are attempted independently. Format-specific or legacy metric rejection
 is recorded as unavailable; no retired `impressions` fallback is invented.
@@ -359,3 +360,12 @@ connection summary and all separate analytics authorization controls.
 Existing tokens must be reauthorized once for newly requested permissions. Code
 cannot grant platform approvals or user consent. No schema changes are needed for
 this update, and all tenant authorization and filtering remain enforced server-side.
+
+## Published-post comment management
+
+The normal Facebook and Instagram connection flow now also requests comment
+management access for the History popup: `pages_manage_engagement` for Facebook
+and `instagram_business_manage_comments` for Instagram. Existing analytics scopes
+are retained. No messaging scopes are added. The analytics collectors themselves
+remain read-only. See SOCIAL_COMMENTS.md for the on-demand moderation endpoints,
+workspace checks, action confirmation, and live-verification limits.
