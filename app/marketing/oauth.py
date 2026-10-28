@@ -100,7 +100,7 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def begin(cur, ctx, provider, analytics=False):
+def begin(cur, ctx, provider, analytics=True):
     client, secret, redirect = config(provider)
     cipher()
 
@@ -194,8 +194,9 @@ def begin(cur, ctx, provider, analytics=False):
             "Unsupported provider.",
         )
 
-    if analytics:
-        # Opt-in only. Existing publishing connections and default scopes are unchanged.
+    if provider in ("facebook", "instagram", "pinterest", "tiktok"):
+        # One connection grants publishing and read-only analytics access together.
+        # Keep the legacy query argument compatible; it no longer narrows access.
         from .analytics_providers import REQUIRED
         requested = params.get('scope', '').split(',')
         params['scope'] = ','.join(dict.fromkeys(requested + REQUIRED.get(provider, [])))
@@ -397,6 +398,8 @@ def finish(cur, ctx, provider, code):
                     page,
                     {
                         "access_token": page["access_token"],
+                        "scope": ",".join(p["permission"] for p in permissions.get("data", [])
+                                          if p.get("status")=="granted" and p.get("permission")),
                     },
                     page["id"],
                 )
@@ -666,6 +669,8 @@ def persist_accounts(cur, ctx, provider, result):
             row["id"],
             "social_account_connected",
         )
+        from .analytics import authorization_updated
+        authorization_updated(cur,tenant,row["id"])
 
     return {
         "connected": len(result),

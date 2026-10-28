@@ -130,10 +130,12 @@ def tick():
             failures = min(8,state['failures']+1)
             delay = min(21600,300*2**(failures-1)) if error.retryable else 21600
             delay = max(delay,getattr(error,'retry_after',0))
+            if category=='authorization_changed':
+                delay=0
             with conn.transaction():
                 cur.execute('''UPDATE social_analytics_sync SET status=%s,error_category=%s,failures=%s,
                     next_run_at=%s,locked_at=NULL WHERE account_id=%s AND tenant_id=%s AND run_id=%s''',
-                    ('disconnected' if category=='disconnected' else 'permission_missing' if category=='permission_missing' else 'failed',
+                    ('pending' if category=='authorization_changed' else 'disconnected' if category=='disconnected' else 'permission_missing' if category=='permission_missing' else 'failed',
                      category,failures,now+timedelta(seconds=delay),account['id'],account['tenant_id'],run_id))
         return True
 

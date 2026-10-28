@@ -177,16 +177,23 @@ def test_unsupported_metric_does_not_stop_other_metrics(monkeypatch):
     assert c.result.observations[1]['value']==12
 
 
-def test_opt_in_scopes_do_not_add_comments_or_messages(monkeypatch):
+@pytest.mark.parametrize('provider,required',[
+    ('facebook',{'pages_manage_posts','read_insights','pages_read_engagement','pages_read_user_content'}),
+    ('instagram',{'instagram_business_basic','instagram_business_content_publish','instagram_business_manage_insights'}),
+    ('pinterest',{'pins:write','pins:read','boards:read','user_accounts:read'}),
+    ('tiktok',{'user.info.basic','video.publish','video.list','user.info.stats'}),
+])
+def test_single_connection_includes_analytics_without_management(monkeypatch,provider,required):
+    monkeypatch.setenv('MARKETING_META_API_VERSION','v25.0')
     monkeypatch.setattr(oauth,'config',lambda _:('client','secret','redirect'));monkeypatch.setattr(oauth,'cipher',Mock())
     from urllib.parse import urlparse,parse_qs
     ctx={'tenant':{'id':'tenant'},'user':{'id':'user'}}
-    regular=parse_qs(urlparse(oauth.begin(Mock(),ctx,'instagram')['url']).query)['scope'][0]
-    analytics=parse_qs(urlparse(oauth.begin(Mock(),ctx,'instagram',analytics=True)['url']).query)['scope'][0]
-    assert set(regular.split(','))=={'instagram_business_basic','instagram_business_content_publish'}
-    assert set(analytics.split(','))==set(regular.split(','))|{'instagram_business_manage_insights'}
-    tiktok=parse_qs(urlparse(oauth.begin(Mock(),ctx,'tiktok',analytics=True)['url']).query)['scope'][0]
-    assert {'video.list','user.info.stats'}.issubset(tiktok.split(','))
+    # Both old query values and the normal connection use one scope set.
+    for kwargs in ({},{'analytics':False},{'analytics':True}):
+        requested=parse_qs(urlparse(oauth.begin(Mock(),ctx,provider,**kwargs)['url']).query)['scope'][0].split(',')
+        assert required.issubset(requested)
+        assert not {'instagram_business_manage_comments','instagram_business_manage_messages','pages_manage_engagement','pages_messaging'}.intersection(requested)
+        assert len(requested)==len(set(requested))
 
 
 def test_api_requires_auth_and_admin():
@@ -200,7 +207,8 @@ def test_api_requires_auth_and_admin():
 
 def test_window_and_incompatible_rate():
     with pytest.raises(HTTPException):a.window(date(2025,1,1),date(2026,1,1))
-    with pytest.raises(HTTPException):a.window(date.today()+timedelta(days=1),date.today()+timedelta(days=1))
+    tomorrow=datetime.now(timezone.utc).date()+timedelta(days=1)
+    with pytest.raises(HTTPException):a.window(tomorrow,tomorrow)
     metrics={'engagements':dict(value=10,status='available',basis='selected_period',coverage=1),'reach':dict(value=100,status='available',basis='lifetime',coverage=1)}
     a.rate(metrics,'instagram');assert metrics['engagement_rate']['value'] is None
 
@@ -371,3 +379,52 @@ def test_missing_insights_grant_does_not_repeat_denied_calls(monkeypatch):
     collector.meta_insights('https://graph.instagram.com/123',{'views':'views','reach':'reach'},'123')
     assert call.call_count==1
     assert [row['availability'] for row in collector.result.observations]==['permission_missing','permission_missing']
+
+
+def test_facebook_core_analytics_does_not_request_user_content(monkeypatch):
+    monkeypatch.setenv('MARKETING_META_API_VERSION','v25.0')
+    today=date.today();collector=Collector({'provider':'facebook','provider_account_id':'page','scopes':['read_insights','pages_read_engagement']},'fake',today,today)
+    def call(method,url,**kwargs):
+        fields=kwargs.get('params',{}).get('fields','')
+        assert 'comments' not in fields and 'reactions' not in fields
+        if url.endswith('/published_posts'):
+            return {'data':[{'id':'page_post','created_time':str(today)+'T12:00:00Z','shares':{'count':2}}]}
+        if url.endswith('/insights'):
+            return {'data':[{'name':kwargs['params']['metric'],'values':[{'value':100}]}]}
+        return {'followers_count':20}
+    monkeypatch.setattr(collector,'call',call)
+    result=collector.collect()
+    assert result.limitations==set()
+    assert len(result.media)==1
+    assert any(r['metric']=='views' and r['subject']=='page_post' and r['value']==100 for r in result.observations)
+    assert all(r['availability']=='permission_missing' for r in result.observations if r['metric'] in ('likes','comments'))
+
+
+def test_optional_facebook_counts_denied_do_not_flag_core_permission(monkeypatch):
+    collector=Collector({'provider':'facebook','scopes':['pages_read_user_content']},'fake',date.today(),date.today())
+    monkeypatch.setattr('app.marketing.analytics_providers.graph',lambda:'https://graph.facebook.com/v25.0')
+    monkeypatch.setattr(collector,'call',Mock(side_effect=AnalyticsError('permission_missing')))
+    insights=Mock();monkeypatch.setattr(collector,'meta_insights',insights)
+    collector.facebook_media({'id':'123','created_time':str(date.today())+'T12:00:00Z'})
+    insights.assert_called_once()
+    assert 'permission_missing' not in collector.result.limitations
+
+
+def test_authorization_updated_queues_only_its_tenant_and_preserves_running_fence(pg,data):
+    for tenant,account in ((data['tenant'],data['account']),(data['other'],data['foreign'])):
+        pg.execute("INSERT INTO social_analytics_sync(account_id,tenant_id,status,error_category,next_run_at,run_id) VALUES(%s,%s,'partial','permission_missing',now()+interval '6 hours',%s)",(account,tenant,uuid4()))
+    a.authorization_updated(pg,data['tenant'],data['account'])
+    pg.execute('SELECT status,error_category FROM social_analytics_sync WHERE account_id=%s',(data['account'],))
+    assert pg.fetchone()=={'status':'pending','error_category':None}
+    pg.execute('SELECT status,error_category FROM social_analytics_sync WHERE account_id=%s',(data['foreign'],))
+    assert pg.fetchone()=={'status':'partial','error_category':'permission_missing'}
+    fence=uuid4();pg.execute("UPDATE social_analytics_sync SET status='processing',run_id=%s WHERE account_id=%s",(fence,data['account']))
+    a.authorization_updated(pg,data['tenant'],data['account'])
+    pg.execute('SELECT status,run_id FROM social_analytics_sync WHERE account_id=%s',(data['account'],))
+    state=pg.fetchone();assert state['status']=='processing' and str(state['run_id'])==str(fence)
+
+
+def test_authorization_updated_is_safe_before_migration():
+    cur=Mock();cur.fetchone.return_value={'available':False}
+    a.authorization_updated(cur,uuid4(),uuid4())
+    assert cur.execute.call_count==1

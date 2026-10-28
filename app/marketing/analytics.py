@@ -52,6 +52,21 @@ def refresh(cur, ctx, account_id):
     return row
 
 
+def authorization_updated(cur, tenant, account_id):
+    """A new credential supersedes previous permission errors, not historical data.
+
+    Keep OAuth usable before the optional analytics migration has been installed.
+    A processing run retains its fence; its credential guard will queue a fresh run.
+    """
+    exists=s.one(cur,"SELECT to_regclass('public.social_analytics_sync') IS NOT NULL AS available")
+    if not exists['available']:
+        return
+    cur.execute('''UPDATE social_analytics_sync SET next_run_at=now(),requested_at=now(),failures=0,
+        status=CASE WHEN status='processing' THEN status ELSE 'pending' END,
+        error_category=CASE WHEN status='processing' THEN error_category ELSE NULL END
+        WHERE account_id=%s AND tenant_id=%s''',(account_id,tenant))
+
+
 def latest(rows):
     result = {}
     for row in sorted(rows, key=lambda r:r['observed_at']):
@@ -132,13 +147,14 @@ def report(cur, tenant, start=None, end=None, provider=None, account_id=None, ca
         FROM social_analytics_observations o
         WHERE o.tenant_id=%s AND o.account_id=ANY(%s::uuid[]) AND o.definition_version=%s
         AND ((o.scope='day' AND o.period_start BETWEEN %s AND %s)
-          OR (o.scope<>'day' AND o.observed_at >= %s::date AND o.observed_at < (%s::date+1)::timestamptz))
+          OR (o.scope<>'day' AND o.observed_at >= (%s::date::timestamp AT TIME ZONE 'UTC')
+              AND o.observed_at < ((%s::date+1)::timestamp AT TIME ZONE 'UTC')))
         ORDER BY account_id,subject,metric,scope,
         CASE WHEN scope='day' THEN period_start ELSE (observed_at AT TIME ZONE 'UTC')::date END,definition_version,observed_at DESC''',
         (tenant,ids,VERSION,previous_start,end,previous_start,end))
     baselines = s.rows(cur,'''SELECT DISTINCT ON(account_id,metric) * FROM social_analytics_observations
         WHERE tenant_id=%s AND account_id=ANY(%s::uuid[]) AND definition_version=%s
-        AND subject='' AND scope='snapshot' AND observed_at<%s::date
+        AND subject='' AND scope='snapshot' AND observed_at<(%s::date::timestamp AT TIME ZONE 'UTC')
         ORDER BY account_id,metric,observed_at DESC''',(tenant,ids,VERSION,start))
     observations = sorted(baselines+observations,key=lambda row:row['observed_at'])
     media = s.rows(cur, '''SELECT m.*,a.provider,a.display_name,t.post_id,p.campaign_id,c.name AS campaign_name,
@@ -150,7 +166,8 @@ def report(cur, tenant, start=None, end=None, provider=None, account_id=None, ca
         LEFT JOIN social_posts p ON p.id=t.post_id AND p.tenant_id=m.tenant_id
         LEFT JOIN marketing_campaigns c ON c.id=p.campaign_id AND c.tenant_id=p.tenant_id
         WHERE m.tenant_id=%s AND m.account_id=ANY(%s::uuid[])
-        AND m.published_at>=%s::date AND m.published_at<(%s::date+1)::timestamptz
+        AND m.published_at>=(%s::date::timestamp AT TIME ZONE 'UTC')
+        AND m.published_at<((%s::date+1)::timestamp AT TIME ZONE 'UTC')
         AND (%s::uuid IS NULL OR p.campaign_id=%s::uuid)
         ORDER BY m.published_at DESC''',(tenant,ids,start,end,campaign_id,campaign_id))
     # A provider post may be referenced by several historical InkSuite targets.

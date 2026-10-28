@@ -30,7 +30,7 @@ METRICS = {
     'outbound_clicks': ('Outbound clicks', 'actions', 'sum', 'Clicks from Pinterest to an external destination.'),
 }
 REQUIRED = {
-    'facebook': ['read_insights', 'pages_read_engagement'],
+    'facebook': ['read_insights', 'pages_read_engagement', 'pages_read_user_content'],
     'instagram': ['instagram_business_basic', 'instagram_business_manage_insights'],
     'pinterest': ['user_accounts:read', 'pins:read', 'boards:read'],
     'tiktok': ['user.info.stats', 'video.list'],
@@ -251,7 +251,7 @@ class Collector:
             raise AnalyticsError('unsupported_api_version')
         profile = self.optional(lambda: self.call('GET', root, params={'fields': 'followers_count'}))
         if profile:
-            self.result.add('followers', profile.get('followers_count'), date.today(), scope='snapshot')
+            self.result.add('followers', profile.get('followers_count'), datetime.now(timezone.utc).date(), scope='snapshot')
         # Reach has time-series semantics. Other account insight metrics now use
         # total_value; collect daily windows independently to preserve their scope.
         self.meta_insights(root, {'reach': 'reach'})
@@ -293,10 +293,12 @@ class Collector:
             raise AnalyticsError('unsupported_api_version')
         data = self.optional(lambda: self.call('GET', root, params={'fields': 'followers_count'}))
         if data:
-            self.result.add('followers', data.get('followers_count'), date.today(), scope='snapshot')
+            self.result.add('followers', data.get('followers_count'), datetime.now(timezone.utc).date(), scope='snapshot')
         # Current views metric; retired impressions/engaged_users names are not used.
         self.meta_insights(root, {'page_media_view': 'views','page_total_media_view_unique':'reach'})
-        fields = 'id,created_time,message,permalink_url,full_picture,reactions.limit(0).summary(true),comments.limit(0).summary(true),shares'
+        # Summary edges for user-generated reactions/comments require additional
+        # access. Never let them block Page discovery or read_insights metrics.
+        fields = 'id,created_time,message,permalink_url,full_picture,shares'
         for post in self.known_posts:
             item = self.optional(lambda: self.call('GET',graph()+'/'+post['external_id'],params={'fields':fields}))
             if item:
@@ -310,7 +312,18 @@ class Collector:
     def facebook_media(self,item):
         identifier = self.media(item, instant(item.get('created_time')), 'post', item.get('message'), item.get('permalink_url'), item.get('full_picture'))
         for key, remote in (('likes', 'reactions'), ('comments', 'comments')):
-            self.result.add(key, item.get(remote, {}).get('summary', {}).get('total_count'), self.end, scope='lifetime', subject=identifier)
+            value=None
+            availability='permission_missing'
+            if 'pages_read_user_content' in scopes(self.account):
+                try:
+                    summary=self.call('GET',graph()+'/'+identifier,params={'fields':remote+'.limit(0).summary(true)'})
+                    value=summary.get(remote,{}).get('summary',{}).get('total_count')
+                    availability=None
+                except AnalyticsError as error:
+                    if error.retryable or error.category in ('authorization_expired','disconnected','authorization_changed'):
+                        raise
+                    availability='permission_missing' if error.category=='permission_missing' else 'unsupported'
+            self.result.add(key, value, self.end, scope='lifetime', subject=identifier,availability=availability)
         self.result.add('shares', item.get('shares', {}).get('count'), self.end, scope='lifetime', subject=identifier)
         self.meta_insights(graph() + '/' + identifier, {'post_media_view': 'views','post_total_media_view_unique':'reach'}, identifier)
 
@@ -337,7 +350,7 @@ class Collector:
             self.pinterest_daily(data)
         profile = self.optional(lambda: self.call('GET', root + '/user_account'))
         if profile:
-            self.result.add('followers', profile.get('follower_count'), date.today(), scope='snapshot')
+            self.result.add('followers', profile.get('follower_count'), datetime.now(timezone.utc).date(), scope='snapshot')
         for post in self.known_posts:
             item = self.optional(lambda: self.call('GET',root+'/pins/'+post['external_id']))
             if item:
@@ -364,7 +377,7 @@ class Collector:
         if 'user.info.stats' in granted:
             user = self.optional(lambda: self.call('GET', root + '/user/info/', params={'fields': 'follower_count'}))
             if user:
-                self.result.add('followers', user.get('data', {}).get('user', {}).get('follower_count'), date.today(), scope='snapshot')
+                self.result.add('followers', user.get('data', {}).get('user', {}).get('follower_count'), datetime.now(timezone.utc).date(), scope='snapshot')
         else:
             self.result.limitations.add('permission_missing')
         if 'video.list' not in granted:

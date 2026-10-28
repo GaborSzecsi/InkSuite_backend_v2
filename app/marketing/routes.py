@@ -258,7 +258,7 @@ def accounts(ctx=Depends(s.access)):
         return s.rows(cur,'''SELECT id,provider,display_name,username,account_type,profile_image_url,status,token_expires_at,disconnected_at FROM social_accounts WHERE tenant_id=%s ORDER BY provider,display_name''',(ctx['tenant']['id'],))
 
 @router.post('/social/connect/{provider}')
-def connect(provider:str,analytics:bool=False,ctx=Depends(s.admin)):
+def connect(provider:str,analytics:bool=True,ctx=Depends(s.admin)):
     try:
         publisher(provider)
         with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur: return oauth.begin(cur,ctx,provider,analytics=analytics)

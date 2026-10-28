@@ -1,9 +1,11 @@
 # Social analytics
 
-Implemented locally on October 27, 2026. Not deployed. No production migration,
-OAuth scope changes, permission grants, review submissions, or worker activation
-were performed. Never describe all four integrations as operational merely because
-their collectors exist: see the live verification limits below.
+Initial analytics implementation: October 27, 2026. Migration 042 and the analytics
+worker were subsequently installed in production with authorization. The compact
+presentation, combined connection scopes and Facebook authorization fixes below
+remain local pending approval. No new migration, platform permission grants or
+App Review submissions were performed for this update. Collector implementation
+does not establish live access; see the verification limits below.
 
 ## Architecture and schema review
 
@@ -93,11 +95,15 @@ existing publishing path's behavior is preserved.
 - GET `/{page_id}/insights`: `page_media_view` and
   `page_total_media_view_unique`, period `day` and bounded dates.
 - GET `/{page_id}/published_posts` and GET `/{post_id}`: publication metadata,
-  permalink, image, reactions/comment summaries and shares.
+  permalink, image and shares. Reactions/comment summary edges are separate optional
+  calls, attempted only when recorded grants include `pages_read_user_content`.
+  Their absence or rejection does not block core post discovery or Page Insights,
+  and does not produce an account-wide analytics reauthorization warning. This
+  read-only permission is included in the normal connection request.
 - GET `/{post_id}/insights`: `post_media_view` and
   `post_total_media_view_unique`, period `lifetime`.
-- Analytics scopes: `read_insights`, `pages_read_engagement`; Page discovery uses
-  existing `pages_show_list`. Existing publishing scopes are unchanged.
+- Analytics scopes: `read_insights`, `pages_read_engagement`, `pages_read_user_content`; Page discovery uses
+  existing `pages_show_list`. Publishing scopes are retained in the same connection flow.
 
 Comment summary counts are analytics, not comment text, replies or moderation.
 No comment-management permissions are requested.
@@ -140,8 +146,8 @@ availability differs from production; the existing configurable API base is reus
 - POST `/v2/video/list/`, and POST `/v2/video/query/` for known published video IDs:
   ID/title/timestamp/cover/share URL and `like_count`, `comment_count`,
   `share_count`, `view_count` (`video.list`).
-- Existing `user.info.basic,video.publish` publishing authorization remains the
-  default. Analytics is an explicit opt-in for `video.list,user.info.stats`.
+- The normal connection requests `user.info.basic,video.publish,video.list,user.info.stats`
+  together for publishing and read-only analytics.
 
 These are lifetime public-video counters, not daily activity, unique reach,
 impressions, saves, or a full TikTok Business analytics feed. Photo posts or
@@ -151,15 +157,22 @@ its rate is that total divided by lifetime views, only when all components exist
 
 ## Authorization and App Review
 
-POST `social/connect/{provider}?analytics=true` is a distinct administrator action
-from the Analytics UI. The existing publishing-only connection requests do not
-add analytics scopes. OAuth state validation and callback/token-exchange mechanisms
-are reused. No production environment or Meta app settings were changed.
+POST `social/connect/{provider}` requests publishing and read-only analytics access
+in one administrator connection flow. The legacy `analytics` query flag is accepted
+for compatibility but no longer removes analytics scopes. The Analytics page has no
+separate authorization action. OAuth state validation and callback/token-exchange
+mechanisms are reused. No production environment or Meta app settings were changed.
+
+Successful connection updates queue an existing account's analytics sync immediately
+and clear stale non-processing permission errors. Running jobs keep their fence;
+if their credentials were replaced, they yield to a pending retry with the new token.
+Facebook connections save the actual granted permission names returned during login.
+OAuth remains usable if the optional analytics schema is not installed yet.
 
 Stored Meta scope lists historically represented requested scopes, not proof of
 all granted permissions. They are advisory; `scope_information_known` is false for
 these connections. Actual API success/failure is authoritative. Missing/expired
-authorization has explicit status and a reconnect action. TikTok tokens expose their
+authorization has a concise status; reconnect through the existing Social Accounts tab. TikTok tokens expose their
 returned scopes; whitespace/comma-separated legacy Pinterest lists are normalized.
 
 Meta external-user analytics generally needs approval/advanced access for the exact
@@ -264,7 +277,7 @@ if they were a user's personal data.
 - TikTok's existing token has publishing/basic scopes only. Analytics is blocked by
   missing `video.list` and `user.info.stats`; no live TikTok analytics success is claimed.
 - The pre-existing general provider error-redaction regression tests for HTTP 400/401
-  fail on the unchanged publishing error path. Analytics uses its new opt-in redacted
+  fail on the unchanged publishing error path. Analytics uses its redacted
   refresh path and separately tested safe collector. This change does not claim to fix
   the unrelated default publishing error-message behavior.
 - Full-project TypeScript checking has existing diagnostics outside Analytics; no
@@ -329,3 +342,20 @@ unchanged by this analytics implementation. No packages/dependencies were added.
 - https://developers.tiktok.com/docs/en/tiktok-api-v2-video-list
 - https://developers.tiktok.com/docs/en/tiktok-api-v2-get-user-info
 - https://developers.tiktok.com/docs/en/tiktok-api-v2-video-object
+
+
+## Compact analytics presentation update
+
+Platform panels use provider accents and show only supported metrics with collected
+values (including real zeroes). Null or unsupported metrics are omitted from panel
+cards, chart choices and empty table columns. Missing cells within a mixed-platform
+table remain an em dash. Measurement definitions remain available in tooltips;
+reporting-scope and missing-day semantics are unchanged in the API and chart data.
+Filters align in six desktop columns and reflow using the available container width.
+One compact selectable trend replaces three charts. Post tables scroll internally;
+campaign comparison is collapsed initially. The Analytics tab omits the dashboard's
+connection summary and all separate analytics authorization controls.
+
+Existing tokens must be reauthorized once for newly requested permissions. Code
+cannot grant platform approvals or user consent. No schema changes are needed for
+this update, and all tenant authorization and filtering remain enforced server-side.
