@@ -100,7 +100,7 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def begin(cur, ctx, provider):
+def begin(cur, ctx, provider, analytics=False):
     client, secret, redirect = config(provider)
     cipher()
 
@@ -163,8 +163,6 @@ def begin(cur, ctx, provider):
             [
                 "instagram_business_basic",
                 "instagram_business_content_publish",
-                "instagram_business_manage_comments",
-                "instagram_business_manage_messages",
             ]
         )
 
@@ -196,18 +194,25 @@ def begin(cur, ctx, provider):
             "Unsupported provider.",
         )
 
+    if analytics:
+        # Opt-in only. Existing publishing connections and default scopes are unchanged.
+        from .analytics_providers import REQUIRED
+        requested = params.get('scope', '').split(',')
+        params['scope'] = ','.join(dict.fromkeys(requested + REQUIRED.get(provider, [])))
+
     return {
         "url": url + "?" + urlencode(params),
     }
 
 
-def token_exchange(provider, body):
+def token_exchange(provider, body, redact_errors=False):
     client, secret, redirect = config(provider)
 
     if provider == "instagram":
         return request(
             "POST",
             "https://api.instagram.com/oauth/access_token",
+            redact_errors=redact_errors,
             data={
                 **body,
                 "client_id": client,
@@ -219,6 +224,7 @@ def token_exchange(provider, body):
         return request(
             "POST",
             pinterest_api_base() + "/v5/oauth/token",
+            redact_errors=redact_errors,
             auth=(client, secret),
             data=body,
         )
@@ -227,6 +233,7 @@ def token_exchange(provider, body):
         return request(
             "POST",
             "https://open.tiktokapis.com/v2/oauth/token/",
+            redact_errors=redact_errors,
             data={
                 **body,
                 "client_key": client,
@@ -237,6 +244,7 @@ def token_exchange(provider, body):
     return request(
         "GET",
         graph() + "/oauth/access_token",
+        redact_errors=redact_errors,
         params={
             **body,
             "client_id": client,
@@ -430,8 +438,6 @@ def finish(cur, ctx, provider, code):
                 [
                     "instagram_business_basic",
                     "instagram_business_content_publish",
-                    "instagram_business_manage_comments",
-                    "instagram_business_manage_messages",
                 ]
             ),
         }
@@ -666,7 +672,7 @@ def persist_accounts(cur, ctx, provider, result):
     }
 
 
-def refresh(account):
+def refresh(account, redact_errors=False):
     if account["status"] != "connected":
         raise ProviderError(
             "disconnected",
@@ -697,6 +703,7 @@ def refresh(account):
         data = request(
             "GET",
             "https://graph.instagram.com/refresh_access_token",
+            redact_errors=redact_errors,
             params={
                 "grant_type": "ig_refresh_token",
                 "access_token": current_token,
@@ -730,6 +737,7 @@ def refresh(account):
                 account["tenant_id"],
             ),
         },
+        redact_errors=redact_errors,
     )
 
     return data["access_token"], data

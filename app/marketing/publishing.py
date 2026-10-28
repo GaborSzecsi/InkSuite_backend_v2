@@ -6,8 +6,12 @@ from .domain import schedule_instant,aggregate
 from .providers import publisher,ProviderError,media_for_target
 from .oauth import encrypt
 
-def credentials(cur,account):
-    token,data=publisher(account['provider']).refresh_credentials(account)
+def credentials(cur,account,redact_errors=False):
+    if redact_errors:
+        from .oauth import refresh
+        token,data=refresh(account,redact_errors=True)
+    else:
+        token,data=publisher(account['provider']).refresh_credentials(account)
     if data:
         expiry=datetime.now(timezone.utc)+timedelta(seconds=int(data['expires_in']))
         refresh_expiry=datetime.now(timezone.utc)+timedelta(seconds=int(data['refresh_expires_in'])) if data.get('refresh_expires_in') else None

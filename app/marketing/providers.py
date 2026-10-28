@@ -15,6 +15,7 @@ class ProviderError(Exception):
         super().__init__(message); self.code=code; self.retryable=retryable; self.uncertain=uncertain
 
 def request(method, url, token=None, **kwargs):
+    redact_errors = kwargs.pop('redact_errors', False)
     headers = kwargs.pop('headers', {})
 
     if token:
@@ -71,6 +72,8 @@ def request(method, url, token=None, **kwargs):
             code = 'provider_error'
             provider_message = None
 
+        if redact_errors:
+            provider_message = None
         print(
             'PROVIDER ERROR:',
             {

@@ -1,0 +1,17 @@
+[Unit]
+Description=InkSuite social analytics synchronization
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/inksuite/app
+EnvironmentFile=/etc/inksuite-api.env
+ExecStart=/home/ubuntu/inksuite/app/.venv/bin/python -m app.marketing.analytics_worker
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

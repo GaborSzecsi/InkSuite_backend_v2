@@ -9,6 +9,8 @@ from . import oauth, publishing
 from .providers import publisher, ProviderError, request as provider_request, pinterest_api_base
 
 router=APIRouter(prefix='/tenants/{tenant_slug}/marketing',tags=['Marketing'])
+from .analytics_routes import router as analytics_router
+router.include_router(analytics_router)
 
 def work_facts(cur,tenant,work_id):
     from routers.catalog import _build_full_work_payload
@@ -256,10 +258,10 @@ def accounts(ctx=Depends(s.access)):
         return s.rows(cur,'''SELECT id,provider,display_name,username,account_type,profile_image_url,status,token_expires_at,disconnected_at FROM social_accounts WHERE tenant_id=%s ORDER BY provider,display_name''',(ctx['tenant']['id'],))
 
 @router.post('/social/connect/{provider}')
-def connect(provider:str,ctx=Depends(s.admin)):
+def connect(provider:str,analytics:bool=False,ctx=Depends(s.admin)):
     try:
         publisher(provider)
-        with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur: return oauth.begin(cur,ctx,provider)
+        with db_conn() as conn,conn.transaction(),conn.cursor(row_factory=dict_row) as cur: return oauth.begin(cur,ctx,provider,analytics=analytics)
     except ProviderError as e: raise HTTPException(422,str(e)) from None
 
 @router.post('/social/oauth/{provider}/callback')
