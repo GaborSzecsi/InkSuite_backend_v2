@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from . import service as s
-from .analytics_providers import METRICS, PROVIDERS, REQUIRED, VERSION, SUPPORTED, scopes
+from .analytics_providers import METRICS, PROVIDERS, REQUIRED, VERSION, SUPPORTED, scopes, required_scopes
 
 
 def window(start, end):
@@ -17,16 +17,17 @@ def window(start, end):
 
 
 def filters(cur, tenant):
-    accounts = s.rows(cur, '''SELECT a.id,a.provider,a.display_name,a.status,a.scopes,
+    accounts = s.rows(cur, '''SELECT a.id,a.provider,a.display_name,a.status,a.scopes,a.provider_metadata,
         j.status AS sync_status,j.last_attempt_at,j.last_success_at,j.next_run_at,j.error_category,j.backfill_before
         FROM social_accounts a LEFT JOIN social_analytics_sync j ON j.account_id=a.id AND j.tenant_id=a.tenant_id
         WHERE a.tenant_id=%s AND a.provider=ANY(%s) ORDER BY a.provider,a.display_name''', (tenant,list(PROVIDERS)))
     for account in accounts:
         granted = scopes(account)
-        account['analytics_scopes'] = REQUIRED[account['provider']]
-        account['missing_scopes'] = sorted(set(REQUIRED[account['provider']])-granted)
+        account['analytics_scopes'] = required_scopes(account)
+        account['missing_scopes'] = sorted(set(account['analytics_scopes'])-granted)
         account['scope_information_known'] = bool(granted) and account['provider'] not in ('facebook','instagram')
         account.pop('scopes')
+        account.pop('provider_metadata')
     return {'accounts': accounts, 'campaigns': s.rows(cur,
         'SELECT id,name,start_date,end_date FROM marketing_campaigns WHERE tenant_id=%s ORDER BY name',(tenant,)),
         'platforms': list(PROVIDERS), 'definitions': {key:dict(label=v[0],unit=v[1],aggregation=v[2],description=v[3]) for key,v in METRICS.items()}}

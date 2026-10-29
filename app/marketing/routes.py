@@ -257,7 +257,9 @@ def restore_library_asset(asset_id:UUID,visible:bool=True,ctx=Depends(s.access))
 @router.get('/social/accounts')
 def accounts(ctx=Depends(s.access)):
     with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:
-        return s.rows(cur,'''SELECT id,provider,display_name,username,account_type,profile_image_url,status,token_expires_at,disconnected_at FROM social_accounts WHERE tenant_id=%s ORDER BY provider,display_name''',(ctx['tenant']['id'],))
+        return s.rows(cur,'''SELECT id,provider,display_name,username,account_type,profile_image_url,status,token_expires_at,disconnected_at,
+            CASE WHEN provider='instagram' THEN COALESCE(provider_metadata->>'auth_method','instagram') ELSE provider END AS connection_method
+            FROM social_accounts WHERE tenant_id=%s ORDER BY provider,display_name''',(ctx['tenant']['id'],))
 
 @router.post('/social/connect/{provider}')
 def connect(provider:str,analytics:bool=True,ctx=Depends(s.admin)):

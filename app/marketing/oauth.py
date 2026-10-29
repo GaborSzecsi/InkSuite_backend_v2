@@ -146,6 +146,10 @@ def begin(cur, ctx, provider, analytics=True):
                 "pages_manage_posts",
                 "pages_manage_engagement",
                 "business_management",
+                "instagram_basic",
+                "instagram_content_publish",
+                "instagram_manage_comments",
+                "instagram_manage_insights",
             ]
         )
 
@@ -426,6 +430,18 @@ def finish(cur, ctx, provider, code):
                     page["id"],
                 )
             )
+            linked = page.get('instagram_business_account') or {}
+            if linked.get('id'):
+                result.append(({
+                    **linked, 'provider': 'instagram',
+                    'name': linked.get('name') or linked.get('username') or 'Instagram',
+                    'parent_display_name': page.get('name'),
+                    'provider_metadata': {'auth_method': 'facebook', 'instagram_ids': [str(linked['id'])]},
+                }, {
+                    'access_token': page['access_token'],
+                    'scope': ','.join(p['permission'] for p in permissions.get('data', [])
+                                      if p.get('status') == 'granted' and p.get('permission')),
+                }, str(page['id'])))
 
     elif provider == "instagram":
         # Instagram first returns a short-lived token. Exchange it for a
@@ -450,7 +466,7 @@ def finish(cur, ctx, provider, code):
             access_token,
             params={
                 "fields": (
-                    "id,username,name,account_type,"
+                    "id,user_id,username,name,account_type,"
                     "profile_picture_url"
                 ),
             },
@@ -492,6 +508,8 @@ def finish(cur, ctx, provider, code):
                     or "Instagram",
                     "username": profile.get("username"),
                     "profile_picture_url": profile.get("profile_picture_url"),
+                    'provider_metadata': {'auth_method': 'instagram',
+                        'instagram_ids': list(dict.fromkeys(str(profile[key]) for key in ('id', 'user_id') if profile.get(key)))},
                 },
                 account_tokens,
                 None,
@@ -551,10 +569,15 @@ def finish(cur, ctx, provider, code):
     return persist_accounts(cur, ctx, provider, result)
 
 
+def selection_id(item, provider):
+    destination = item.get('provider', provider)
+    return str(item['id']) if destination == provider else destination + ':' + str(item['id'])
+
+
 def prepare_selection(cur, ctx, provider, result):
     # The browser receives only an encrypted, expiring envelope. The nonce in
     # the existing OAuth table makes confirmation single-use across workers.
-    result = list({str(item[0]["id"]):item for item in result}.values())
+    result = list({selection_id(item[0], provider):item for item in result}.values())
     nonce = secrets.token_urlsafe(40)
     cur.execute(
         """INSERT INTO marketing_oauth_states
@@ -567,9 +590,10 @@ def prepare_selection(cur, ctx, provider, result):
         "provider":provider, "accounts":result}
     ticket = cipher().encrypt(json.dumps(payload).encode()).decode()
     return {"selection_required":True, "selection_token":ticket, "expires_in":600,
-        "accounts":[{"id":str(item["id"]),
+        "accounts":[{"id":selection_id(item, provider),
             "display_name":item.get("name") or item.get("username") or provider,
-            "username":item.get("username"), "provider":provider}
+            "username":item.get("username"), "provider":item.get('provider', provider),
+            'parent_display_name': item.get('parent_display_name')}
             for item, _, _ in result]}
 
 
@@ -583,17 +607,70 @@ def confirm_selection(cur, ctx, provider, ticket, account_ids):
         or payload.get("user") != str(ctx["user"]["id"])
         or payload.get("provider") != provider):
         raise HTTPException(400, "Page selection does not belong to this user and workspace.")
-    available = {str(item[0]["id"]):item for item in payload["accounts"]}
+    available = {selection_id(item[0], provider):item for item in payload["accounts"]}
     if not account_ids or len(set(account_ids)) != len(account_ids) or any(i not in available for i in account_ids):
         raise HTTPException(422, "Choose one or more of the available accounts.")
     consume_state(cur, ctx, provider, payload["nonce"])
-    return persist_accounts(cur, ctx, provider, [available[i] for i in account_ids])
+    chosen = [available[i] for i in account_ids]
+    total = 0
+    for destination in dict.fromkeys(item[0].get('provider', provider) for item in chosen):
+        if destination != provider and (provider, destination) != ('facebook', 'instagram'):
+            raise HTTPException(400, 'Invalid destination provider.')
+        total += persist_accounts(cur, ctx, destination,
+            [item for item in chosen if item[0].get('provider', provider) == destination])['connected']
+    return {'connected': total}
+
+
+def instagram_reconnection(cur, ctx, item, account_tokens):
+    """Reuse only identities proved by Meta IDs or ownership of saved published media."""
+    s.one(cur, 'SELECT id FROM tenants WHERE id=%s FOR UPDATE', (ctx['tenant']['id'],))
+    aliases = set((item.get('provider_metadata') or {}).get('instagram_ids') or []) | {str(item['id'])}
+    existing = s.rows(cur, "SELECT * FROM social_accounts WHERE tenant_id=%s AND provider='instagram' ORDER BY id FOR UPDATE",
+                      (ctx['tenant']['id'],))
+    matches = [row for row in existing if aliases & ({str(row['provider_account_id'])} |
+               set((row.get('provider_metadata') or {}).get('instagram_ids') or []))]
+    if not matches:
+        from .providers import instagram_graph
+        root = instagram_graph(item)
+        for row in existing:
+            posts = s.rows(cur, """SELECT provider_post_id FROM social_post_targets WHERE tenant_id=%s
+                AND social_account_id=%s AND provider='instagram' AND provider_status='published'
+                AND provider_post_id IS NOT NULL ORDER BY published_at DESC NULLS LAST LIMIT 3""",
+                (ctx['tenant']['id'], row['id']))
+            for post in posts:
+                try:
+                    media = request('GET', root + '/' + post['provider_post_id'], account_tokens['access_token'],
+                                    params={'fields': 'id,owner'}, redact_errors=True)
+                    owner = media.get('owner') or {}
+                    owner = str(owner.get('id') if isinstance(owner, dict) else owner)
+                    if str(media.get('id')) == post['provider_post_id'] and owner in aliases:
+                        matches.append(row)
+                        break
+                except ProviderError:
+                    continue
+    if len(matches) > 1:
+        raise HTTPException(409, 'Multiple saved connections match this Instagram account. Resolve the duplicate connections before reconnecting.')
+    if not matches:
+        username = (item.get('username') or '').casefold()
+        if username and any((row.get('username') or '').casefold() == username for row in existing):
+            raise HTTPException(409, 'Reconnect this Instagram account using its current connection method once to verify its identity before switching methods.')
+        return None, {**(item.get('provider_metadata') or {}), 'instagram_ids': sorted(aliases)}
+    row = matches[0]
+    aliases |= {str(row['provider_account_id'])} | set((row.get('provider_metadata') or {}).get('instagram_ids') or [])
+    return row['id'], {**(item.get('provider_metadata') or {}), 'instagram_ids': sorted(aliases)}
 
 
 def persist_accounts(cur, ctx, provider, result):
     tenant = ctx["tenant"]["id"]
     user = ctx["user"]["id"]
     for item, account_tokens, parent in result:
+        metadata = item.get('provider_metadata') or {}
+        existing_id = None
+        if provider == 'instagram':
+            existing_id, metadata = instagram_reconnection(cur, ctx, item, account_tokens)
+            if existing_id:
+                cur.execute('UPDATE social_accounts SET provider_account_id=%s WHERE id=%s AND tenant_id=%s',
+                            (str(item['id']), existing_id, tenant))
         expires = (
             datetime.now(timezone.utc)
             + timedelta(seconds=int(account_tokens["expires_in"]))
@@ -629,11 +706,12 @@ def persist_accounts(cur, ctx, provider, result):
                 refresh_token_expires_at,
                 scopes,
                 connected_by
+                ,provider_metadata
             )
             VALUES(
                 %s,%s,%s,%s,%s,
                 %s,%s,%s,%s,%s,
-                %s,%s,%s,%s,%s
+                %s,%s,%s,%s,%s,%s
             )
             ON CONFLICT(
                 tenant_id,
@@ -642,6 +720,10 @@ def persist_accounts(cur, ctx, provider, result):
             )
             DO UPDATE SET
                 display_name = EXCLUDED.display_name,
+                username = EXCLUDED.username,
+                profile_image_url = EXCLUDED.profile_image_url,
+                provider_parent_account_id = EXCLUDED.provider_parent_account_id,
+                provider_metadata = EXCLUDED.provider_metadata,
                 access_token_encrypted = EXCLUDED.access_token_encrypted,
                 refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
                 token_expires_at = EXCLUDED.token_expires_at,
@@ -655,7 +737,7 @@ def persist_accounts(cur, ctx, provider, result):
             RETURNING id
             """,
             (
-                s.uid(),
+                existing_id or s.uid(),
                 tenant,
                 provider,
                 str(item["id"]),
@@ -687,6 +769,7 @@ def persist_accounts(cur, ctx, provider, result):
                     ).split(",")
                 ),
                 user,
+                Jsonb(metadata),
             ),
         )
 
@@ -727,7 +810,7 @@ def refresh(account, redact_errors=False):
             None,
         )
 
-    if account["provider"] == "instagram":
+    if account["provider"] == "instagram" and (account.get('provider_metadata') or {}).get('auth_method') != 'facebook':
         current_token = decrypt(
             account["access_token_encrypted"],
             account["tenant_id"],

@@ -135,3 +135,29 @@ disconnect or linkage changes invalidate the view. Moderation continues using
 the original Instagram connection and its Instagram Login comment permission.
 This is a read fallback, not proof that the legacy moderation permission has
 been granted or credited by App Review. No migration or new dependency is needed.
+
+## Combined Facebook and linked Instagram account selection
+
+Facebook OAuth now requests the Page permissions plus instagram_basic,
+instagram_content_publish, instagram_manage_insights and instagram_manage_comments.
+Its signed, expiring selection ticket offers Pages and their linked professional
+Instagram accounts separately. Only checked destinations persist; selecting a Page
+does not automatically add its Instagram account, or vice versa. Mixed-provider IDs
+are namespaced in selection only. Tickets remain tenant/user/provider bound and
+single-use. Direct Instagram Login remains available for one account at a time.
+
+Instagram connections store auth_method and verified Instagram ID aliases in the
+existing provider_metadata JSON column. Facebook-authorized Instagram connections
+retain an encrypted Page credential and use graph.facebook.com for publishing,
+analytics, preview, comments and replies. Direct connections use graph.instagram.com.
+No new table, migration, or dependency is introduced.
+
+Reconnect reuses a tenant's existing account row only when Meta ID aliases match or
+the incoming authorization proves ownership of an existing published media object.
+It preserves account UUIDs, post targets and analytics history. Matching usernames
+alone never merges accounts; ambiguous identity requires verification. Changes of
+authorization method invalidate old signed comment handles. Independently stored
+Instagram connections remain separate from Page connections when disconnected.
+
+The combined picker is local work pending deployment. The earlier single-file
+Instagram read fallback was deployed on October 28 and confirmed working by the user.

@@ -39,6 +39,7 @@ def destination(cur, ctx, target_id):
     if account['status'] != 'connected':
         raise HTTPException(409, 'Reconnect this account in Social Accounts to load comments.')
     target['provider_post_id'] = identifier(target['provider_post_id'])
+    target['authorization'] = str(account['provider_account_id']) + ':' + str((account.get('provider_metadata') or {}).get('auth_method') or account['provider'])
     return target, account
 
 
@@ -46,7 +47,8 @@ def seal(target, tenant, kind, **values):
     # The provider only returns comments from an owned post's edge. Bind every
     # action/cursor to that target; arbitrary comment IDs are never accepted.
     payload = dict(kind=kind, tenant=str(tenant), target=str(target['id']),
-                   account=str(target['social_account_id']), post=target['provider_post_id'], **values)
+                   account=str(target['social_account_id']), post=target['provider_post_id'],
+                   authorization=target.get('authorization'), **values)
     return cipher().encrypt(json.dumps(payload).encode()).decode()
 
 
@@ -54,7 +56,8 @@ def unseal(value, target, tenant, kind):
     try:
         data = json.loads(cipher().decrypt(value.encode(), ttl=1800))
         expected = dict(kind=kind, tenant=str(tenant), target=str(target['id']),
-                        account=str(target['social_account_id']), post=target['provider_post_id'])
+                        account=str(target['social_account_id']), post=target['provider_post_id'],
+                        authorization=target.get('authorization'))
         if any(data.get(key) != item for key, item in expected.items()):
             raise ValueError()
         return data
@@ -63,7 +66,7 @@ def unseal(value, target, tenant, kind):
 
 
 def call(account, token, method, path, **kwargs):
-    root = instagram_graph() if account['provider'] == 'instagram' else graph()
+    root = instagram_graph(account) if account['provider'] == 'instagram' else graph()
     return request(method, root + '/' + path, token, redact_errors=True, **kwargs)
 
 
@@ -81,11 +84,13 @@ def provider_error(error, mutation=False):
     raise HTTPException(422, 'The platform could not complete this action. The post or comment may have changed, or this action is not supported.') from None
 
 
-def comment_view(item, target, tenant, reply_to=None, read_account=None):
+def comment_view(item, target, tenant, reply_to=None, read_account=None, manage=True):
     instagram = target['provider'] == 'instagram'
     flags = dict(reply=True if instagram else item.get('can_comment') is True,
                  hide=True if instagram else item.get('can_hide') is True,
                  delete=True if instagram else item.get('can_remove') is True)
+    if not manage:
+        flags = dict.fromkeys(flags, False)
     comment_id = identifier(item.get('id'))
     return dict(id=comment_id,
                 handle=seal(target, tenant, 'comment', comment=comment_id, reply_to=reply_to or comment_id,
@@ -122,7 +127,7 @@ def facebook_read_source(cur, ctx, target, account, token, selected=None):
     No username matching, token copying, or cross-workspace credential lookup.
     The original IG token must prove ownership before any Page can be used.
     """
-    if target['provider'] != 'instagram':
+    if target['provider'] != 'instagram' or (account.get('provider_metadata') or {}).get('auth_method') == 'facebook':
         return None
     try:
         original = call(account, token, 'GET', target['provider_post_id'], params={'fields': 'id,owner'})
@@ -197,7 +202,9 @@ def listing(cur, ctx, target_id, cursor=None, parent=None):
                 read_account = str(source[0]['id'])
     paging = result.get('paging') or {}
     after = (paging.get('cursors') or {}).get('after')
-    return dict(comments=[comment_view(item, target, tenant, reply_to=parent_id, read_account=read_account) for item in result.get('data', [])],
+    from .analytics_providers import scopes
+    manage = (account.get('provider_metadata') or {}).get('auth_method') != 'facebook' or 'instagram_manage_comments' in scopes(account)
+    return dict(comments=[comment_view(item, target, tenant, reply_to=parent_id, read_account=read_account, manage=manage) for item in result.get('data', [])],
                 next_cursor=seal(target, tenant, 'cursor', parent=parent_id, after=after,
                                  **({'read_account': read_account} if read_account else {}))
                 if paging.get('next') and isinstance(after, str) and len(after) < 4096 else None,
@@ -230,7 +237,9 @@ def preview(cur, ctx, target_id):
                 text=item.get('caption' if instagram else 'message') or '', media=media,
                 published_at=item.get('timestamp' if instagram else 'created_time'),
                 permalink=https_url(item.get('permalink' if instagram else 'permalink_url')),
-                required_permissions=PERMISSIONS[target['provider']])
+                required_permissions=(['instagram_basic', 'instagram_manage_comments', 'pages_read_engagement']
+                    if instagram and (account.get('provider_metadata') or {}).get('auth_method') == 'facebook'
+                    else PERMISSIONS[target['provider']]))
 
 
 def act(cur, ctx, target_id, handle, action, message=None):

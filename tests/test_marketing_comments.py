@@ -322,3 +322,38 @@ def test_linked_read_provider_failure_preserves_diagnostic_and_avoids_fabricatio
     monkeypatch.setattr(c,'request',request)
     result=c.listing(pg,ctx,target_id)
     assert result['comments']==[] and result['reported_count']==5 and result['visibility']=='not_returned'
+
+
+@pytest.mark.parametrize('permission',[True,False])
+def test_facebook_authorized_instagram_uses_correct_host_and_granted_actions(env,monkeypatch,permission):
+    pg,data,ctx,target_id=env
+    from psycopg.types.json import Jsonb
+    pg.execute('UPDATE social_accounts SET provider_metadata=%s,scopes=%s WHERE id=%s',
+               (Jsonb({'auth_method':'facebook'}),Jsonb(['instagram_basic']+(['instagram_manage_comments'] if permission else [])),data['account']))
+    calls=[]
+    def request(method,url,*args,**kwargs):
+        calls.append((method,url))
+        return {'data':[response()]} if method=='GET' else {'success':True}
+    monkeypatch.setattr(c,'request',request)
+    page=c.listing(pg,ctx,target_id)
+    assert calls[-1][1]=='https://graph.facebook.com/v25.0/123/comments'
+    item=page['comments'][0]
+    assert item['capabilities']['hide'] is permission
+    if permission:
+        c.act(pg,ctx,target_id,item['handle'],'hide')
+        assert calls[-1]==('POST','https://graph.facebook.com/v25.0/456')
+    else:
+        with pytest.raises(HTTPException) as err:c.act(pg,ctx,target_id,item['handle'],'hide')
+        assert err.value.status_code==403
+
+
+def test_switching_instagram_authorization_invalidates_old_comment_handles(env):
+    from psycopg.types.json import Jsonb
+    pg,data,ctx,target_id=env
+    target,_=c.destination(pg,ctx,target_id)
+    handle=c.comment_view(response(),target,data['tenant'])['handle']
+    pg.execute('UPDATE social_accounts SET provider_metadata=%s WHERE id=%s',
+               (Jsonb({'auth_method':'facebook'}),data['account']))
+    changed,_=c.destination(pg,ctx,target_id)
+    with pytest.raises(HTTPException) as error:c.unseal(handle,changed,data['tenant'],'comment')
+    assert error.value.status_code==409

@@ -43,6 +43,12 @@ SUPPORTED = {
 }
 
 
+def required_scopes(account):
+    if account['provider'] == 'instagram' and (account.get('provider_metadata') or {}).get('auth_method') == 'facebook':
+        return ['instagram_basic', 'instagram_manage_insights', 'pages_read_engagement']
+    return REQUIRED[account['provider']]
+
+
 def scopes(account):
     raw = account.get('scopes') or []
     return set(re.split(r'[,\s]+', ' '.join(raw) if isinstance(raw, list) else str(raw))) - {''}
@@ -245,8 +251,8 @@ class Collector:
                 self.result.add(metric, None, self.end, scope='lifetime' if subject else 'day', subject=subject)
 
     def instagram(self):
-        root = instagram_graph() + '/' + self.account['provider_account_id']
-        self.result.api_version = instagram_graph().rsplit('/', 1)[-1]
+        root = instagram_graph(self.account) + '/' + self.account['provider_account_id']
+        self.result.api_version = instagram_graph(self.account).rsplit('/', 1)[-1]
         if self.result.api_version!='v25.0':
             raise AnalyticsError('unsupported_api_version')
         profile = self.optional(lambda: self.call('GET', root, params={'fields': 'followers_count'}))
@@ -267,7 +273,7 @@ class Collector:
                     availability='permission_missing' if self.insights_denied else None)
         fields = 'id,caption,media_type,media_product_type,timestamp,permalink,thumbnail_url,like_count,comments_count'
         for post in self.known_posts:
-            item = self.optional(lambda: self.call('GET',instagram_graph()+'/'+post['external_id'],params={'fields':fields}))
+            item = self.optional(lambda: self.call('GET',instagram_graph(self.account)+'/'+post['external_id'],params={'fields':fields}))
             if item:
                 self.instagram_media(item)
         seen = {m['external_id'] for m in self.result.media}
@@ -283,7 +289,7 @@ class Collector:
         identifier = self.media(item, instant(item.get('timestamp')), item.get('media_product_type') or item.get('media_type'), item.get('caption'), item.get('permalink'), item.get('thumbnail_url'))
         self.result.add('likes', item.get('like_count'), self.end, scope='lifetime', subject=identifier)
         self.result.add('comments', item.get('comments_count'), self.end, scope='lifetime', subject=identifier)
-        self.meta_insights(instagram_graph() + '/' + identifier,
+        self.meta_insights(instagram_graph(self.account) + '/' + identifier,
             {'reach': 'reach', 'views': 'views', 'shares': 'shares', 'saved': 'saves', 'total_interactions': 'engagements'}, identifier)
 
     def facebook(self):

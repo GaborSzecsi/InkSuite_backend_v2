@@ -152,7 +152,9 @@ def graph():
     if not version: raise ProviderError('configuration','Configure MARKETING_META_API_VERSION with the version enabled for the Meta app.')
     return 'https://graph.facebook.com/'+version
 
-def instagram_graph():
+def instagram_graph(account=None):
+    if account and (account.get('provider_metadata') or {}).get('auth_method') == 'facebook':
+        return graph()
     # Instagram Login uses graph.instagram.com rather than Facebook Graph.
     # Keep the same API version by default, but allow a separate override later.
     version=(
@@ -262,7 +264,7 @@ class InstagramPublisher(SocialPublisher):
                 if (x.get('filesize_bytes') or 0)>8*1024*1024: raise ProviderError('validation','Instagram image exceeds 8 MB.')
             elif not 3<=float(x['duration_seconds'])<=900: raise ProviderError('validation','Use Instagram video between 3 seconds and 15 minutes.')
     def advance(self,a,token,p,t,media):
-        root=instagram_graph()+'/'+a['provider_account_id']; state=t['provider_state']; children=state.get('children',[])
+        root=instagram_graph(a)+'/'+a['provider_account_id']; state=t['provider_state']; children=state.get('children',[])
         if not state.get('container'):
             if len(media)>1 and len(children)<len(media):
                 item=media[len(children)]; body={'is_carousel_item':'true'}
@@ -271,7 +273,7 @@ class InstagramPublisher(SocialPublisher):
                 d=request('POST',root+'/media',token,data=body)
                 return Result('submitted',{'children':children+[str(d['id'])]})
             for child in children:
-                status=request('GET',instagram_graph()+'/'+child,token,params={'fields':'status_code'})['status_code']
+                status=request('GET',instagram_graph(a)+'/'+child,token,params={'fields':'status_code'})['status_code']
                 if status in ('ERROR','EXPIRED'): raise ProviderError('processing_failed','Instagram could not process carousel media.')
                 if status!='FINISHED': return Result('submitted',state)
             body={'caption':content(p,t)}
@@ -285,9 +287,9 @@ class InstagramPublisher(SocialPublisher):
             d=request('POST',root+'/media',token,data=body)
             return Result('submitted',{'container':str(d['id']),'children':children})
         if state.get('published_id'):
-            d=request('GET',instagram_graph()+'/'+state['published_id'],token,params={'fields':'id,permalink'})
+            d=request('GET',instagram_graph(a)+'/'+state['published_id'],token,params={'fields':'id,permalink'})
             return Result('published',state,str(d['id']),d.get('permalink'))
-        d=request('GET',instagram_graph()+'/'+state['container'],token,params={'fields':'status_code'})
+        d=request('GET',instagram_graph(a)+'/'+state['container'],token,params={'fields':'status_code'})
         if d['status_code'] in ('ERROR','EXPIRED'): raise ProviderError('processing_failed','Instagram media container failed or expired.')
         if d['status_code']!='FINISHED': return Result('submitted',state)
         d=request('POST',root+'/media_publish',token,data={'creation_id':state['container']})
