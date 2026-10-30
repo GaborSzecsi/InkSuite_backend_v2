@@ -20,7 +20,7 @@ from .schemas import Organization, Listing, LibraryItem
 router = APIRouter()
 BOOK_JOIN = """FROM marketplace_books b JOIN marketplace_organizations o ON o.id=b.publisher_organization_id
  JOIN works w ON w.id=b.work_id AND w.tenant_id=o.tenant_id"""
-PUBLIC_BOOK = "b.marketplace_status='public' AND o.status='active' AND o.organization_type='publisher'"
+PUBLIC_BOOK = "b.marketplace_status='public' AND o.status='active' AND o.organization_type='publisher' AND (NOT EXISTS(SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id) OR EXISTS(SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id AND ae.archived_at IS NULL))"
 
 
 def legacy_cover(publisher_slug, upload_uid, tenant_id, cur):
@@ -130,7 +130,7 @@ def books(
             where += """ AND (w.title ILIKE %s OR o.name ILIKE %s OR EXISTS(SELECT 1 FROM work_contributors c
               JOIN parties p ON p.id=c.party_id AND p.tenant_id=c.tenant_id WHERE c.work_id=w.id AND c.tenant_id=w.tenant_id AND p.display_name ILIKE %s))"""
             params += ["%" + q + "%"] * 3
-        edition_join = """FROM marketplace_book_editions be JOIN editions e ON e.id=be.edition_id AND e.work_id=w.id AND e.tenant_id=w.tenant_id"""
+        edition_join = """FROM marketplace_book_editions be JOIN editions e ON e.id=be.edition_id AND e.work_id=w.id AND e.tenant_id=w.tenant_id AND e.archived_at IS NULL"""
         verified = verified_filter(publisher, audience, category, edition_join)
         if verified is not None:
             clause, values = verified

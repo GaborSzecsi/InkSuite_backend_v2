@@ -18,7 +18,7 @@ def book_view_query_1(cur, b):
 def book_view_query_2(cur, b):
     return rows(
         cur,
-        "SELECT e.id,e.product_form AS format,e.isbn13,\n      COALESCE(CASE WHEN left(btrim(e.cover_image_link), 8) = 'https://' THEN btrim(e.cover_image_link) END,(SELECT v.resource_link FROM edition_supporting_resources r\n        JOIN edition_supporting_resource_versions v ON v.resource_id=r.id AND v.tenant_id=r.tenant_id\n        WHERE r.tenant_id=e.tenant_id AND r.edition_id=e.id AND r.resource_content_type='01'\n        AND NULLIF(btrim(v.resource_link),'') IS NOT NULL ORDER BY r.is_primary DESC,r.item_order,v.item_order,v.created_at LIMIT 1)) AS cover_image_link,\n      (SELECT min(d.date_value) FROM edition_publishing_dates d WHERE d.edition_id=e.id AND d.tenant_id=e.tenant_id AND d.date_role='01') AS publication_date\n      FROM marketplace_book_editions m JOIN editions e ON e.id=m.edition_id\n      WHERE m.marketplace_book_id=%s AND e.work_id=%s AND e.tenant_id=%s ORDER BY m.is_primary DESC,e.created_at,e.id",
+        "SELECT e.id,e.product_form AS format,e.isbn13,\n      COALESCE(CASE WHEN left(btrim(e.cover_image_link), 8) = 'https://' THEN btrim(e.cover_image_link) END,(SELECT v.resource_link FROM edition_supporting_resources r\n        JOIN edition_supporting_resource_versions v ON v.resource_id=r.id AND v.tenant_id=r.tenant_id\n        WHERE r.tenant_id=e.tenant_id AND r.edition_id=e.id AND r.resource_content_type='01'\n        AND NULLIF(btrim(v.resource_link),'') IS NOT NULL ORDER BY r.is_primary DESC,r.item_order,v.item_order,v.created_at LIMIT 1)) AS cover_image_link,\n      (SELECT min(d.date_value) FROM edition_publishing_dates d WHERE d.edition_id=e.id AND d.tenant_id=e.tenant_id AND d.date_role='01') AS publication_date\n      FROM marketplace_book_editions m JOIN editions e ON e.id=m.edition_id\n      WHERE m.marketplace_book_id=%s AND e.work_id=%s AND e.tenant_id=%s AND e.archived_at IS NULL ORDER BY m.is_primary DESC,e.created_at,e.id",
         (b["id"], b["work_id"], b["tenant_id"]),
     )
 
@@ -177,7 +177,7 @@ def manage_catalog_query_1(cur, org_id, offset, o, q):
 def manage_catalog_query_2(cur, w, o):
     return rows(
         cur,
-        "SELECT e.id,e.product_form AS format,e.isbn13,e.status,\n              EXISTS(SELECT 1 FROM marketplace_book_editions be WHERE be.edition_id=e.id AND be.marketplace_book_id=%s) AS selected\n              FROM editions e WHERE e.work_id=%s AND e.tenant_id=%s ORDER BY e.created_at,e.id",
+        "SELECT e.id,e.product_form AS format,e.isbn13,e.status,\n              EXISTS(SELECT 1 FROM marketplace_book_editions be WHERE be.edition_id=e.id AND be.marketplace_book_id=%s) AS selected\n              FROM editions e WHERE e.work_id=%s AND e.tenant_id=%s AND e.archived_at IS NULL ORDER BY e.created_at,e.id",
         (w["listing_id"], w["id"], o["tenant_id"]),
     )
 

@@ -310,6 +310,7 @@ def add_work_contributor(
         or contributor.get("role_label")
     )
 
+    role_code = {"AUTHOR": "A01", "ILLUSTRATOR": "A12"}.get(role_code, role_code)
     if not role_code:
         raise ValueError("Contributor role code is required")
 
@@ -1956,6 +1957,8 @@ def update_edition_product_identity(
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Persist only Product Identity fields for one existing edition."""
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
 
     try:
         edition_uuid = str(uuid.UUID(str(edition_id)))
@@ -2757,6 +2760,8 @@ def update_edition_descriptive_content(
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Persist Descriptive Content for one existing edition."""
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
 
     try:
         edition_uuid = str(uuid.UUID(str(edition_id)))
@@ -2991,6 +2996,8 @@ def update_edition_subjects_audience(
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Persist Subjects & Audience for one edition using the deployed schema."""
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
 
     try:
         edition_uuid = str(uuid.UUID(str(edition_id)))
@@ -3323,6 +3330,8 @@ def update_edition_publishing_dates(
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Persist ONIX publishing dates and preserve lexical precision."""
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
 
     try:
         edition_uuid = str(uuid.UUID(str(edition_id)))
@@ -3435,6 +3444,8 @@ def update_edition_product_details(
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Persist edition-scoped Product Details and ONIX repeat data."""
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
 
     try:
         edition_uuid = str(uuid.UUID(str(edition_id)))
@@ -3479,6 +3490,13 @@ def update_edition_product_details(
             """,
             (tenant_id, edition_uuid, code, index + 1),
         )
+
+    # Reuse the existing repeatable edition-type table for imported ONIX.
+    if "edition_types" in payload:
+        cur.execute("DELETE FROM edition_types WHERE tenant_id=%s AND edition_id=%s", (tenant_id, edition_uuid))
+        for item_order, code in enumerate(payload.get("edition_types") or [], 1):
+            if _safe_str(code):
+                cur.execute("INSERT INTO edition_types (tenant_id,edition_id,edition_type_code,item_order) VALUES (%s,%s,%s,%s)", (tenant_id, edition_uuid, _safe_str(code), item_order))
 
     content_types = (
         payload.get("product_content_types")
@@ -3893,6 +3911,8 @@ def update_edition_supply_pricing(
     - No parallel pricing table is created or used.
     - Newer ONIX fields are written only when the column exists.
     """
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
 
     try:
         edition_uuid = str(uuid.UUID(str(edition_id)))
@@ -4614,6 +4634,11 @@ def update_edition_supply_pricing(
                     supply_detail_id,
                 "price_type_code":
                     price_type,
+                "price_qualifier": _safe_str(price.get("price_qualifier")),
+                "discount_code_type": _safe_str(price.get("discount_code_type")),
+                "discount_type_name": _safe_str(price.get("discount_type_name")),
+                "country_excluded": _safe_str(price.get("country_excluded")),
+                "region_excluded": _safe_str(price.get("region_excluded")),
                 "price_amount":
                     price_amount,
                 "currency_code":
@@ -4978,6 +5003,8 @@ def upsert_bookdev_task_assignment(
 
 
 def update_edition_cited_content(cur, tenant_id: str, work_id: str, edition_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
     try: edition_uuid = str(uuid.UUID(str(edition_id)))
     except (ValueError, TypeError): raise ValueError("Invalid edition id")
     cur.execute("SELECT id FROM editions WHERE tenant_id=%s AND work_id=%s AND id=%s LIMIT 1", (tenant_id,work_id,edition_uuid))
@@ -5019,6 +5046,8 @@ def update_edition_awards(
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Persist normalized award/prize records for one edition."""
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
 
     try:
         edition_uuid = str(uuid.UUID(str(edition_id)))
@@ -5278,6 +5307,8 @@ def update_edition_related_products(
     scalar lookup columns, while the complete repeatable ProductIdentifier
     composite is preserved in identifiers JSONB.
     """
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
 
     try:
         edition_uuid = str(uuid.UUID(str(edition_id)))
@@ -5706,6 +5737,8 @@ def update_edition_rights_restrictions(
     payload: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Persist Rights & Restrictions against the existing InkSuite schema."""
+    from app.catalog_archive import require_active
+    require_active(cur, tenant_id, edition_id, work_id)
 
     try:
         edition_uuid = str(uuid.UUID(str(edition_id)))
@@ -6444,6 +6477,8 @@ def _replace_editions(cur, tenant_id: str, work_id: str, payload: Dict[str, Any]
 
         if existing:
             edition_id = existing["id"]
+            from app.catalog_archive import require_active
+            require_active(cur, tenant_id, edition_id, work_id)
             cur.execute(
                 """
                 UPDATE editions
@@ -7316,7 +7351,7 @@ def _upsert_work_from_payload(conn, cur, tenant_id: str, body: Dict[str, Any]) -
         INSERT INTO work_contributors (
             tenant_id, work_id, party_id, contributor_role, sequence_number
         )
-        VALUES (%s, %s, %s, 'AUTHOR', 1)
+        VALUES (%s, %s, %s, 'A01', 1)
         """,
         (tenant_id, work_id, author_party_id),
     )
@@ -7327,7 +7362,7 @@ def _upsert_work_from_payload(conn, cur, tenant_id: str, body: Dict[str, Any]) -
             INSERT INTO work_contributors (
                 tenant_id, work_id, party_id, contributor_role, sequence_number
             )
-            VALUES (%s, %s, %s, 'ILLUSTRATOR', 2)
+            VALUES (%s, %s, %s, 'A12', 2)
             """,
             (tenant_id, work_id, illustrator_party_id),
         )

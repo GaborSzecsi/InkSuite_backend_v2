@@ -111,7 +111,7 @@ def inventory(connection_id:UUID|None=None,q:str='',ctx=Depends(access)):
                 NULL AS connection_id,NULL AS distributor_quantity,NULL AS reserved_quantity,
                 NULL AS sellable_quantity,NULL AS last_synced_at,'NOT_SYNCED' AS sync_status,false AS marketplace_enabled
                 FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
-                WHERE e.tenant_id=%s AND COALESCE(NULLIF(e.onix_product_form,''),e.product_form) IN ('BB','BC','BA','BH','BD','BE','BF','BG','BK')
+                WHERE e.tenant_id=%s AND e.archived_at IS NULL AND COALESCE(NULLIF(e.onix_product_form,''),e.product_form) IN ('BB','BC','BA','BH','BD','BE','BF','BG','BK')
                 AND (w.title ILIKE %s OR e.isbn13 ILIKE %s) ORDER BY w.title,e.product_form,e.id LIMIT 500""",(tenant,'%'+q[:150]+'%','%'+q[:150]+'%'))
             return {'items':cur.fetchall()}
 
@@ -123,7 +123,7 @@ def inventory(connection_id:UUID|None=None,q:str='',ctx=Depends(access)):
             LEFT JOIN distribution_availability a ON a.tenant_id=e.tenant_id AND a.edition_id=e.id
                 AND EXISTS (SELECT 1 FROM distribution_connections c WHERE c.id=a.connection_id AND c.tenant_id=a.tenant_id AND c.archived_at IS NULL)
                 AND (%s::uuid IS NULL OR a.connection_id=%s)
-            WHERE e.tenant_id=%s AND COALESCE(NULLIF(e.onix_product_form,''),e.product_form) IN ('BB','BC','BA','BH','BD','BE','BF','BG','BK')
+            WHERE e.tenant_id=%s AND e.archived_at IS NULL AND COALESCE(NULLIF(e.onix_product_form,''),e.product_form) IN ('BB','BC','BA','BH','BD','BE','BF','BG','BK')
                 AND (w.title ILIKE %s OR e.isbn13 ILIKE %s)
             ORDER BY w.title,e.product_form,e.id LIMIT 500""",(connection_id,connection_id,tenant,'%'+q[:150]+'%','%'+q[:150]+'%'))
         return {'items':cur.fetchall()}
@@ -134,7 +134,7 @@ def listing(connection_id:UUID,edition_id:UUID,body:ListingIn,ctx=Depends(admin)
     tenant,actor=ids(ctx)
     with s.transaction() as cur:
         s.connection(cur,tenant,connection_id)
-        ed=s.one(cur,"SELECT id FROM editions WHERE tenant_id=%s AND id=%s AND COALESCE(NULLIF(onix_product_form,''),product_form) IN ('BB','BC','BA','BH','BD','BE','BF','BG','BK')",(tenant,edition_id))
+        ed=s.one(cur,"SELECT id FROM editions WHERE tenant_id=%s AND id=%s AND archived_at IS NULL AND COALESCE(NULLIF(onix_product_form,''),product_form) IN ('BB','BC','BA','BH','BD','BE','BF','BG','BK')",(tenant,edition_id))
         if not ed: raise HTTPException(404,'Physical edition not found.')
         cur.execute('INSERT INTO distribution_inventory(tenant_id,connection_id,edition_id,marketplace_enabled) VALUES(%s,%s,%s,%s) ON CONFLICT(tenant_id,connection_id,edition_id) DO UPDATE SET marketplace_enabled=excluded.marketplace_enabled',(tenant,connection_id,edition_id,body.enabled))
         s.event(cur,tenant,connection_id,actor,'MARKETPLACE_LISTING_CHANGED',details={'edition_id':str(edition_id),'enabled':body.enabled})
@@ -211,7 +211,7 @@ def map_variant(installation_id:UUID,variant_id:str,body:MappingIn,ctx=Depends(a
     tenant,actor=ids(ctx)
     with s.transaction() as cur:
         s.connection(cur,tenant,body.connection_id)
-        if not s.one(cur,'SELECT id FROM editions WHERE tenant_id=%s AND id=%s',(tenant,body.edition_id)): raise HTTPException(404,'Edition not found.')
+        if not s.one(cur,'SELECT id FROM editions WHERE tenant_id=%s AND id=%s AND archived_at IS NULL',(tenant,body.edition_id)): raise HTTPException(404,'Edition not found.')
         row=s.one(cur,'UPDATE distribution_shopify_variants SET edition_id=%s,connection_id=%s WHERE tenant_id=%s AND installation_id=%s AND variant_id=%s RETURNING variant_id',(body.edition_id,body.connection_id,tenant,installation_id,variant_id))
         if not row: raise HTTPException(404,'Shopify variant not found.')
         s.event(cur,tenant,body.connection_id,actor,'SHOPIFY_VARIANT_MAPPED',details={'variant_id':variant_id,'edition_id':str(body.edition_id)})

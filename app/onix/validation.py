@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+from decimal import Decimal, InvalidOperation
 
 
 def _s(value: Any) -> str:
@@ -45,7 +46,11 @@ def validate_product(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
     if not isbn13:
         errors.append("Missing ISBN-13 ProductIdentifier")
-    checks["isbn13"] = "ok" if isbn13 else "missing"
+    if isbn13:
+        normalized = isbn13.replace("-", "").replace(" ", "")
+        valid_isbn = len(normalized) == 13 and normalized.isdigit() and sum(int(d)*(1 if i%2==0 else 3) for i,d in enumerate(normalized))%10==0
+        if not valid_isbn: errors.append("Invalid ISBN-13 checksum or length")
+    checks["isbn13"] = "ok" if isbn13 and not any(e.startswith("Invalid ISBN") for e in errors) else "missing"
 
     product_form = _s(descriptive.get("product_form"))
     if not product_form:
@@ -65,6 +70,11 @@ def validate_product(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not contributors:
         warnings.append("No Contributor composite")
     checks["contributors"] = "ok" if contributors else "warning"
+
+    for index, contributor in enumerate(contributors, start=1):
+        if not _s(contributor.get("role")):
+            errors.append(f"Contributor {index}: missing ContributorRole; source evidence required")
+            checks["contributors"] = "missing"
 
     languages = descriptive.get("languages") or []
     if not languages:
@@ -87,8 +97,15 @@ def validate_product(payload: Dict[str, Any]) -> Dict[str, Any]:
         checks["supply"] = "warning"
     else:
         checks["supply"] = "ok"
-        if not any(row.get("prices") for row in supply):
-            warnings.append("No Price composite")
+        def has_positive_price(row):
+            for price in row.get("prices") or []:
+                try:
+                    amount = Decimal(str(price.get("price_amount")))
+                    if amount.is_finite() and amount > 0: return True
+                except (InvalidOperation, TypeError): pass
+            return False
+        if not any(has_positive_price(row) for row in supply):
+            warnings.append("No confirmed positive price; zero placeholders export as price to be announced")
             checks["prices"] = "warning"
         else:
             checks["prices"] = "ok"

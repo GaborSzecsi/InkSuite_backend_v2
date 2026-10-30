@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import hashlib
+from contextvars import ContextVar
 import json
 import re
 import unicodedata
@@ -18,6 +20,8 @@ from app.core.db import db_conn
 from routers.catalog_write import (
     add_work_contributor,
     update_edition_descriptive_content,
+    update_edition_cited_content,
+    update_edition_awards,
     update_edition_product_details,
     update_edition_product_identity,
     update_edition_publishing_dates,
@@ -28,6 +32,9 @@ from routers.catalog_write import (
     update_work_titles_collections,
 )
 
+
+
+_read_elements = ContextVar("onix_read_elements", default=None)
 
 
 def _clean(v: Any) -> str:
@@ -48,11 +55,18 @@ def _children(node: Optional[ET.Element], name: str) -> List[ET.Element]:
 
 def _child(node: Optional[ET.Element], name: str) -> Optional[ET.Element]:
     rows = _children(node, name)
-    return rows[0] if rows else None
+    result = rows[0] if rows else None
+    consumed = _read_elements.get()
+    if consumed is not None and result is not None and not list(result) and not (result.text or "").strip():
+        consumed.add(id(result))
+    return result
 
 
 def _text(node: Optional[ET.Element], name: str, default: str = "") -> str:
     c = _child(node, name)
+    consumed = _read_elements.get()
+    if consumed is not None and c is not None:
+        consumed.add(id(c))
     return _clean(c.text) if c is not None else default
 
 
@@ -68,6 +82,9 @@ def _deep_text(node: Optional[ET.Element], name: str) -> str:
 def _inner_xml(node: Optional[ET.Element]) -> str:
     if node is None:
         return ""
+    consumed = _read_elements.get()
+    if consumed is not None:
+        consumed.update(id(n) for n in node.iter())
     if not list(node):
         return _clean(node.text)
     parts: List[str] = []
@@ -79,6 +96,9 @@ def _inner_xml(node: Optional[ET.Element]) -> str:
 
 
 def _date_parts(date_node: Optional[ET.Element]) -> Dict[str, str]:
+    consumed = _read_elements.get()
+    if consumed is not None and date_node is not None:
+        consumed.add(id(date_node))
     if date_node is None:
         return {"date_format": "00", "date_text": ""}
     return {
@@ -100,22 +120,50 @@ def _parse_date_compat(value: str) -> Optional[str]:
     return None
 
 
+MAX_FEED_BYTES = 50 * 1024 * 1024
+MAX_EXPANDED_BYTES = 100 * 1024 * 1024
+
+
 def _read_upload(raw: bytes, filename: str) -> bytes:
-    name = (filename or "").lower()
-    if name.endswith(".zip") or raw[:2] == b"PK":
+    if len(raw) > MAX_FEED_BYTES:
+        raise ValueError("ONIX upload exceeds the 50 MB limit.")
+    if (filename or "").lower().endswith(".zip") or raw[:2] == b"PK":
         with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-            xml_names = [n for n in zf.namelist() if n.lower().endswith(".xml")]
-            if not xml_names:
-                raise ValueError("ZIP does not contain an XML file.")
-            return zf.read(xml_names[0])
+            entries = [n for n in zf.infolist() if not n.is_dir() and n.filename.lower().endswith((".xml", ".onix"))]
+            if not entries:
+                raise ValueError("ZIP does not contain an ONIX XML file.")
+            if len(entries) > 1000 or sum(n.file_size for n in entries) > MAX_EXPANDED_BYTES:
+                raise ValueError("Expanded ONIX archive exceeds the supported limit.")
+            combined = ET.Element("ONIXMessage", {"release": "3.0"})
+            for entry in entries:
+                _, products = _products(zf.read(entry))
+                combined.extend(products)
+            return ET.tostring(combined, encoding="utf-8")
     return raw
 
 
 def _products(xml_bytes: bytes) -> Tuple[ET.Element, List[ET.Element]]:
+    if len(xml_bytes) > MAX_EXPANDED_BYTES:
+        raise ValueError("Expanded ONIX feed exceeds the supported limit.")
+    # ElementTree does not fetch external entities. Reject DTD/entity declarations
+    # as well, including in UTF-16 feeds, before accepting an untrusted upload.
+    declaration_scan = xml_bytes.replace(b"\x00", b"").upper()
+    if b"<!DOCTYPE" in declaration_scan or b"<!ENTITY" in declaration_scan:
+        raise ValueError("Use an ONIX XML export without DTD or entity declarations.")
     root = ET.fromstring(xml_bytes)
-    products = [n for n in root.iter() if _local(n.tag) == "Product"]
+    if _local(root.tag) != "ONIXMessage" or root.attrib.get("release", "3.0") not in ("3.0", "3.1"):
+        raise ValueError("Use an ONIX 3.0 or 3.1 reference-tag export. Short tags and ONIX 2.1 require conversion before import.")
+    products = _children(root, "Product")
     if not products:
         raise ValueError("No ONIX Product records found.")
+    keys = set()
+    for product in products:
+        key = _source_key(product)
+        if not key:
+            raise ValueError("Every Product needs a RecordReference or ISBN-13 for a reviewable import plan.")
+        if key in keys:
+            raise ValueError(f"Duplicate Product key in feed: {key}")
+        keys.add(key)
     return root, products
 
 
@@ -153,7 +201,8 @@ def _title_elements(parent: Optional[ET.Element]) -> List[Dict[str, Any]]:
                 "subtitle": _text(te, "Subtitle"),
                 "part_number": _text(te, "PartNumber"),
                 "year_of_annual": _text(te, "YearOfAnnual"),
-                "language_code": _text(te, "LanguageCode"),
+                "language_code": te.get("language", "") or _text(te, "LanguageCode"),
+                "sequence_number": _text(te, "SequenceNumber"),
                 "no_prefix": _child(te, "NoPrefix") is not None,
             })
     return out
@@ -186,6 +235,7 @@ def _summary(product: ET.Element) -> Dict[str, Any]:
     title = _title_row_display(product_title or {})
     subtitle = _clean((product_title or {}).get("subtitle"))
     return {
+        "source_key": _source_key(product),
         "record_reference": _text(product, "RecordReference"),
         "isbn13": _isbn13(product),
         "title": title,
@@ -195,13 +245,19 @@ def _summary(product: ET.Element) -> Dict[str, Any]:
     }
 
 
+def _source_key(product: ET.Element) -> str:
+    identity = [_text(product, "RecordReference"), _isbn13(product)]
+    if not any(identity):
+        raise ValueError("Every Product needs a RecordReference or ISBN-13.")
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def _product_by_key(products: List[ET.Element], record_reference: str, isbn13: str) -> ET.Element:
-    for product in products:
-        if record_reference and _text(product, "RecordReference") == record_reference:
-            return product
-        if isbn13 and _isbn13(product) == isbn13:
-            return product
-    raise ValueError("Selected ONIX Product was not found in the uploaded file.")
+    matches = [p for p in products if (not record_reference or _text(p, "RecordReference") == record_reference)
+               and (not isbn13 or _isbn13(p) == isbn13)]
+    if len(matches) != 1:
+        raise ValueError("Source Product selection is missing or ambiguous; refresh the import preview.")
+    return matches[0]
 
 
 def _product_form_label(code: str) -> str:
@@ -244,47 +300,55 @@ def _collections(dd: Optional[ET.Element]) -> List[Dict[str, Any]]:
             "title": _title_row_display(title_row),
             "collection_number": part_number,
             "part_number": part_number,
+            "sequence_type": _text(_child(coll, "CollectionSequence"), "CollectionSequenceType"),
+            "sequence_number": _text(_child(coll, "CollectionSequence"), "CollectionSequenceNumber"),
             "no_prefix": bool(title_row.get("no_prefix")),
             "item_order": index,
         })
     return rows
 
 
-def _contributors(dd: Optional[ET.Element]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for index, c in enumerate(_children(dd, "Contributor"), start=1):
-        websites = []
-        for wi, website in enumerate(_children(c, "Website"), start=1):
-            websites.append({
-                "website_role": _text(website, "WebsiteRole"),
-                "website_description": _text(website, "WebsiteDescription"),
-                "website_link": _text(website, "WebsiteLink"),
-                "item_order": wi,
-            })
-        places = []
-        for pi, place in enumerate(_children(c, "ContributorPlace"), start=1):
-            places.append({
-                "contributor_place_relator": _text(place, "ContributorPlaceRelator"),
-                "country_code": _text(place, "CountryCode"),
-                "region_code": _text(place, "RegionCode"),
-                "location_name": _text(place, "LocationName"),
-                "item_order": pi,
-            })
+def _mapped(node, mapping):
+    return {key: _text(node, tag) for key, tag in mapping.items()}
 
-        rows.append({
-            "party_type": "person",
-            "name": _text(c, "PersonName") or _text(c, "PersonNameInverted"),
-            "display_name": _text(c, "PersonName") or _text(c, "PersonNameInverted"),
-            "names_before_key": _text(c, "NamesBeforeKey"),
-            "key_names": _text(c, "KeyNames"),
-            "person_name_inverted": _text(c, "PersonNameInverted"),
-            "contributor_role_code": _text(c, "ContributorRole"),
-            "sequence_number": _text(c, "SequenceNumber") or str(index),
-            "contributor_description": _text(c, "ContributorDescription"),
-            "biographical_note": _deep_text(c, "BiographicalNote"),
-            "websites": websites,
-            "contributor_places": places,
-        })
+
+def _contributors(dd: Optional[ET.Element]) -> List[Dict[str, Any]]:
+    rows = []
+    names = {"display_name": "PersonName", "person_name_inverted": "PersonNameInverted",
+             "titles_before_names": "TitlesBeforeNames", "names_before_key": "NamesBeforeKey",
+             "prefix_to_key": "PrefixToKey", "key_names": "KeyNames", "names_after_key": "NamesAfterKey",
+             "suffix_to_key": "SuffixToKey", "letters_after_names": "LettersAfterNames",
+             "titles_after_names": "TitlesAfterNames", "corporate_name": "CorporateName"}
+    for index, c in enumerate(_children(dd, "Contributor"), 1):
+        person = _mapped(c, names)
+        corporate = person["corporate_name"]
+        display = person["display_name"] or person["person_name_inverted"] or " ".join(
+            x for x in [person["names_before_key"], person["prefix_to_key"], person["key_names"]] if x)
+        # Corporate contributors must remain corporations on subsequent export.
+        person.update(party_type="organization" if corporate and not display else "person",
+                      name=display or corporate, display_name=display,
+                      sequence_number=_text(c, "SequenceNumber") or str(index),
+                      contributor_description=_text(c, "ContributorDescription"),
+                      biographical_note=_inner_xml(_child(c, "BiographicalNote")),
+                      from_languages=[_text(x, "LanguageCode") for x in _children(c, "FromLanguage")],
+                      to_languages=[_text(x, "LanguageCode") for x in _children(c, "ToLanguage")])
+        repeats = {
+            "name_identifiers": ("NameIdentifier", {"name_id_type": "NameIDType", "id_type_name": "IDTypeName", "id_value": "IDValue"}),
+            "alternative_names": ("AlternativeName", {"name_type": "NameType", **names}),
+            "websites": ("Website", {"website_role": "WebsiteRole", "website_description": "WebsiteDescription", "website_link": "WebsiteLink"}),
+            "contributor_places": ("ContributorPlace", {"contributor_place_relator": "ContributorPlaceRelator", "country_code": "CountryCode", "region_code": "RegionCode", "location_name": "LocationName"}),
+        }
+        for key, (tag, mapping) in repeats.items():
+            person[key] = [{**_mapped(n, mapping), "item_order": i} for i, n in enumerate(_children(c, tag), 1)]
+        person["contributor_dates"] = [{"contributor_date_role": _text(n, "ContributorDateRole"), "date_value": _parse_date_compat(_text(n, "Date")), "item_order": i}
+                                       for i, n in enumerate(_children(c, "ContributorDate"), 1)]
+        person["professional_affiliations"] = []
+        for n in _children(c, "ProfessionalAffiliation"):
+            person["professional_affiliations"].append({**_mapped(n, {"professional_position": "ProfessionalPosition", "affiliation": "Affiliation"}),
+                **_mapped(_child(n, "ProfessionalAffiliationIdentifier"), {"affiliation_id_type": "ProfessionalAffiliationIDType", "affiliation_id_type_name": "IDTypeName", "affiliation_id_value": "IDValue"})})
+        # Each role is a separate existing InkSuite work-contributor assignment.
+        for role in _children(c, "ContributorRole") or [None]:
+            rows.append({**person, "contributor_role_code": _clean(role.text) if role is not None else ""})
     return rows
 
 
@@ -307,7 +371,7 @@ def _texts(collateral: Optional[ET.Element]) -> List[Dict[str, Any]]:
             "content_audience": _text(t, "ContentAudience"),
             "text_format": _clean(text_node.attrib.get("textformat")) if text_node is not None else "",
             "text_value": _inner_xml(text_node),
-            "source_corporate": _text(t, "SourceCorporate"),
+            "source_corporate": _text(t, "TextSourceCorporate") or _text(t, "SourceCorporate"),
             "source_title": _text(t, "SourceTitle"),
             "source_title_type": (_child(t, "SourceTitle").attrib.get("sourcetype") if _child(t, "SourceTitle") is not None else ""),
             "source_url": _text(t, "TextSourceLink"),
@@ -357,6 +421,7 @@ def _subjects_audience(dd: Optional[ET.Element]) -> Dict[str, Any]:
 
     return {
         "subjects": subjects,
+        "audience_description": _inner_xml(_child(dd, "AudienceDescription")),
         "audience_codes": audience_codes,
         "audience_ranges": ranges,
     }
@@ -422,7 +487,13 @@ def _product_details(dd: Optional[ET.Element]) -> Dict[str, Any]:
         ),
         "primary_content_type": _text(dd, "PrimaryContentType"),
         "product_form_details": product_form_details,
-        "product_content_types": product_content_types,
+        "product_content_types": list(dict.fromkeys([_text(dd, "PrimaryContentType"), *product_content_types])) if _text(dd, "PrimaryContentType") else product_content_types,
+        "technical_protection": _text(dd, "EpubTechnicalProtection"),
+        "illustration_count": _text(dd, "NumberOfIllustrations"),
+        "illustration_note": _inner_xml(_child(dd, "IllustrationsNote")),
+        "trade_category": _text(dd, "TradeCategory"),
+        "number_of_pieces": _text(_child(dd, "ProductPart"), "NumberOfItemsOfThisForm"),
+        "edition_types": [_clean(n.text) for n in _children(dd, "EditionType") if _clean(n.text)],
         "edition_number": _text(dd, "EditionNumber"),
         "edition_statement": _text(dd, "EditionStatement"),
         "country_of_manufacture": _text(dd, "CountryOfManufacture"),
@@ -551,21 +622,20 @@ def _rights(product: ET.Element) -> Dict[str, Any]:
         "countries_excluded": primary_sales.get("countries_excluded", ""),
         "regions_excluded": primary_sales.get("regions_excluded", ""),
         "row_sales_rights_type": _text(pd, "ROWSalesRightsType"),
+        "usage_constraints": [{**_mapped(u, {"usage_type": "EpubUsageType", "usage_status": "EpubUsageStatus", "usage_note": "EpubUsageNote"}),
+            **_mapped(_child(u, "EpubUsageLimit"), {"quantity": "Quantity", "unit_code": "EpubUsageUnit"})}
+            for u in _children(_child(product, "DescriptiveDetail"), "EpubUsageConstraint")],
     }
 
 
 def _related(product: ET.Element) -> Dict[str, Any]:
     rm = _child(product, "RelatedMaterial")
     works = []
-    for index, r in enumerate(_children(rm, "RelatedWork"), start=1):
-        wi = _child(r, "WorkIdentifier")
-        works.append({
-            "work_relation_code": _text(r, "WorkRelationCode"),
-            "work_id_type": _text(wi, "WorkIDType"),
-            "id_type_name": _text(wi, "IDTypeName"),
-            "id_value": _text(wi, "IDValue"),
-            "item_order": index,
-        })
+    for r in _children(rm, "RelatedWork"):
+        for wi in _children(r, "WorkIdentifier"):
+            works.append({"work_relation_code": _text(r, "WorkRelationCode"),
+                **_mapped(wi, {"work_id_type": "WorkIDType", "id_type_name": "IDTypeName", "id_value": "IDValue"}),
+                "item_order": len(works) + 1})
 
     products = []
     for index, r in enumerate(_children(rm, "RelatedProduct"), start=1):
@@ -593,7 +663,7 @@ def _supply(product: ET.Element) -> Dict[str, Any]:
     mpd = _child(ps, "MarketPublishingDetail")
 
     markets = []
-    for mi, market in enumerate(_children(ps, "Market"), start=1):
+    for mi, market in enumerate([m for ps_row in _children(product, "ProductSupply") for m in _children(ps_row, "Market")], start=1):
         territory = _child(market, "Territory")
         markets.append({
             "countries_included": _text(territory, "CountriesIncluded"),
@@ -606,13 +676,26 @@ def _supply(product: ET.Element) -> Dict[str, Any]:
     md = _date_parts(_child(market_date, "Date"))
 
     supplies = []
-    for index, sd in enumerate(_children(ps, "SupplyDetail"), start=1):
+    for index, sd in enumerate([sd for ps_row in _children(product, "ProductSupply") for sd in _children(ps_row, "SupplyDetail")], start=1):
         supplier = _child(sd, "Supplier")
         returns = _child(sd, "ReturnsConditions")
         prices = []
         for pi, p in enumerate(_children(sd, "Price"), start=1):
             territory = _child(p, "Territory")
+            tax = _child(p, "Tax")
+            discount = _child(p, "DiscountCoded")
+            dates = {_text(d, "PriceDateRole"): _parse_date_compat(_text(d, "Date")) for d in _children(p, "PriceDate")}
             prices.append({
+                **_mapped(tax, {"tax_rate_code": "TaxRateCode", "tax_rate_percent": "TaxRatePercent", "taxable_amount": "TaxableAmount", "tax_amount": "TaxAmount"}),
+                "discount_code": _text(discount, "DiscountCode"),
+                "discount_code_type": _text(discount, "DiscountCodeType"),
+                "discount_type_name": _text(discount, "DiscountCodeTypeName"),
+                "price_qualifier": _text(p, "PriceQualifier"),
+                "country_excluded": _text(territory, "CountriesExcluded"),
+                "region_excluded": _text(territory, "RegionsExcluded"),
+                "minimum_order_quantity": _text(p, "MinimumOrderQuantity"),
+                "price_note": _text(p, "PriceNote"),
+                "price_effective_from": dates.get("14"), "price_effective_until": dates.get("15"),
                 "price_type": _text(p, "PriceType"),
                 "price_amount": _text(p, "PriceAmount"),
                 "currency_code": _text(p, "CurrencyCode"),
@@ -637,6 +720,11 @@ def _supply(product: ET.Element) -> Dict[str, Any]:
             "supplier_email": _text(supplier, "EmailAddress"),
             "supplier_telephone": _text(supplier, "TelephoneNumber"),
             "supplier_fax": _text(supplier, "FaxNumber"),
+            "supplier_identifiers": [_mapped(n, {"supplier_id_type": "SupplierIDType", "id_type_name": "IDTypeName", "id_value": "IDValue"}) for n in _children(supplier, "SupplierIdentifier")],
+            "returns_note": _text(returns, "ReturnsNote"),
+            "stock_on_hand": _text(_child(sd, "Stock"), "OnHand"),
+            "order_time_days": _text(sd, "OrderTime"),
+            "supply_note": _text(sd, "SupplyDetailNote"),
             "product_availability": _text(sd, "ProductAvailability"),
             "pack_quantity": _text(sd, "PackQuantity"),
             "returns_code_type": _text(returns, "ReturnsCodeType"),
@@ -655,7 +743,9 @@ def _supply(product: ET.Element) -> Dict[str, Any]:
         "promotion_contact": _inner_xml(promo_node),
         "promotion_contact_text_format": _clean(promo_node.attrib.get("textformat")) if promo_node is not None else "",
         "initial_print_run": _text(mpd, "InitialPrintRun"),
-        "promotion_campaign": _text(mpd, "PromotionCampaign"),
+        "promotion_campaign": _inner_xml(_child(mpd, "PromotionCampaign")),
+        "promotion_campaign_text_format": _child(mpd, "PromotionCampaign").get("textformat", "") if _child(mpd, "PromotionCampaign") is not None else "",
+        "product_contacts": [_mapped(n, {"product_contact_role": "ProductContactRole", "product_contact_name": "ProductContactName", "contact_name": "ContactName", "email_address": "EmailAddress"}) for n in ([n for ps_row in _children(product, "ProductSupply") for n in _children(_child(ps_row, "MarketPublishingDetail"), "ProductContact")] + _children(_child(product, "PublishingDetail"), "ProductContact"))],
         "markets": markets,
         "supply_details": supplies,
     }
@@ -727,8 +817,10 @@ def _resources(product: ET.Element) -> List[Dict[str, Any]]:
     return resources
 
 
-def _parse_product(product: ET.Element) -> Dict[str, Any]:
+def _parse_product_values(product: ET.Element) -> Dict[str, Any]:
     dd = _child(product, "DescriptiveDetail")
+    _child(dd, "NoCollection")
+    _child(dd, "NoEdition")
     collateral = _child(product, "CollateralDetail")
     publishing = _publishing(product)
 
@@ -789,10 +881,19 @@ def _parse_product(product: ET.Element) -> Dict[str, Any]:
         "source_title": source_title,
         "source_subtitle": source_subtitle,
         "primary_title": primary_title,
+        "title_rows": title_rows,
         "identity": identity,
         "collections": _collections(dd),
         "contributors": _contributors(dd),
         "descriptive_content": {"descriptive_texts": _texts(collateral)},
+        "cited_content": [{**_mapped(n, {"cited_content_type": "CitedContentType", "content_audience": "ContentAudience", "source_type": "SourceType", "source_title": "SourceTitle", "resource_link": "ResourceLink", "list_name": "ListName", "position_on_list": "PositionOnList"}),
+            "citation_note": _inner_xml(_child(n, "CitationNote")),
+            "citation_note_text_format": (_child(n, "CitationNote").get("textformat", "") if _child(n, "CitationNote") is not None else ""),
+            "content_dates": [{"content_date_role": _text(d, "ContentDateRole"), **_date_parts(_child(d, "Date"))} for d in _children(n, "ContentDate")]}
+            for n in _children(collateral, "CitedContent")],
+        "awards": [{**_mapped(n, {"prize_name": "PrizeName", "prize_year": "PrizeYear", "prize_country": "PrizeCountry", "award_status": "PrizeCode", "prize_jury": "PrizeJury", "award_note": "PrizeStatement", "sequence_number": "SequenceNumber"}),
+            "language_code": _child(n, "PrizeName").get("language", "") if _child(n, "PrizeName") is not None else ""}
+            for n in _children(collateral, "Prize")],
         "subjects_audience": _subjects_audience(dd),
         "product_details": _product_details(dd),
         "publishing": publishing,
@@ -802,6 +903,33 @@ def _parse_product(product: ET.Element) -> Dict[str, Any]:
         "supporting_resources": _resources(product),
     }
 
+
+
+def _parse_product(product: ET.Element) -> Dict[str, Any]:
+    consumed = set()
+    token = _read_elements.set(consumed)
+    try:
+        parsed = _parse_product_values(product)
+    finally:
+        _read_elements.reset(token)
+    ignored = set()
+    direct_repeat_leaves = {"ProductFormDetail", "ProductContentType", "AudienceRangePrecision", "AudienceRangeValue", "ContributorRole", "EditionType"}
+    def walk(node, path):
+        path = path + "/" + _local(node.tag)
+        if not list(node) and id(node) not in consumed and _local(node.tag) not in direct_repeat_leaves:
+            ignored.add(path)
+        for child in node:
+            walk(child, path)
+    walk(product, "")
+    warnings = ["Not mapped into editable metadata: " + path for path in sorted(ignored)]
+    dd = _child(product, "DescriptiveDetail")
+    if len(_children(dd, "Language")) > 2 or any(
+        sum(_text(n, "LanguageRole") == role for n in _children(dd, "Language")) > 1 for role in ("01", "02")
+    ):
+        warnings.append("InkSuite stores one primary and one original language; additional language entries need review.")
+
+    parsed["import_warnings"] = warnings
+    return parsed
 
 
 def _work_title_columns(cur) -> set[str]:
@@ -951,6 +1079,25 @@ def _upsert_primary_title_element_exact(
     )
 
 
+
+
+def _upsert_other_titles(cur, tenant_id, work_id, parsed):
+    columns = _work_title_columns(cur)
+    primary = parsed.get("primary_title") or {}
+    for row in parsed.get("title_rows") or []:
+        if row == primary:
+            continue
+        values = {key: row.get(key, "") for key in ("title_type", "title_element_level", "title_prefix", "title_without_prefix", "subtitle", "part_number", "year_of_annual", "language_code")}
+        values["title_without_prefix"] = row.get("title_without_prefix") or row.get("title_text") or ""
+        values.update(no_prefix=bool(row.get("no_prefix")), is_primary=False, item_order=2)
+        values = {k:v for k,v in values.items() if k in columns}
+        cur.execute("SELECT id FROM work_titles WHERE tenant_id=%s AND work_id=%s AND is_primary=false AND title_type=%s AND title_element_level=%s AND COALESCE(language_code,'')=%s LIMIT 1",
+            (tenant_id,work_id,row.get("title_type",""),row.get("title_element_level",""),row.get("language_code","")))
+        existing = cur.fetchone()
+        if existing:
+            cur.execute("UPDATE work_titles SET " + ",".join(k+"=%s" for k in values) + " WHERE tenant_id=%s AND work_id=%s AND id=%s",(*values.values(),tenant_id,work_id,existing["id"]))
+        else:
+            cur.execute("INSERT INTO work_titles (tenant_id,work_id," + ",".join(values) + ") VALUES (" + ",".join(["%s"]*(len(values)+2)) + ")",(tenant_id,work_id,*values.values()))
 
 
 def _sync_work_subtitle_from_primary_onix_title(
@@ -1366,6 +1513,7 @@ def _existing_product_by_isbn(
         SELECT
             e.id AS edition_id,
             e.work_id,
+            e.archived_at,
             e.isbn13,
             e.product_form,
             e.product_form_detail,
@@ -1453,125 +1601,33 @@ def _split_source_title_identity(
     )
 
 
-def _best_work_match(
-    product: ET.Element,
-    candidates: List[Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
+def _best_work_match(product: ET.Element, candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Match product identity, never a shared series name or a title substring.
+
+    Ambiguous titles remain new/proposed records for the user to review.
+    Existing ISBN ownership is resolved separately before this helper.
     """
-    Match ONIX Product -> InkSuite work.
-
-    Important safeguards:
-    - exact ISBN is handled before this function
-    - title + subtitle is preferred
-    - same title with a conflicting subtitle is NOT considered a match
-      (critical for series where every volume shares the same main title)
-    - "Series: Volume" can match InkSuite title="Series", subtitle="Volume"
-    """
-    source_title, source_subtitle = (
-        _split_source_title_identity(product)
-    )
-
-    hints = [
-        _normalize_match_text(v)
-        for v in _source_match_hints(product)
-        if _normalize_match_text(v)
-    ]
-
-    if not source_title and not hints:
+    source_title, source_subtitle = _split_source_title_identity(product)
+    combined = _normalize_match_text(f"{source_title} {source_subtitle}")
+    source_authors = {_contributor_name_key(r.get("name")) for r in _contributors(_child(product,"DescriptiveDetail")) if r.get("contributor_role_code") == "A01"}
+    matches = {}
+    for candidate in candidates:
+        title = _normalize_match_text(candidate.get("title"))
+        subtitle = _normalize_match_text(candidate.get("subtitle"))
+        target_combined = _normalize_match_text(f"{title} {subtitle}")
+        if not combined or combined != target_combined:
+            continue
+        source_numbers = {_clean(c.get("collection_number") or c.get("part_number")) for c in _collections(_child(product,"DescriptiveDetail"))} - {""}
+        target_numbers = {_clean(n) for n in candidate.get("collection_numbers",[])} - {""}
+        if source_numbers and target_numbers and not source_numbers.intersection(target_numbers):
+            continue
+        target_authors = {_contributor_name_key(n) for n in candidate.get("author_names",[]) if n}
+        if source_authors and target_authors and not source_authors.intersection(target_authors):
+            continue
+        matches[_clean(candidate.get("work_id"))] = candidate
+    if len(matches) != 1:
         return None
-
-    best = None
-    best_score = 0
-
-    for row in candidates:
-        title = _normalize_match_text(
-            row.get("title")
-        )
-        subtitle = _normalize_match_text(
-            row.get("subtitle")
-        )
-        combined = _normalize_match_text(
-            f"{row.get('title') or ''} "
-            f"{row.get('subtitle') or ''}"
-        )
-
-        score = 0
-
-        # Strongest case: normalized title and subtitle both agree.
-        if (
-            source_title
-            and title
-            and source_title == title
-        ):
-            if source_subtitle and subtitle:
-                if source_subtitle == subtitle:
-                    score = 100
-                elif (
-                    source_subtitle in subtitle
-                    or subtitle in source_subtitle
-                ):
-                    score = 96
-                else:
-                    # Same series/main title, but a different volume subtitle.
-                    # Do not attach this ONIX Product to the wrong work.
-                    score = 0
-            elif source_subtitle and not subtitle:
-                # Existing work is missing its subtitle. This is plausible but
-                # should remain a confirmation-level title match.
-                score = 90
-            elif not source_subtitle and subtitle:
-                # Source carries less identity than InkSuite. Avoid matching a
-                # random volume solely because the shared main title matches.
-                score = 0
-            else:
-                score = 96
-
-        # Fall back to the richer source hints only if we did not already
-        # identify a subtitle conflict.
-        if score == 0 and not (
-            source_title == title
-            and source_subtitle
-            and subtitle
-            and source_subtitle != subtitle
-        ):
-            for hint in hints:
-                if combined and hint == combined:
-                    score = max(score, 100)
-
-                if (
-                    title
-                    and subtitle
-                    and title in hint
-                    and subtitle in hint
-                ):
-                    score = max(score, 96)
-
-                # Title-only fallback is safe only where InkSuite itself does
-                # not have a subtitle distinguishing this work from siblings.
-                if (
-                    title
-                    and not subtitle
-                    and hint == title
-                ):
-                    score = max(score, 92)
-
-                if (
-                    title
-                    and not subtitle
-                    and len(title) >= 8
-                    and title in hint
-                ):
-                    score = max(score, 88)
-
-        if score > best_score:
-            best_score = score
-            best = dict(row)
-
-    if best is None or best_score < 88:
-        return None
-
-    best["match_score"] = best_score
-    return best
+    return {**next(iter(matches.values())), "match_score": 100}
 
 
 def _format_family(value: Any) -> str:
@@ -1793,6 +1849,7 @@ def _plan_product(
     work_candidates: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     summary = _summary(product)
+    summary["warnings"] = _parse_product(product)["import_warnings"]
 
     # 1. Exact ISBN owns the decision.
     exact = _existing_product_by_isbn(
@@ -1800,6 +1857,9 @@ def _plan_product(
         tenant_id,
         summary.get("isbn13") or "",
     )
+
+    if exact and exact.get('archived_at'):
+        return {**summary, "suggested_action":"skip", "match_reason":"This ISBN belongs to an archived edition. Restore it explicitly before importing changes.", "match_confidence":"exact", "requires_confirmation":True, "target":_target_descriptor(exact)}
 
     if exact:
         return {
@@ -2196,6 +2256,7 @@ def _apply_parsed_to_target(
         target_work_id,
         parsed.get("primary_title") or {},
     )
+    _upsert_other_titles(cur, tenant_id, target_work_id, parsed)
 
     for contributor in parsed["contributors"]:
         resolved_contributor = (
@@ -2235,6 +2296,8 @@ def _apply_parsed_to_target(
         target_edition_id,
         parsed["subjects_audience"],
     )
+    update_edition_cited_content(cur, tenant_id, target_work_id, target_edition_id, {"cited_content": parsed["cited_content"]})
+    update_edition_awards(cur, tenant_id, target_work_id, target_edition_id, {"awards": parsed["awards"]})
     _normalize_imported_audience_rows(
         cur,
         tenant_id,
@@ -2379,9 +2442,13 @@ def _apply_parsed_to_target(
         parsed["supporting_resources"],
     )
 
+    from . import assembly, validation
+    validation_result = validation.validate_product(assembly.build_onix_product_payload(tenant_id, target_edition_id, cur=cur))
     return {
         "work_id": target_work_id,
         "edition_id": target_edition_id,
+        "warnings": parsed.get("import_warnings", []),
+        "validation": validation_result,
     }
 
 
@@ -2449,6 +2516,31 @@ def preview_onix_file(
     }
 
 
+def _merge_repeat_rows(left, right):
+    result = []
+    seen = set()
+    for row in [*left, *right]:
+        key = json.dumps({k:v for k,v in row.items() if k != "item_order"}, sort_keys=True, default=str) if isinstance(row,dict) else str(row)
+        if key not in seen:
+            result.append(row)
+            seen.add(key)
+    return result
+
+
+def _batch_profiles(selected):
+    profiles = {}
+    for parsed in selected:
+        for contributor in parsed["contributors"]:
+            key = (contributor.get("party_type"), _contributor_name_key(contributor.get("name")))
+            profile = profiles.setdefault(key, {})
+            for field in ("websites", "name_identifiers", "alternative_names", "contributor_places", "contributor_dates", "professional_affiliations"):
+                profile[field] = _merge_repeat_rows(profile.get(field, []), contributor.get(field, []))
+    for parsed in selected:
+        for contributor in parsed["contributors"]:
+            key = (contributor.get("party_type"), _contributor_name_key(contributor.get("name")))
+            contributor.update(profiles[key])
+
+
 def apply_onix_import_batch(
     *,
     raw: bytes,
@@ -2468,19 +2560,24 @@ def apply_onix_import_batch(
     xml_bytes = _read_upload(raw, filename or "")
     _, products = _products(xml_bytes)
 
-    product_map: Dict[str, ET.Element] = {}
-    for product in products:
-        summary = _summary(product)
-        key = (
-            _clean(summary.get("record_reference"))
-            or _clean(summary.get("isbn13"))
-        )
-        if key:
-            product_map[key] = product
+    product_map = {_source_key(product): product for product in products}
 
+    parsed_map = {key: _parse_product(product) for key,product in product_map.items()}
+    selected_keys = []
+    for plan in plans or []:
+        if _clean(plan.get("action")) == "skip":
+            continue
+        key = _clean(plan.get("source_key")) or _source_key(_product_by_key(products, _clean(plan.get("record_reference")), _clean(plan.get("isbn13"))))
+        if key not in product_map or key in selected_keys:
+            raise ValueError("Import plan contains an unknown or repeated Product selection.")
+        selected_keys.append(key)
+    _batch_profiles([parsed_map[key] for key in selected_keys])
+    work_collections = {}
+    assignments = {}
     results: List[Dict[str, Any]] = []
 
     with db_conn() as conn:
+        conn.autocommit = False
         with conn.cursor(row_factory=dict_row) as cur:
             tenant_id = _get_tenant_id(
                 cur,
@@ -2491,10 +2588,9 @@ def apply_onix_import_batch(
                 action = _clean(
                     plan.get("action")
                 )
-                source_key = _clean(
-                    plan.get("record_reference")
-                    or plan.get("isbn13")
-                )
+                source_key = _clean(plan.get("source_key"))
+                if not source_key:
+                    source_key = _source_key(_product_by_key(products, _clean(plan.get("record_reference")), _clean(plan.get("isbn13"))))
 
                 if action == "skip":
                     results.append({
@@ -2510,7 +2606,10 @@ def apply_onix_import_batch(
                         f"Source Product {source_key} was not found in the uploaded feed."
                     )
 
-                parsed = _parse_product(product)
+                parsed = parsed_map[source_key]
+                existing_isbn = _existing_product_by_isbn(cur, tenant_id, parsed["summary"].get("isbn13") or "")
+                if existing_isbn and existing_isbn.get("archived_at"):
+                    raise ValueError("This ISBN belongs to an archived edition. Restore it explicitly before importing changes.")
                 preserve = bool(
                     plan.get(
                         "preserve_existing_title",
@@ -2670,6 +2769,16 @@ def apply_onix_import_batch(
                         f"Unsupported import action: {action}"
                     )
 
+                # Later formats must not erase richer work-level feed data.
+                parsed["collections"] = _merge_repeat_rows(work_collections.get(target_work_id, []), parsed["collections"])
+                work_collections[target_work_id] = parsed["collections"]
+                for contributor in parsed["contributors"]:
+                    identity = (target_work_id, contributor.get("contributor_role_code"), _contributor_name_key(contributor.get("name")))
+                    previous = assignments.get(identity, {})
+                    for field in ("contributor_description", "from_languages", "to_languages"):
+                        if not contributor.get(field): contributor[field] = previous.get(field, contributor.get(field))
+                    assignments[identity] = contributor.copy()
+
                 applied = _apply_parsed_to_target(
                     cur,
                     tenant_id,
@@ -2700,322 +2809,26 @@ def apply_onix_import_batch(
         "ok": True,
         "processed": len(results),
         "results": results,
+        "source_sha256": hashlib.sha256(raw).hexdigest(),
     }
 
 
 def apply_onix_import(
-    *,
-    raw: bytes,
-    filename: str,
-    tenant_slug: str,
-    source_record_reference: str,
-    source_isbn13: str,
-    target_work_id: str,
-    target_edition_id: str,
+    *, raw: bytes, filename: str, tenant_slug: str,
+    source_record_reference: str, source_isbn13: str,
+    target_work_id: str, target_edition_id: str,
     preserve_existing_title: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Import one selected ONIX Product into one existing InkSuite edition.
-
-    The import is intentionally edition-targeted: it never creates another
-    format/edition. For this Penguin & Panda test, preserve_existing_title=True
-    keeps InkSuite's work title/subtitle while importing the source Product's
-    richer edition metadata.
-    """
-    xml_bytes = _read_upload(raw, filename or "")
-    _, products = _products(xml_bytes)
-    source = _product_by_key(
-        products,
-        source_record_reference,
-        source_isbn13,
-    )
-    parsed = _parse_product(source)
-
+    _, products = _products(_read_upload(raw, filename))
+    product = _product_by_key(products, source_record_reference, source_isbn13)
+    parsed = _parse_product(product)
     with db_conn() as conn:
+        conn.autocommit = False
         with conn.cursor(row_factory=dict_row) as cur:
             tenant_id = _get_tenant_id(cur, tenant_slug)
-
-            cur.execute(
-                """
-                SELECT w.title, w.subtitle, e.id
-                FROM works w
-                JOIN editions e
-                  ON e.tenant_id = w.tenant_id
-                 AND e.work_id = w.id
-                WHERE w.tenant_id = %s
-                  AND w.id = %s
-                  AND e.id = %s
-                LIMIT 1
-                """,
-                (tenant_id, target_work_id, target_edition_id),
-            )
-            target = cur.fetchone()
-            if not target:
-                raise ValueError("Target work / edition was not found.")
-
-            update_edition_product_identity(
-                cur,
-                tenant_id,
-                target_work_id,
-                target_edition_id,
-                parsed["identity"],
-            )
-
-            if preserve_existing_title:
-                title = _clean(target.get("title"))
-                subtitle = _clean(target.get("subtitle"))
-            else:
-                title = (
-                    parsed["source_title"]
-                    or _clean(target.get("title"))
-                )
-                subtitle = parsed["source_subtitle"]
-
-            update_work_titles_collections(
-                cur,
-                tenant_id,
-                target_work_id,
-                {
-                    "title": title,
-                    "subtitle": subtitle,
-                    "collections": parsed["collections"],
-                },
-            )
-
-            # Canonical ONIX TitleElement wins over any display/helper transformation.
-            _upsert_primary_title_element_exact(
-                cur,
-                tenant_id,
-                target_work_id,
-                parsed.get("primary_title") or {},
-            )
-            _sync_work_subtitle_from_primary_onix_title(
-                cur,
-                tenant_id,
-                target_work_id,
-                parsed.get("primary_title") or {},
-            )
-
-            for contributor in parsed["contributors"]:
-                add_work_contributor(
-                    cur,
-                    tenant_id,
-                    target_work_id,
-                    {
-                        "contributor_role_code":
-                            contributor.get(
-                                "contributor_role_code"
-                            ),
-                        "contributors": [contributor],
-                    },
-                )
-
-            update_edition_descriptive_content(
-                cur,
-                tenant_id,
-                target_work_id,
-                target_edition_id,
-                parsed["descriptive_content"],
-            )
-
-            update_edition_subjects_audience(
-                cur,
-                tenant_id,
-                target_work_id,
-                target_edition_id,
-                parsed["subjects_audience"],
-            )
-            _normalize_imported_audience_rows(
-                cur,
-                tenant_id,
-                target_edition_id,
-            )
-
-            update_edition_product_details(
-                cur,
-                tenant_id,
-                target_work_id,
-                target_edition_id,
-                parsed["product_details"],
-            )
-
-            update_edition_publishing_dates(
-                cur,
-                tenant_id,
-                target_work_id,
-                target_edition_id,
-                {
-                    "publishing_dates":
-                        parsed["publishing"][
-                            "publishing_dates"
-                        ]
-                },
-            )
-
-            update_edition_rights_restrictions(
-                cur,
-                tenant_id,
-                target_work_id,
-                target_edition_id,
-                parsed["rights"],
-            )
-
-            update_edition_related_products(
-                cur,
-                tenant_id,
-                target_work_id,
-                target_edition_id,
-                parsed["related"],
-            )
-
-            update_edition_supply_pricing(
-                cur,
-                tenant_id,
-                target_work_id,
-                target_edition_id,
-                parsed["supply"],
-            )
-
-            # MarketPublishingDetail fields live on editions in the expanded
-            # metadata schema. Update only columns introduced during that work.
-            cur.execute(
-                """
-                UPDATE editions
-                SET market_publishing_status = %s,
-                    market_date_role = %s,
-                    market_date_format = %s,
-                    market_date_text = %s,
-                    promotion_contact = %s,
-                    promotion_contact_text_format = %s,
-                    initial_print_run =
-                        COALESCE(
-                            NULLIF(%s, ''),
-                            initial_print_run
-                        ),
-                    promotion_campaign =
-                        COALESCE(
-                            NULLIF(%s, ''),
-                            promotion_campaign
-                        ),
-                    updated_at = now()
-                WHERE tenant_id = %s
-                  AND work_id = %s
-                  AND id = %s
-                """,
-                (
-                    _clean(
-                        parsed["supply"].get(
-                            "market_publishing_status"
-                        )
-                    ),
-                    _clean(
-                        parsed["supply"].get(
-                            "market_date_role"
-                        )
-                    ),
-                    _clean(
-                        parsed["supply"].get(
-                            "market_date_format"
-                        )
-                    ),
-                    _clean(
-                        parsed["supply"].get(
-                            "market_date_text"
-                        )
-                    ),
-                    _clean(
-                        parsed["supply"].get(
-                            "promotion_contact"
-                        )
-                    ),
-                    _clean(
-                        parsed["supply"].get(
-                            "promotion_contact_text_format"
-                        )
-                    ),
-                    _clean(
-                        parsed["supply"].get(
-                            "initial_print_run"
-                        )
-                    ),
-                    _clean(
-                        parsed["supply"].get(
-                            "promotion_campaign"
-                        )
-                    ),
-                    tenant_id,
-                    target_work_id,
-                    target_edition_id,
-                ),
-            )
-
-            _replace_publisher_websites(
-                cur,
-                tenant_id,
-                target_edition_id,
-                parsed["publishing"][
-                    "publisher_websites"
-                ],
-            )
-            _replace_publishers(
-                cur,
-                tenant_id,
-                target_edition_id,
-                parsed["publishing"].get("publishers") or [],
-            )
-
-            _replace_supporting_resources(
-                cur,
-                tenant_id,
-                target_edition_id,
-                parsed["supporting_resources"],
-            )
-
+            exact = _existing_product_by_isbn(cur, tenant_id, parsed["summary"].get("isbn13") or "")
+            if exact and _clean(exact.get("edition_id")) != target_edition_id:
+                raise ValueError("Source ISBN already belongs to another edition.")
+            result = _apply_parsed_to_target(cur, tenant_id, parsed, target_work_id, target_edition_id, preserve_existing_title)
         conn.commit()
-
-    return {
-        "ok": True,
-        "source": parsed["summary"],
-        "target_work_id": target_work_id,
-        "target_edition_id": target_edition_id,
-        "preserved_title": preserve_existing_title,
-        "imported": {
-            "contributors": len(parsed["contributors"]),
-            "collections": len(parsed["collections"]),
-            "texts": len(
-                parsed["descriptive_content"][
-                    "descriptive_texts"
-                ]
-            ),
-            "subjects": len(
-                parsed["subjects_audience"]["subjects"]
-            ),
-            "audience_ranges": len(
-                parsed["subjects_audience"][
-                    "audience_ranges"
-                ]
-            ),
-            "publishing_dates": len(
-                parsed["publishing"][
-                    "publishing_dates"
-                ]
-            ),
-            "related_works": len(
-                parsed["related"]["related_works"]
-            ),
-            "related_products": len(
-                parsed["related"]["related_products"]
-            ),
-            "supply_details": len(
-                parsed["supply"]["supply_details"]
-            ),
-            "supporting_resources": len(
-                parsed["supporting_resources"]
-            ),
-            "publisher_websites": len(
-                parsed["publishing"][
-                    "publisher_websites"
-                ]
-            ),
-        },
-    }
+    return {"ok": True, **result}

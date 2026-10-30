@@ -5,7 +5,7 @@ const fs=require('fs'),path=require('path'),readline=require('readline');
  await db.exec(`CREATE TABLE tenants(id uuid PRIMARY KEY); CREATE TABLE users(id uuid PRIMARY KEY);
  CREATE TABLE memberships(tenant_id uuid REFERENCES tenants(id),user_id uuid REFERENCES users(id),role text,PRIMARY KEY(tenant_id,user_id));
  CREATE TABLE works(id uuid PRIMARY KEY,tenant_id uuid REFERENCES tenants(id),title text);
- CREATE TABLE editions(id uuid PRIMARY KEY,tenant_id uuid REFERENCES tenants(id),work_id uuid REFERENCES works(id),isbn13 text,product_form text,onix_product_form text);`);
+ CREATE TABLE editions(id uuid PRIMARY KEY,tenant_id uuid REFERENCES tenants(id),work_id uuid REFERENCES works(id),isbn13 text,product_form text,onix_product_form text,archived_at timestamptz);`);
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/020_distribution.sql'),'utf8').replace(/^\uFEFF/,''));
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/021_distribution_privacy.sql'),'utf8'));
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/027_shopify_embedded.sql'),'utf8').replace(/^\uFEFF/,''));

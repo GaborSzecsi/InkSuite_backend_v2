@@ -19,7 +19,7 @@ def set_test_stock(install,connection_id,edition_id,quantity,safety_buffer):
             raise HTTPException(409,'Select and save a Shopify fulfillment location before setting test stock.')
         try: require_development_store(cur,store)
         except ConfigurationRequired as exc: raise HTTPException(409,str(exc)) from None
-        edition=s.one(cur,"SELECT isbn13 FROM editions WHERE tenant_id=%s AND id=%s AND COALESCE(NULLIF(onix_product_form,''),product_form) IN ('BB','BC','BA','BH','BD','BE','BF','BG','BK')",(tenant,edition_id))
+        edition=s.one(cur,"SELECT isbn13 FROM editions WHERE tenant_id=%s AND id=%s AND archived_at IS NULL AND COALESCE(NULLIF(onix_product_form,''),product_form) IN ('BB','BC','BA','BH','BD','BE','BF','BG','BK')",(tenant,edition_id))
         if not edition or not edition['isbn13']:
             raise HTTPException(404,'Select a print edition with an ISBN in this publisher.')
         isbn=''.join(c for c in edition['isbn13'] if c.isdigit())

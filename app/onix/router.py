@@ -11,11 +11,27 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from fastapi.responses import Response
 
 from app.core.db import db_conn
-from app.onix import assembly, validation, xml_serializer, aws_helpers, importer
+from app.onix import assembly, validation, xml_serializer, aws_helpers, importer, schema_validation
 from app.onix.models import ExportRequest, RecipientCreate, RecipientUpdate
 from psycopg.rows import dict_row
 
 router = APIRouter(prefix="/onix", tags=["ONIX Feed"])
+
+
+def _validate_export_xml(xml, release):
+    result = schema_validation.validate_xml(xml, release)
+    if not result["valid"]:
+        messages = [e["message"] if isinstance(e,dict) else str(e) for e in result["errors"][:5]]
+        raise HTTPException(422, "ONIX " + release + " export is blocked by schema validation: " + "; ".join(messages))
+
+
+def _serialize_validated_message(message, pretty=True):
+    try:
+        xml = xml_serializer.message_to_xml(message, pretty=pretty)
+    except (ValueError, TypeError) as error:
+        raise HTTPException(422, "ONIX export contains invalid metadata: " + str(error)) from error
+    _validate_export_xml(xml, message.get("release") or "3.0")
+    return xml
 
 
 def _tenant_id_from_request(cur, request: Request) -> str:
@@ -247,6 +263,8 @@ async def apply_onix_import_batch(
             tenant_slug=slug,
             plans=plans,
         )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -290,6 +308,8 @@ async def apply_onix_import(
             preserve_existing_title=
                 preserve_existing_title,
         )
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -596,10 +616,7 @@ def preview_product_xml(
             message["release"] = release
             message["products"] = [product]
 
-    xml_str = xml_serializer.message_to_xml(
-        message,
-        pretty=pretty,
-    )
+    xml_str = _serialize_validated_message(message, pretty=pretty)
     return Response(content=xml_str, media_type="application/xml; charset=utf-8")
 
 
@@ -628,6 +645,12 @@ def create_export(request: Request, body: ExportRequest):
             if not edition_ids:
                 raise HTTPException(status_code=400, detail="No edition_ids or isbns provided")
 
+            # Explicit selections can be stale. Never export an archived edition.
+            cur.execute("SELECT id FROM editions WHERE tenant_id=%s AND id=ANY(%s::uuid[]) AND archived_at IS NULL", (tenant_id,edition_ids))
+            active_ids={str(row['id']) for row in cur.fetchall()}
+            if active_ids != set(map(str,edition_ids)):
+                raise HTTPException(409,"A selected edition is archived or unavailable. Refresh the ONIX selection.")
+
             export_mode = body.export_mode or "preview"
             recipient_id = None
             if body.recipient_id:
@@ -642,6 +665,13 @@ def create_export(request: Request, body: ExportRequest):
                 row = cur.fetchone()
                 if row and row.get("isbn13"):
                     isbns_list.append((row.get("isbn13") or "").strip())
+            message = assembly.build_onix_message_payload(
+                tenant_id,
+                edition_ids,
+                cur=cur,
+            )
+            message["release"] = body.onix_release
+            xml_str = _serialize_validated_message(message, pretty=True)
             job_id = str(uuid.uuid4())
             cur.execute(
                 """
@@ -663,13 +693,6 @@ def create_export(request: Request, body: ExportRequest):
                 ),
             )
 
-            message = assembly.build_onix_message_payload(
-                tenant_id,
-                edition_ids,
-                cur=cur,
-            )
-            message["release"] = body.onix_release
-            xml_str = xml_serializer.message_to_xml(message, pretty=True)
             checksum = aws_helpers.xml_checksum_sha256(xml_str)
 
             s3_key = ""

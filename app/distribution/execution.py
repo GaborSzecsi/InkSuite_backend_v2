@@ -206,6 +206,12 @@ def run_once():
             rejected=order and order['status']=='REVIEW_REQUIRED'
             cur.execute("UPDATE distribution_jobs SET status=%s,finished_at=now(),error_code=%s WHERE id=%s",('REVIEW_REQUIRED' if rejected else 'DONE',order['error_code'] if rejected else None,job['id']))
             cur.execute("UPDATE distribution_connections SET status='CONNECTED',last_error=NULL,last_successful_connection_at=now() WHERE tenant_id=%s AND id=%s",(job['tenant_id'],job['connection_id']))
+            # Successful background checks are operational work, not retained test history.
+            cur.execute("""DELETE FROM distribution_jobs j USING distribution_connections c
+                WHERE c.tenant_id=j.tenant_id AND c.id=j.connection_id AND c.adapter='simulator'
+                AND j.tenant_id=%s AND j.connection_id=%s AND j.status='DONE'
+                AND j.kind IN ('TEST','INVENTORY','PUBLISH','TRACKING')""",(job['tenant_id'],job['connection_id']))
+            cur.execute("DELETE FROM distribution_events WHERE tenant_id=%s AND connection_id=%s AND event='INVENTORY_RECONCILED' AND EXISTS(SELECT 1 FROM distribution_connections WHERE tenant_id=%s AND id=%s AND adapter='simulator')",(job['tenant_id'],job['connection_id'],job['tenant_id'],job['connection_id']))
         return True
     except ConfigurationRequired: code='CONFIGURATION_REQUIRED'
     except TransportError: code='TRANSPORT_FAILED';retry=True

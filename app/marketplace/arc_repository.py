@@ -27,7 +27,7 @@ def edition(cur, edition_id):
         JOIN marketplace_organizations o
           ON o.tenant_id=t.id
          AND o.organization_type='publisher'
-        WHERE e.id=%s
+        WHERE e.id=%s AND e.archived_at IS NULL
         FOR UPDATE OF e""",
         (edition_id,),
     )

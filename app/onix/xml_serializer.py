@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from .schema_order import order_children
+from .schema_codes import LIST49, LIST74
 from math import isfinite
+import re
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, Iterable, List, Optional
 from xml.dom import minidom
@@ -42,7 +45,10 @@ def _elem(
         return None
     element = ET.SubElement(parent, tag, attrib or {})
     if text:
-        element.text = text
+        if (attrib or {}).get("textformat") == "05" and "<" in text:
+            _append_onix_xhtml(element, text)
+        else:
+            element.text = text
     return element
 
 
@@ -187,13 +193,16 @@ def _write_title_detail(parent: ET.Element, title: Dict[str, Any]) -> None:
                 "NoPrefix",
                 allow_empty=True,
             )
-        else:
+        elif title_prefix:
             _elem(
                 element,
                 "TitlePrefix",
                 title_prefix,
                 attrib=_attrs(language=language_code),
             )
+
+        if not title_prefix and title.get("no_prefix") is not True:
+            _elem(element, "NoPrefix", allow_empty=True)
 
         _elem(
             element,
@@ -212,6 +221,12 @@ def _write_title_detail(parent: ET.Element, title: Dict[str, Any]) -> None:
     _elem(element, "Subtitle", title.get("subtitle"), attrib=_attrs(language=language_code))
     _elem(element, "PartNumber", title.get("part_number"), attrib=_attrs(language=language_code))
     _elem(element, "YearOfAnnual", title.get("year_of_annual"))
+
+def _sequence_number(value: Any) -> str:
+    text = _s(value)
+    volume = re.fullmatch(r"\(?\s*Vol(?:ume)?[ .]*(\d+)\s*\)?", text, re.I)
+    return volume.group(1) if volume else text
+
 
 def _write_collection(parent: ET.Element, row: Dict[str, Any]) -> None:
     if not any(
@@ -254,8 +269,8 @@ def _write_collection(parent: ET.Element, row: Dict[str, Any]) -> None:
 
         element = ET.SubElement(detail, "TitleElement")
         _elem(element, "TitleElementLevel", row.get("title_element_level"))
-        if row.get("no_prefix") is True:
-            _elem(element, "NoPrefix", allow_empty=True)
+        # collection_title stores the complete collection name without a split prefix.
+        _elem(element, "NoPrefix", allow_empty=True)
         _elem(element, "TitleWithoutPrefix", row.get("collection_title"))
         _elem(element, "Subtitle", row.get("collection_subtitle"))
         _elem(element, "PartNumber", row.get("part_number"))
@@ -273,7 +288,7 @@ def _write_collection(parent: ET.Element, row: Dict[str, Any]) -> None:
         sequences.append({
             "type": explicit_type,
             "name": _s(row.get("sequence_type_name")),
-            "number": explicit_number,
+            "number": _sequence_number(explicit_number),
         })
 
     collection_number = _s(row.get("collection_number"))
@@ -281,7 +296,7 @@ def _write_collection(parent: ET.Element, row: Dict[str, Any]) -> None:
         sequences.append({
             "type": "01",
             "name": "Collection number",
-            "number": collection_number,
+            "number": _sequence_number(collection_number),
         })
 
     volume_number = _s(row.get("volume_number"))
@@ -289,7 +304,7 @@ def _write_collection(parent: ET.Element, row: Dict[str, Any]) -> None:
         sequences.append({
             "type": "01",
             "name": "Volume number",
-            "number": volume_number,
+            "number": _sequence_number(volume_number),
         })
 
     seen_sequences = set()
@@ -319,16 +334,25 @@ def _write_contributor(parent: ET.Element, contributor: Dict[str, Any]) -> None:
 
     node = ET.SubElement(parent, "Contributor")
     _elem(node, "SequenceNumber", contributor.get("sequence_number"))
-    _elem(node, "ContributorRole", contributor.get("role"))
+    # Legacy assignment labels have exact ONIX equivalents. Missing roles
+    # remain missing; a person's profile or sequence is not role evidence.
+    role = _s(contributor.get("role")).upper()
+    _elem(node, "ContributorRole", {"AUTHOR": "A01", "ILLUSTRATOR": "A12"}.get(role, role))
 
     display_name = _s(party.get("display_name"))
     corporate_name = _s(party.get("corporate_name"))
 
-    if display_name:
+    if corporate_name and _s(party.get("party_type")) in {"organization", "corporate", "company"}:
+        _elem(node, "CorporateName", corporate_name)
+    elif display_name:
         _elem(node, "PersonName", display_name)
         _elem(node, "PersonNameInverted", party.get("person_name_inverted"))
+        _elem(node, "TitlesBeforeNames", party.get("titles_before_names"))
         _elem(node, "NamesBeforeKey", party.get("names_before_key"))
+        _elem(node, "PrefixToKey", party.get("prefix_to_key"))
         _elem(node, "KeyNames", party.get("key_names"))
+        _elem(node, "SuffixToKey", party.get("suffix_to_key"))
+        _elem(node, "LettersAfterNames", party.get("letters_after_names"))
     elif corporate_name:
         _elem(node, "CorporateName", corporate_name)
 
@@ -355,6 +379,8 @@ def _write_contributor(parent: ET.Element, contributor: Dict[str, Any]) -> None:
 
     alternative_names = contributor.get("alternative_names") or []
     for alt in alternative_names:
+        if not any(_s(alt.get(k)) for k in ("display_name","person_name_inverted","names_before_key","key_names","corporate_name")):
+            continue
         alt_node = ET.SubElement(node, "AlternativeName")
         _elem(alt_node, "NameType", alt.get("name_type"))
         _elem(alt_node, "PersonName", alt.get("display_name"))
@@ -388,10 +414,7 @@ def _write_contributor(parent: ET.Element, contributor: Dict[str, Any]) -> None:
         _elem(web, "WebsiteLink", website.get("website_link"))
 
     for place in contributor.get("places") or []:
-        if not any(
-            _s(place.get(k))
-            for k in ("contributor_place_relator", "country_code", "region_code", "location_name")
-        ):
+        if not any(_s(place.get(k)) for k in ("country_code", "region_code")):
             continue
         p = ET.SubElement(node, "ContributorPlace")
         _elem(p, "ContributorPlaceRelator", place.get("contributor_place_relator"))
@@ -400,12 +423,10 @@ def _write_contributor(parent: ET.Element, contributor: Dict[str, Any]) -> None:
         _elem(p, "LocationName", place.get("location_name"))
 
     for code in contributor.get("from_language_codes") or []:
-        lang = ET.SubElement(node, "FromLanguage")
-        _elem(lang, "LanguageCode", code)
+        _elem(node, "FromLanguage", code)
 
     for code in contributor.get("to_language_codes") or []:
-        lang = ET.SubElement(node, "ToLanguage")
-        _elem(lang, "LanguageCode", code)
+        _elem(node, "ToLanguage", code)
 
     _elem(node, "ContributorDescription", contributor.get("contributor_description"))
 
@@ -424,8 +445,8 @@ def _write_contributor(parent: ET.Element, contributor: Dict[str, Any]) -> None:
             "affiliation_id_type_name",
             "affiliation_id_value",
         ):
-            aid = ET.SubElement(anode, "ProfessionalAffiliationIdentifier")
-            _elem(aid, "ProfessionalAffiliationIDType", aff.get("affiliation_id_type"))
+            aid = ET.SubElement(anode, "AffiliationIdentifier")
+            _elem(aid, "AffiliationIDType", aff.get("affiliation_id_type"))
             _elem(aid, "IDTypeName", aff.get("affiliation_id_type_name"))
             _elem(aid, "IDValue", aff.get("affiliation_id_value"))
 
@@ -499,17 +520,25 @@ def _write_audience(parent: ET.Element, row: Dict[str, Any]) -> None:
 
 
 
-_ONIX_XHTML_TAGS = {"p", "br", "strong", "em", "b", "i", "cite", "ul", "ol", "li", "sub", "sup", "dl", "dt", "dd"}
+_ONIX_XHTML_TAGS = {"p", "br", "strong", "em", "b", "i", "cite", "ul", "ol", "li", "sub", "sup", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "h5", "h6", "span", "a", "ruby", "rb", "rt", "rp"}
 
 def _append_onix_xhtml(parent: ET.Element, fragment: Any) -> None:
     raw = str(fragment or "").strip()
     if not raw: return
+    # Party bios may be stored as a mixed HTML fragment with literal ampersands.
+    # Escape those once while preserving XML entities and the original wording.
+    raw = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9A-Fa-f]+;)", "&amp;", raw)
+    raw = re.sub(r"<(?!/?[A-Za-z_][\w:.-]*(?:\s|/?>))", "&lt;", raw)
     try: wrapper = ET.fromstring(f"<wrapper>{raw}</wrapper>")
     except ET.ParseError as exc: raise ValueError(f"Invalid XHTML in ONIX text field: {exc}") from exc
     def clone(node: ET.Element) -> ET.Element:
         tag = str(node.tag).split("}")[-1].lower()
         if tag not in _ONIX_XHTML_TAGS: raise ValueError(f"Unsupported XHTML tag in ONIX text field: <{tag}>")
         attrs: Dict[str, str] = {}
+        if tag == "a":
+            href = (node.get("href") or "").strip()
+            if not re.search(r"[\x00-\x20]", href) and re.match(r"^(?:https?://[^/]+|mailto:[^@]+@[^@]+)", href, re.IGNORECASE):
+                attrs["href"] = href
         if tag == "ol":
             if node.get("type") in {"1", "a", "A", "i", "I"}: attrs["type"] = node.get("type") or ""
             start = node.get("start") or ""
@@ -584,13 +613,15 @@ def _write_supporting_resource(parent: ET.Element, row: Dict[str, Any]) -> None:
     ) and not row.get("versions"):
         return
 
+    if not any(_s(v.get("resource_link")) for v in row.get("versions") or []):
+        return  # An unfinished upload has no distributable resource yet; retain it in storage.
     node = ET.SubElement(parent, "SupportingResource")
     _elem(node, "ResourceContentType", row.get("resource_content_type"))
     _elem(node, "ContentAudience", row.get("content_audience"))
     _elem(node, "ResourceMode", row.get("resource_mode"))
-    _elem(node, "ResourceDescription", row.get("resource_description"))
-    _elem(node, "Caption", row.get("caption"))
-    _elem(node, "Credit", row.get("credit"))
+    for feature_type, text in (("02", row.get("caption") or row.get("resource_description")), ("01", row.get("credit"))):
+        if _s(text):
+            _write_feature(node, "ResourceFeature", "ResourceFeatureType", {"feature_type":feature_type,"feature_note":text})
 
     territory_countries = _s(row.get("territory_countries"))
     if territory_countries:
@@ -643,10 +674,7 @@ def _write_supporting_resource(parent: ET.Element, row: Dict[str, Any]) -> None:
                 pass
 
     for version in row.get("versions") or []:
-        if not any(
-            _s(version.get(k))
-            for k in ("resource_form", "resource_link", "filename", "storage_key")
-        ):
+        if not _s(version.get("resource_link")):
             continue
         v = ET.SubElement(node, "ResourceVersion")
         _elem(v, "ResourceForm", version.get("resource_form"))
@@ -972,6 +1000,13 @@ def _write_related_material(root: ET.Element, payload: Dict[str, Any]) -> None:
 
 
 def _write_price(parent: ET.Element, row: Dict[str, Any]) -> None:
+    amount = _s(row.get("price_amount"))
+    if amount:
+        try:
+            if float(amount) <= 0:
+                return
+        except ValueError:
+            raise ValueError("PriceAmount is not numeric") from None
     if not any(
         _s(row.get(k))
         for k in ("price_type_code", "price_amount", "currency_code")
@@ -986,7 +1021,7 @@ def _write_price(parent: ET.Element, row: Dict[str, Any]) -> None:
 
     if _has_values(row, "discount_code_type", "discount_type_name", "discount_code"):
         discount = ET.SubElement(price, "DiscountCoded")
-        _elem(discount, "DiscountCodeType", row.get("discount_code_type"))
+        _elem(discount, "DiscountCodeType", row.get("discount_code_type") or "01")
         _elem(discount, "DiscountCodeTypeName", row.get("discount_type_name"))
         _elem(discount, "DiscountCode", row.get("discount_code"))
 
@@ -1029,7 +1064,10 @@ def _write_price(parent: ET.Element, row: Dict[str, Any]) -> None:
         _elem(d, "Date", _s(row.get("price_effective_until")).replace("-", ""))
 
     _elem(price, "MinimumOrderQuantity", row.get("minimum_order_quantity"))
-    _elem(price, "PriceNote", row.get("price_note"))
+    if _s(row.get("price_note")):
+        description = price.find("PriceTypeDescription")
+        if description is None:description = ET.SubElement(price,"PriceTypeDescription")
+        description.text = (description.text + "; " if description.text else "") + _s(row.get("price_note"))
 
 def _write_product_supply(root: ET.Element, product: Dict[str, Any]) -> None:
     supply_rows = product.get("product_supply") or []
@@ -1074,12 +1112,12 @@ def _write_product_supply(root: ET.Element, product: Dict[str, Any]) -> None:
                 "initial_print_run",
                 "promotion_campaign",
             )
-        ) or _has_values(pub.get("market_date") or {}, "market_date_role", "market_date_text"):
+        ) or _has_values(pub.get("market_date") or {}, "market_date_text"):
             mpd = ET.SubElement(ps, "MarketPublishingDetail")
             _elem(mpd, "MarketPublishingStatus", pub.get("market_publishing_status"))
 
             md = pub.get("market_date") or {}
-            if _s(md.get("market_date_role")) or _s(md.get("market_date_text")):
+            if _s(md.get("market_date_role")) and _s(md.get("market_date_text")):
                 market_date = ET.SubElement(mpd, "MarketDate")
                 _elem(market_date, "MarketDateRole", md.get("market_date_role"))
                 _elem(
@@ -1171,12 +1209,17 @@ def _write_product_supply(root: ET.Element, product: Dict[str, Any]) -> None:
                 )
         elif _s(row.get("expected_ship_date")):
             supply_date = ET.SubElement(sd, "SupplyDate")
+            _elem(supply_date, "SupplyDateRole", "08")
             _elem(supply_date, "Date", _s(row.get("expected_ship_date")).replace("-", ""))
 
         _elem(sd, "SupplyDetailNote", row.get("supply_note"))
 
         for price in row.get("prices") or []:
             _write_price(sd, price)
+        if sd.find("Price") is None and row.get("prices"):
+            # A zero legacy placeholder is an unannounced price, never a free offer.
+            _elem(sd, "UnpricedItemType", "02")
+
 
 
 def _product_to_xml(product: Dict[str, Any]) -> ET.Element:
@@ -1320,10 +1363,13 @@ def _product_to_xml(product: Dict[str, Any]) -> ET.Element:
         for contributor in dd.get("contributors") or []:
             _write_contributor(desc, contributor)
 
+        for edition_type in dd.get("edition_types") or []:
+            _elem(desc, "EditionType", edition_type.get("edition_type_code") if isinstance(edition_type, dict) else edition_type)
+
         if _s(dd.get("edition_number")) or _s(dd.get("edition_statement")):
             _elem(desc, "EditionNumber", dd.get("edition_number"))
             _elem(desc, "EditionStatement", dd.get("edition_statement"))
-        elif dd.get("no_edition") is True:
+        elif dd.get("no_edition") is True and not dd.get("edition_types"):
             _elem(desc, "NoEdition", allow_empty=True)
 
         for lang in dd.get("languages") or []:
@@ -1391,7 +1437,7 @@ def _product_to_xml(product: Dict[str, Any]) -> ET.Element:
         for audience in dd.get("audiences") or []:
             _write_audience(desc, audience)
 
-        _elem(desc, "AudienceDescription", dd.get("audience_description"))
+        _elem(desc, "AudienceDescription", dd.get("audience_description"), attrib=_attrs(textformat="05" if "<" in _s(dd.get("audience_description")) else "06"))
 
         for usage in dd.get("usage_constraints") or []:
             if not any(_s(usage.get(k)) for k in ("usage_type", "usage_status", "quantity", "unit_code", "usage_note")):
@@ -1476,8 +1522,69 @@ def _write_header(root: ET.Element, header: Optional[Dict[str, Any]]) -> None:
     )
 
 
+def _prepare_reference_xml(root: ET.Element, release: str) -> None:
+    if release not in ("3.0", "3.1"):
+        raise ValueError("Supported ONIX releases are 3.0 and 3.1")
+    for parent in list(root.iter()):
+        if parent.tag == "Territory":
+            included = parent.find("CountriesIncluded"); excluded = parent.find("CountriesExcluded")
+            if included is not None and excluded is not None and parent.find("RegionsIncluded") is None:
+                excluded_values=set((excluded.text or '').split())
+                included.text=' '.join(v for v in (included.text or '').split() if v not in excluded_values)
+                parent.remove(excluded)
+                if not included.text:
+                    raise ValueError("Territory has no included countries after exclusions; correct the catalog territory")
+        if parent.tag == "SupplyDetail":
+            seen_dates = set()
+            for date in list(parent.findall("SupplyDate")):
+                key = (date.findtext("SupplyDateRole"),date.findtext("Date"))
+                if key in seen_dates: parent.remove(date)
+                else: seen_dates.add(key)
+
+            for note in list(parent.findall("SupplyDetailNote")):
+                parent.remove(note)
+        if parent.tag == "Contributor":
+            for alt in list(parent.findall("AlternativeName")):
+                corp = alt.find("CorporateName")
+                if corp is not None and any(alt.find(tag) is not None for tag in ("PersonName","PersonNameInverted","NamesBeforeKey","KeyNames")):
+                    alt.remove(corp); separate = ET.SubElement(parent,"AlternativeName")
+                    name_type = alt.findtext("NameType")
+                    _elem(separate,"NameType",name_type); separate.append(corp)
+        if parent.tag == "ProfessionalAffiliation" and release == "3.0":
+            for child in list(parent):
+                if child.tag == "AffiliationIdentifier": parent.remove(child)
+        if parent.tag == "TextContent" and release == "3.0":
+            for child in list(parent):
+                if child.tag == "TextSourceLink": parent.remove(child)
+        if parent.tag == "MarketPublishingDetail" and release == "3.1":
+            for contact in list(parent.findall("PromotionContact")):
+                parent.remove(contact)
+                # Preserve the contact wording as part of the campaign, not as a fabricated person.
+                campaign=parent.find("PromotionCampaign")
+                if campaign is None:campaign=ET.SubElement(parent,"PromotionCampaign")
+                campaign.text=(contact.text or '') + ('; '+campaign.text if campaign.text else '')
+
+        if parent.tag == "CopyrightStatement":
+            for child in list(parent):
+                if child.tag == "CopyrightStatement":
+                    parent.remove(child)
+                    if release == "3.1":
+                        detail = next((n for n in root.iter("PublishingDetail") if parent in list(n)), None)
+                        if detail is not None:
+                            child.tag = "CopyrightStatementText"; detail.append(child)
+        if release == "3.0" and parent.tag == "Prize":
+            for child in list(parent):
+                if child.tag == "SequenceNumber": parent.remove(child)
+    for detail in root.iter("PublishingDetail"):
+        for statement in list(detail.findall("CopyrightStatement")):
+            if statement.find("CopyrightYear") is None and statement.find("CopyrightOwner") is None:
+                detail.remove(statement)
+    order_children(root, release)
+
+
 def product_to_xml_string(product: Dict[str, Any], pretty: bool = True) -> str:
     root = _product_to_xml(product)
+    _prepare_reference_xml(root, "3.0")
     rough = ET.tostring(root, encoding="unicode", method="xml")
     if pretty:
         try:
@@ -1494,7 +1601,7 @@ def message_to_xml(message: Dict[str, Any], pretty: bool = True) -> str:
     # ONIX release and namespace are protocol settings, not book metadata.
     attrs = {
         "release": _s(message.get("release")) or "3.0",
-        "xmlns": ONIX_NS,
+        "xmlns": "http://ns.editeur.org/onix/" + (_s(message.get("release")) or "3.0") + "/reference",
     }
     root = ET.Element("ONIXMessage", attrib=attrs)
     _write_header(root, message.get("header"))
@@ -1502,6 +1609,7 @@ def message_to_xml(message: Dict[str, Any], pretty: bool = True) -> str:
     for product in message.get("products") or []:
         root.append(_product_to_xml(product))
 
+    _prepare_reference_xml(root, attrs["release"])
     rough = ET.tostring(root, encoding="unicode", method="xml")
     if pretty:
         try:

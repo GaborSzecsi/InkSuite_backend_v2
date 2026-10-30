@@ -41,7 +41,7 @@ def books(cur, ids):
           ORDER BY p.item_order,p.id LIMIT 8) x),'[]'),
         'subjects',COALESCE((SELECT jsonb_agg(x) FROM (SELECT scheme_id,subject_code,heading_text FROM edition_subjects
           WHERE edition_id=e.id AND tenant_id=e.tenant_id ORDER BY is_main DESC,item_order,id LIMIT 20) x),'[]')) ORDER BY m.is_primary DESC,e.created_at,e.id)
-        FROM marketplace_book_editions m JOIN editions e ON e.id=m.edition_id AND e.work_id=w.id AND e.tenant_id=w.tenant_id WHERE m.marketplace_book_id=b.id),'[]') AS editions
+        FROM marketplace_book_editions m JOIN editions e ON e.id=m.edition_id AND e.work_id=w.id AND e.tenant_id=w.tenant_id AND e.archived_at IS NULL WHERE m.marketplace_book_id=b.id),'[]') AS editions
       FROM marketplace_post_books pb JOIN marketplace_books b ON b.id=pb.marketplace_book_id
       JOIN marketplace_organizations o ON o.id=b.publisher_organization_id JOIN works w ON w.id=b.work_id AND w.tenant_id=o.tenant_id
       JOIN tenants t ON t.id=o.tenant_id

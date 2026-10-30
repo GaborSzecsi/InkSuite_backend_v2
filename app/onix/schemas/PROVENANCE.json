@@ -1,0 +1,36 @@
+{
+  "upstream_repository": "https://github.com/titusz/onixcheck",
+  "commit": "166e4389112a41547a7f4cafc8523160d1f979f0",
+  "files": [
+    {
+      "path": "work\\onix-schemas\\xsd3.0\\ONIX_BookProduct_3.0_reference.xsd",
+      "url": "https://raw.githubusercontent.com/titusz/onixcheck/166e4389112a41547a7f4cafc8523160d1f979f0/src/onixcheck/schema/xsd3.0/ONIX_BookProduct_3.0_reference.xsd",
+      "sha256": "5ac4e162cbcc4a549c62fdfa3db47bd3ae0b13e3da26a9f92ec743debf10962d"
+    },
+    {
+      "path": "work\\onix-schemas\\xsd3.0\\ONIX_BookProduct_CodeLists.xsd",
+      "url": "https://raw.githubusercontent.com/titusz/onixcheck/166e4389112a41547a7f4cafc8523160d1f979f0/src/onixcheck/schema/xsd3.0/ONIX_BookProduct_CodeLists.xsd",
+      "sha256": "47ceb78aee3843df9c48fe3101dc84a2bf0bccb436be387b5f135045e155fcf0"
+    },
+    {
+      "path": "work\\onix-schemas\\xsd3.0\\ONIX_XHTML_Subset.xsd",
+      "url": "https://raw.githubusercontent.com/titusz/onixcheck/166e4389112a41547a7f4cafc8523160d1f979f0/src/onixcheck/schema/xsd3.0/ONIX_XHTML_Subset.xsd",
+      "sha256": "5192454649d7b32a2b3dde20dcb63f6fc888b9b9e6227d56e981c283c73d1f1c"
+    },
+    {
+      "path": "work\\onix-schemas\\xsd3.1\\ONIX_BookProduct_3.1_reference.xsd",
+      "url": "https://raw.githubusercontent.com/titusz/onixcheck/166e4389112a41547a7f4cafc8523160d1f979f0/src/onixcheck/schema/xsd3.1/ONIX_BookProduct_3.1_reference.xsd",
+      "sha256": "d87cdb4aa2ba62a0c9192dcde363e3819720717a8086dfd7724d9e3a200b0d64"
+    },
+    {
+      "path": "work\\onix-schemas\\xsd3.1\\ONIX_BookProduct_CodeLists.xsd",
+      "url": "https://raw.githubusercontent.com/titusz/onixcheck/166e4389112a41547a7f4cafc8523160d1f979f0/src/onixcheck/schema/xsd3.1/ONIX_BookProduct_CodeLists.xsd",
+      "sha256": "47ceb78aee3843df9c48fe3101dc84a2bf0bccb436be387b5f135045e155fcf0"
+    },
+    {
+      "path": "work\\onix-schemas\\xsd3.1\\ONIX_XHTML_Subset.xsd",
+      "url": "https://raw.githubusercontent.com/titusz/onixcheck/166e4389112a41547a7f4cafc8523160d1f979f0/src/onixcheck/schema/xsd3.1/ONIX_XHTML_Subset.xsd",
+      "sha256": "5192454649d7b32a2b3dde20dcb63f6fc888b9b9e6227d56e981c283c73d1f1c"
+    }
+  ]
+}

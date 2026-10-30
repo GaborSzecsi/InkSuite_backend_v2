@@ -308,7 +308,7 @@ def list_exportable_products(
         with conn.cursor(row_factory=dict_row) as cur:
             tenant_id = _get_tenant_id_from_slug(cur, tenant_slug)
 
-            conditions = ["e.tenant_id = %s"]
+            conditions = ["e.tenant_id = %s", "e.archived_at IS NULL"]
             params: List[Any] = [tenant_id]
 
             if isbn:
@@ -758,55 +758,14 @@ def _build_contributors(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any
     return contributors
 
 
-def _build_texts(cur, tenant_id: str, edition_id: str) -> List[Dict[str, Any]]:
+def _build_texts(cur, tenant_id: str, edition_id: str, legacy_description: str = "") -> List[Dict[str, Any]]:
     texts = _fetch_rows(
         cur, "edition_texts",
         tenant_id=tenant_id, key_column="edition_id", key_value=edition_id,
     )
 
-    # Historical InkSuite records may contain an author's biography as
-    # CollateralDetail/TextContent type 12. For a single-author title, the
-    # canonical source is parties.short_bio and the exporter must emit it as
-    # Contributor/BiographicalNote instead. Keep the database rows untouched.
-    try:
-        cur.execute(
-            """
-            SELECT e.work_id
-            FROM editions e
-            WHERE e.tenant_id = %s
-              AND e.id = %s
-            LIMIT 1
-            """,
-            (tenant_id, edition_id),
-        )
-        edition_row = cur.fetchone() or {}
-        work_id = _norm(edition_row.get("work_id"))
-
-        if work_id:
-            cur.execute(
-                """
-                SELECT COUNT(*) AS author_count
-                FROM work_contributors wc
-                WHERE wc.tenant_id = %s
-                  AND wc.work_id = %s
-                  AND upper(trim(coalesce(wc.contributor_role, '')))
-                      IN ('A01', 'AUTHOR')
-                """,
-                (tenant_id, work_id),
-            )
-            author_count = int((cur.fetchone() or {}).get("author_count") or 0)
-
-            if author_count <= 1:
-                texts = [
-                    text
-                    for text in texts
-                    if _norm(text.get("text_type")) != "12"
-                ]
-    except Exception:
-        # Do not break ONIX assembly if a legacy deployment differs. The
-        # original text rows remain available and no database data is changed.
-        pass
-
+    # Imported TextContent 12 may contain a combined biography for multiple
+    # contributors. Preserve the source text alongside individual party bios.
     for text in texts:
         text["content_dates"] = _fetch_rows(
             cur, "edition_text_content_dates",
@@ -814,6 +773,17 @@ def _build_texts(cur, tenant_id: str, edition_id: str) -> List[Dict[str, Any]]:
             key_column="edition_text_id",
             key_value=text.get("id"),
         )
+    # A work-level legacy description is a deterministic fallback, not a
+    # replacement for edition-specific ONIX metadata (even when it is shorter).
+    # Keep teasers and other text types; never borrow from a sibling edition.
+    if _norm(legacy_description) and not any(
+        _norm(t.get("text_type")) == "03" and _norm(t.get("text_value"))
+        for t in texts
+    ):
+        texts = [t for t in texts if _norm(t.get("text_type")) != "03"]
+        texts.append({"text_type": "03", "text_format": "06",
+                      "text_value": legacy_description, "content_audience": "00",
+                      "content_dates": []})
     return texts
 
 
@@ -1085,7 +1055,7 @@ def _build_one(cur, tenant_id: str, edition_id: str) -> Dict[str, Any]:
         JOIN works w
           ON w.id = e.work_id
          AND w.tenant_id = e.tenant_id
-        WHERE e.tenant_id = %s
+        WHERE e.tenant_id = %s AND e.archived_at IS NULL
           AND e.id = %s
         LIMIT 1
         """,
@@ -1173,6 +1143,7 @@ def _build_one(cur, tenant_id: str, edition_id: str) -> Dict[str, Any]:
         "trade_category": _norm(edition.get("trade_category")),
         "product_form_description": _norm(edition.get("product_form_description")),
         "country_of_manufacture": _norm(edition.get("country_of_manufacture")),
+        "edition_types": _fetch_rows(cur, "edition_types", tenant_id=tenant_id, key_column="edition_id", key_value=edition_id),
         "edition_number": _norm(edition.get("edition_number")),
         "edition_statement": _norm(edition.get("edition_statement")),
         "no_edition": not (
@@ -1254,7 +1225,7 @@ def _build_one(cur, tenant_id: str, edition_id: str) -> Dict[str, Any]:
     }
 
     collateral_detail = {
-        "texts": _build_texts(cur, tenant_id, edition_id),
+        "texts": _build_texts(cur, tenant_id, edition_id, _norm(work.get("main_description"))),
         "cited_content": _build_cited_content(cur, tenant_id, edition_id),
         "supporting_resources": _build_supporting_resources(cur, tenant_id, edition_id),
         "prizes": _fetch_rows(

@@ -108,12 +108,11 @@ class DistributionSQLTests(unittest.TestCase):
   with s.transaction() as cur:
    s.enqueue(cur,self.tenant,self.connection,'TEST')
    remove_connection(cur,self.tenant,self.connection,self.user)
-  row=rpc('SELECT archived_at,enabled,configuration FROM distribution_connections WHERE id=$1',[self.connection])['rows'][0]
-  self.assertTrue(row['archived_at']);self.assertFalse(row['enabled']);self.assertEqual(row['configuration'],{})
+  self.assertEqual(rpc('SELECT id FROM distribution_connections WHERE id=$1',[self.connection])['rows'],[])
   self.assertEqual(overview(self.ctx)['connections'],[])
   with self.assertRaises(HTTPException):
    with s.transaction() as cur:s.connection(cur,self.tenant,self.connection)
-  self.assertEqual(rpc('SELECT status FROM distribution_jobs WHERE connection_id=$1',[self.connection])['rows'][0]['status'],'FAILED')
+  self.assertEqual(rpc('SELECT status FROM distribution_jobs WHERE connection_id=$1',[self.connection])['rows'],[])
  def test_remove_connection_blocks_wrong_tenant_and_running_jobs(self):
   from app.distribution.connections import remove_connection
   with self.assertRaises(HTTPException):
@@ -137,7 +136,7 @@ class DistributionSQLTests(unittest.TestCase):
   shared=str(uuid4())
   rpc("INSERT INTO distribution_connections(id,tenant_id,display_name,adapter) VALUES($1,$2,'Publisher distributor','simulator')",[shared,self.tenant])
   with s.transaction() as cur:uninstall_connections(cur,install)
-  self.assertTrue(rpc('SELECT archived_at FROM distribution_connections WHERE id=$1',[self.connection])['rows'][0]['archived_at'])
+  self.assertEqual(rpc('SELECT id FROM distribution_connections WHERE id=$1',[self.connection])['rows'],[])
   self.assertIsNone(rpc('SELECT archived_at FROM distribution_connections WHERE id=$1',[shared])['rows'][0]['archived_at'])
  def test_uninstall_preserves_connection_used_by_another_store(self):
   from app.distribution.connections import uninstall_connections

@@ -2127,6 +2127,7 @@ def _fetch_editions(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
             """
             SELECT
                 e.id,
+                e.archived_at,
                 e.isbn13,
                 e.product_form,
                 e.product_form_detail,
@@ -2225,6 +2226,7 @@ def _fetch_editions(cur, tenant_id: str, work_id: str) -> List[Dict[str, Any]]:
             FROM editions e
             WHERE e.tenant_id = %s
               AND e.work_id = %s
+              AND e.archived_at IS NULL
             ORDER BY e.created_at ASC, e.id ASC
             """,
             (tenant_id, work_id),
@@ -4727,7 +4729,7 @@ def list_works(
                             JOIN edition_publishing_dates pd
                               ON pd.tenant_id = e2.tenant_id
                              AND pd.edition_id = e2.id
-                            WHERE e2.tenant_id = w.tenant_id
+                            WHERE e2.tenant_id = w.tenant_id AND e2.archived_at IS NULL
                               AND e2.work_id = w.id
                               AND pd.date_role = '01'
                             ORDER BY e2.created_at ASC, pd.item_order ASC, pd.created_at ASC, pd.id ASC
@@ -4739,7 +4741,7 @@ def list_works(
                             JOIN edition_publishing_dates pd
                               ON pd.tenant_id = e2.tenant_id
                              AND pd.edition_id = e2.id
-                            WHERE e2.tenant_id = w.tenant_id
+                            WHERE e2.tenant_id = w.tenant_id AND e2.archived_at IS NULL
                               AND e2.work_id = w.id
                               AND pd.date_role = '01'
                               AND pd.date_value IS NOT NULL
@@ -4752,14 +4754,14 @@ def list_works(
                             JOIN edition_publishers ep
                               ON ep.tenant_id = e2.tenant_id
                              AND ep.edition_id = e2.id
-                            WHERE e2.tenant_id = w.tenant_id
+                            WHERE e2.tenant_id = w.tenant_id AND e2.archived_at IS NULL
                               AND e2.work_id = w.id
                               AND ep.publishing_role = '01'
                             ORDER BY e2.created_at ASC, ep.item_order ASC, ep.created_at ASC, ep.id ASC
                             LIMIT 1
                         ) AS normalized_publisher_name
                     FROM works w
-                    WHERE w.tenant_id = %s
+                    WHERE w.tenant_id = %s AND (NOT EXISTS (SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id) OR EXISTS (SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id AND ae.archived_at IS NULL))
                       AND (
                         w.title ILIKE %s
                         OR EXISTS (
@@ -4772,7 +4774,7 @@ def list_works(
                         OR EXISTS (
                           SELECT 1
                           FROM editions e
-                          WHERE e.tenant_id = w.tenant_id
+                          WHERE e.tenant_id = w.tenant_id AND e.archived_at IS NULL
                             AND e.work_id = w.id
                             AND e.isbn13 ILIKE %s
                         )
@@ -4793,7 +4795,7 @@ def list_works(
                             JOIN edition_publishing_dates pd
                               ON pd.tenant_id = e2.tenant_id
                              AND pd.edition_id = e2.id
-                            WHERE e2.tenant_id = w.tenant_id
+                            WHERE e2.tenant_id = w.tenant_id AND e2.archived_at IS NULL
                               AND e2.work_id = w.id
                               AND pd.date_role = '01'
                             ORDER BY e2.created_at ASC, pd.item_order ASC, pd.created_at ASC, pd.id ASC
@@ -4805,7 +4807,7 @@ def list_works(
                             JOIN edition_publishing_dates pd
                               ON pd.tenant_id = e2.tenant_id
                              AND pd.edition_id = e2.id
-                            WHERE e2.tenant_id = w.tenant_id
+                            WHERE e2.tenant_id = w.tenant_id AND e2.archived_at IS NULL
                               AND e2.work_id = w.id
                               AND pd.date_role = '01'
                               AND pd.date_value IS NOT NULL
@@ -4818,14 +4820,14 @@ def list_works(
                             JOIN edition_publishers ep
                               ON ep.tenant_id = e2.tenant_id
                              AND ep.edition_id = e2.id
-                            WHERE e2.tenant_id = w.tenant_id
+                            WHERE e2.tenant_id = w.tenant_id AND e2.archived_at IS NULL
                               AND e2.work_id = w.id
                               AND ep.publishing_role = '01'
                             ORDER BY e2.created_at ASC, ep.item_order ASC, ep.created_at ASC, ep.id ASC
                             LIMIT 1
                         ) AS normalized_publisher_name
                     FROM works w
-                    WHERE w.tenant_id = %s
+                    WHERE w.tenant_id = %s AND (NOT EXISTS (SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id) OR EXISTS (SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id AND ae.archived_at IS NULL))
                     ORDER BY w.updated_at DESC NULLS LAST, w.created_at DESC
                     LIMIT %s OFFSET %s
                     """,
@@ -4926,7 +4928,7 @@ def list_works(
                     """
                     SELECT COUNT(*) AS n
                     FROM works w
-                    WHERE w.tenant_id = %s
+                    WHERE w.tenant_id = %s AND (NOT EXISTS (SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id) OR EXISTS (SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id AND ae.archived_at IS NULL))
                       AND (
                         w.title ILIKE %s
                         OR EXISTS (
@@ -4939,7 +4941,7 @@ def list_works(
                         OR EXISTS (
                           SELECT 1
                           FROM editions e
-                          WHERE e.tenant_id = w.tenant_id
+                          WHERE e.tenant_id = w.tenant_id AND e.archived_at IS NULL
                             AND e.work_id = w.id
                             AND e.isbn13 ILIKE %s
                         )
@@ -4949,7 +4951,7 @@ def list_works(
                 )
             else:
                 cur.execute(
-                    "SELECT COUNT(*) AS n FROM works w WHERE w.tenant_id = %s",
+                    "SELECT COUNT(*) AS n FROM works w WHERE w.tenant_id = %s AND (NOT EXISTS (SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id) OR EXISTS (SELECT 1 FROM editions ae WHERE ae.tenant_id=w.tenant_id AND ae.work_id=w.id AND ae.archived_at IS NULL))",
                     (tenant_id,),
                 )
 
@@ -6349,3 +6351,36 @@ def _fetch_work_collections(cur, tenant_id: str, work_id: str) -> List[Dict[str,
         }
         for row in rows
     ]
+
+
+@router.get("/archived-editions")
+def archived_editions(q: str = Query(""), limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0)):
+    from app.tenants.workspace import workspace
+    selected=workspace()
+    with db_conn() as conn, conn.cursor(row_factory=dict_row) as cur:
+        terms=(selected.tenant_id, '%'+q.strip()+'%', '%'+q.strip()+'%')
+        where="e.tenant_id=%s AND e.archived_at IS NOT NULL AND (w.title ILIKE %s OR coalesce(e.isbn13,'') ILIKE %s)"
+        cur.execute("SELECT count(*) AS n FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id WHERE "+where,terms)
+        total=cur.fetchone()['n']
+        cur.execute("SELECT e.id,e.work_id,e.isbn13,e.product_form,e.product_form_detail,e.archived_at,e.archive_reason,w.title FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id WHERE "+where+" ORDER BY e.archived_at DESC,e.id LIMIT %s OFFSET %s",(*terms,limit,offset))
+        return {"items":cur.fetchall(),"total":total,"limit":limit,"offset":offset}
+
+
+def _edition_archive_action(work_id, edition_id, archive, payload):
+    from app.tenants.workspace import workspace
+    from app.catalog_archive import change
+    selected=workspace()
+    if selected.role not in ('tenant_admin','editor'):
+        raise HTTPException(403,'Publisher editor access is required to archive or restore editions.')
+    with db_conn() as conn, conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        return change(cur,selected.tenant_id,work_id,edition_id,selected.user_id,archive=archive,reason=payload.get('reason',''))
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/archive")
+def archive_edition(work_id: str, edition_id: str, payload: Dict[str, Any] = Body(default={})):
+    return _edition_archive_action(work_id,edition_id,True,payload)
+
+
+@router.post("/works/{work_id}/editions/{edition_id}/restore")
+def restore_edition(work_id: str, edition_id: str):
+    return _edition_archive_action(work_id,edition_id,False,{})

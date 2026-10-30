@@ -61,7 +61,7 @@ def create_order(cur,tenant,body,actor,automated=False,source_created_at=None):
     for item in body.items: quantities[str(item.edition_id)]+=item.quantity
     editions=[]
     for edition_id,qty in sorted(quantities.items()):
-        ed=one(cur,"SELECT id,isbn13,COALESCE(NULLIF(onix_product_form,''),product_form) AS product_form FROM editions WHERE tenant_id=%s AND id=%s",(tenant,edition_id))
+        ed=one(cur,"SELECT id,isbn13,COALESCE(NULLIF(onix_product_form,''),product_form) AS product_form FROM editions WHERE tenant_id=%s AND id=%s AND archived_at IS NULL",(tenant,edition_id))
         if not ed: raise HTTPException(422,'An edition does not belong to this publisher.')
         if not ed['isbn13'] or ed['product_form'] not in ('BB','BC','BA','BH','BD','BE','BF','BG','BK'):
             raise HTTPException(422,'Only physical editions with an ISBN can be fulfilled.')
