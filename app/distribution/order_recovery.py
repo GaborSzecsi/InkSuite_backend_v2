@@ -38,7 +38,7 @@ def retry_simulated_order(cur, install, order_id, connection_id):
     for edition in editions:
         cur.execute("""UPDATE distribution_shopify_variants SET connection_id=%s
             WHERE tenant_id=%s AND installation_id=%s AND active AND edition_id=%s
-            AND connection_id=%s RETURNING variant_id""",(connection_id,tenant,install['id'],edition,order['connection_id']))
+            AND connection_id IN (%s,%s) RETURNING variant_id""",(connection_id,tenant,install['id'],edition,order['connection_id'],connection_id))
         if not cur.fetchall(): raise HTTPException(409,'Product matches changed. Refresh and review the order before retrying.')
     # Re-ingest from Shopify so paid/cancelled status, location and quantities are
     # freshly checked. Never submit directly using a stale stored preview.

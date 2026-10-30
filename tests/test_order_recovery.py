@@ -60,3 +60,7 @@ class RecoveryTests(unittest.TestCase):
         rpc('UPDATE distribution_connections SET orders_enabled=false WHERE id=$1',[self.target])
         with self.assertRaises(HTTPException):self.retry()
         self.assertEqual(rpc('SELECT status FROM distribution_webhooks WHERE id=$1',[self.webhook])['rows'][0]['status'],'DONE')
+
+    def test_retry_accepts_already_corrected_product_mapping(self):
+        rpc('UPDATE distribution_shopify_variants SET connection_id=$1 WHERE installation_id=$2',[self.target,self.install['id']])
+        self.assertTrue(self.retry()['queued'])
