@@ -112,8 +112,12 @@ def apply_receipt(cur,conn,order,receipt):
         accepted_at=CASE WHEN %s IN ('ACCEPTED','SHIPPED') THEN COALESCE(accepted_at,now()) ELSE accepted_at END,
         shipped_at=CASE WHEN %s='SHIPPED' THEN COALESCE(shipped_at,now()) ELSE shipped_at END,updated_at=now()
         WHERE tenant_id=%s AND id=%s""",(status,receipt.distributor_order_id,'DISTRIBUTOR_REJECTED' if receipt.status=='REJECTED' else None,status,status,tenant,oid))
-    if conn['adapter']=='simulator' and conn.get('inventory_enabled') and status!=order['status']:
-        cur.execute('UPDATE distribution_connections SET next_sync_at=now() WHERE tenant_id=%s AND id=%s',(tenant,conn['id']))
+    if conn['adapter']=='simulator' and status!=order['status']:
+        # The simulator owns its local stock ledger independently of scheduled
+        # Shopify inventory publication. Reflect reservations/shipments now.
+        reconcile(cur,conn,adapter(cur,conn).fetch_inventory())
+        if conn.get('inventory_enabled') or conn['adapter']=='simulator':
+            s.enqueue(cur,tenant,conn['id'],'PUBLISH')
     s.event(cur,tenant,conn['id'],'distribution-worker','ORDER_'+status,oid)
     return status
 
@@ -137,7 +141,7 @@ def execute(cur,job):
     conn=s.connection(cur,job['tenant_id'],job['connection_id'],lock=True)
     driver=adapter_for(conn) if job['kind']=='PUBLISH' else adapter(cur,conn)
     if job['kind']=='PUBLISH':
-        if not active(conn,'inventory_enabled'):
+        if not active(conn,'inventory_enabled') and not (conn['enabled'] and conn['adapter']=='simulator'):
             raise ConfigurationRequired('Shopify stock publication requires an enabled inventory connection.')
         from .shopify_execution import push_inventory
         push_inventory(cur,conn)
@@ -158,7 +162,13 @@ def execute(cur,job):
     if job['kind']=='TRACKING':
         receipt=driver.get_order_status(order['id'])
         if receipt is None: raise ConfigurationRequired('Distributor order could not be reconciled.')
-        apply_receipt(cur,conn,order,receipt)
+        status=apply_receipt(cur,conn,order,receipt)
+        if conn['adapter']=='simulator' and status=='SHIPPED':
+            from .simulated_fulfillment import fulfill_simulated_order
+            fulfill_simulated_order(cur,conn,order)
+            if status==order['status']:
+                reconcile(cur,conn,driver.fetch_inventory())
+            s.enqueue(cur,conn['tenant_id'],conn['id'],'PUBLISH')
         return
     if order['status'] in ('SUBMITTED','ACCEPTED','SHIPPED'): return
     if order['status']!='SUBMITTING': raise ConfigurationRequired('Order is not ready for transmission.')

@@ -229,8 +229,12 @@ def distribution_status(install=Depends(linked)):
     with s.transaction() as cur:
         if not ready(cur): return {'ready':False,'jobs':[],'inventory':[],'inventory_push_enabled':False}
         row=s.one(cur,'SELECT inventory_push_enabled FROM distribution_shopify_installations WHERE tenant_id=%s AND id=%s',(install['tenant_id'],install['id']))
-        cur.execute("""SELECT id,connection_id,order_id,kind,status,error_code,attempts,created_at
-            FROM distribution_jobs WHERE tenant_id=%s ORDER BY created_at DESC LIMIT 100""",(install['tenant_id'],))
+        cur.execute("""SELECT j.id,j.connection_id,j.order_id,j.kind,j.status,j.error_code,j.attempts,j.created_at,
+            o.status AS order_status,o.external_order_id,sim.status AS simulated_status
+            FROM distribution_jobs j
+            LEFT JOIN distribution_orders o ON o.tenant_id=j.tenant_id AND o.id=j.order_id
+            LEFT JOIN distribution_simulated_orders sim ON sim.tenant_id=j.tenant_id AND sim.order_id=j.order_id AND sim.connection_id=j.connection_id
+            WHERE j.tenant_id=%s ORDER BY j.created_at DESC LIMIT 100""",(install['tenant_id'],))
         jobs=cur.fetchall()
         cur.execute("""SELECT a.connection_id,e.isbn13,w.title,a.distributor_quantity,a.reserved_quantity,a.sellable_quantity,
             a.last_synced_at,a.sync_status FROM distribution_availability a
@@ -291,8 +295,11 @@ def distribution_action(body:DistributorAction,install=Depends(linked)):
         if conn['adapter']!='simulator': raise HTTPException(409,'This operation is available only for simulated distributors.')
         with s.transaction() as cur:
             s.connection(cur,tenant,body.connection_id,lock=True)
-            row=s.one(cur,"UPDATE distribution_simulated_orders SET status='SHIPPED' WHERE tenant_id=%s AND connection_id=%s AND order_id=%s RETURNING order_id",(tenant,body.connection_id,body.order_id))
+            row=s.one(cur,"SELECT status FROM distribution_simulated_orders WHERE tenant_id=%s AND connection_id=%s AND order_id=%s FOR UPDATE",(tenant,body.connection_id,body.order_id))
             if not row: raise HTTPException(404,'Simulated accepted order not found.')
+            if row['status']=='SHIPPED': return {'queued':False,'shipped':True}
+            if row['status']!='ACCEPTED': raise HTTPException(409,'Only an accepted simulated order can be shipped.')
+            cur.execute("UPDATE distribution_simulated_orders SET status='SHIPPED' WHERE tenant_id=%s AND connection_id=%s AND order_id=%s",(tenant,body.connection_id,body.order_id))
             s.enqueue(cur,tenant,body.connection_id,'TRACKING',body.order_id)
             s.event(cur,tenant,body.connection_id,install['user_id'],'SIMULATED_SHIPMENT',body.order_id)
             return {'queued':True}

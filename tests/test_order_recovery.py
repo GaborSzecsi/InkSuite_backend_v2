@@ -13,6 +13,8 @@ class RecoveryTests(unittest.TestCase):
     tearDownClass=classmethod(base.DistributionSQLTests.tearDownClass.__func__)
 
     def setUp(self):
+        rpc("UPDATE distribution_webhooks SET status='DONE' WHERE status='RECEIVED'")
+        rpc("UPDATE distribution_jobs SET status='FAILED' WHERE status='QUEUED'")
         base.DistributionSQLTests.setUp(self)
         self.install={'id':str(uuid4()),'tenant_id':self.tenant,'shop':str(uuid4())+'.myshopify.com','location_id':'location','user_id':self.user}
         self.body.source_account=self.install['shop']
@@ -64,3 +66,26 @@ class RecoveryTests(unittest.TestCase):
     def test_retry_accepts_already_corrected_product_mapping(self):
         rpc('UPDATE distribution_shopify_variants SET connection_id=$1 WHERE installation_id=$2',[self.target,self.install['id']])
         self.assertTrue(self.retry()['queued'])
+
+    def test_shipment_updates_local_inventory_with_scheduled_sync_off(self):
+        self.retry()
+        with patch.object(shopify,'graphql',return_value={'order':self.source_order()}):shopify.process_inbox_once()
+        with patch.object(execution,'schedule'):execution.run_once()
+        order=rpc('SELECT * FROM distribution_orders WHERE tenant_id=$1',[self.tenant])['rows'][0]
+        rpc("UPDATE distribution_simulated_orders SET status='SHIPPED' WHERE order_id=$1",[order['id']])
+        rpc("UPDATE distribution_jobs SET status='DONE' WHERE tenant_id=$1 AND kind='PUBLISH'",[self.tenant])
+        with s.transaction() as cur:
+            s.enqueue(cur,self.tenant,self.target,'TRACKING',order['id'])
+        with patch.object(execution,'schedule'), patch('app.distribution.simulated_fulfillment.fulfill_simulated_order'):
+            execution.run_once()
+        stock=rpc('SELECT distributor_quantity,reserved_quantity FROM distribution_availability WHERE connection_id=$1',[self.target])['rows'][0]
+        self.assertEqual(stock,{'distributor_quantity':19,'reserved_quantity':0})
+        self.assertEqual(rpc('SELECT status FROM distribution_orders WHERE id=$1',[order['id']])['rows'][0]['status'],'SHIPPED')
+
+    def test_enabling_orders_cannot_disable_configured_simulator_stock(self):
+        from app.distribution.router import configure_execution
+        from app.distribution.models import ExecutionIn
+        rpc("UPDATE distribution_connections SET status='CONNECTED' WHERE id=$1",[self.target])
+        configure_execution(self.target,ExecutionIn(enabled=True,orders_enabled=True,inventory_enabled=False),self.ctx)
+        row=rpc('SELECT enabled,orders_enabled,inventory_enabled FROM distribution_connections WHERE id=$1',[self.target])['rows'][0]
+        self.assertEqual(row,{'enabled':True,'orders_enabled':True,'inventory_enabled':True})

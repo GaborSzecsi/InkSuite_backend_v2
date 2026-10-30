@@ -253,6 +253,10 @@ def configure_execution(connection_id:UUID,body:'ExecutionIn',ctx=Depends(admin)
         if not ready(cur): raise HTTPException(503,'Order and inventory execution awaits migration 030.')
         conn=s.connection(cur,tenant,connection_id,lock=True)
         capabilities=adapter_for(conn).capabilities
+        # Test stock is automatically synchronized; enabling order forwarding
+        # must not switch it off through a stale or unchecked inventory field.
+        if conn['adapter']=='simulator' and conn['configuration'].get('simulated_stock'):
+            body=body.model_copy(update={'inventory_enabled':True})
         if body.enabled:
             if conn['status']!='CONNECTED': raise HTTPException(409,'Save configuration and successfully test the connection first.')
             if body.orders_enabled and not capabilities.submit_order: raise HTTPException(409,'Configure an order-capable adapter.')
