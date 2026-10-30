@@ -241,12 +241,16 @@ def distribution_status(install=Depends(linked)):
             LEFT JOIN distribution_simulated_orders sim ON sim.tenant_id=j.tenant_id AND sim.order_id=j.order_id AND sim.connection_id=j.connection_id
             WHERE j.tenant_id=%s ORDER BY j.created_at DESC LIMIT 100""",(install['tenant_id'],))
         jobs=cur.fetchall()
-        cur.execute("""SELECT a.connection_id,e.isbn13,w.title,a.distributor_quantity,a.reserved_quantity,a.sellable_quantity,
+        cur.execute("""SELECT a.connection_id,a.edition_id,e.isbn13,w.title,a.distributor_quantity,a.reserved_quantity,a.sellable_quantity,
             a.last_synced_at,a.sync_status FROM distribution_availability a
             JOIN editions e ON e.tenant_id=a.tenant_id AND e.id=a.edition_id
             JOIN works w ON w.tenant_id=e.tenant_id AND w.id=e.work_id WHERE a.tenant_id=%s
             ORDER BY w.title,e.isbn13 LIMIT 500""",(install['tenant_id'],))
-        return {'ready':True,'jobs':jobs,'inventory':cur.fetchall(),'inventory_push_enabled':row['inventory_push_enabled']}
+        from .inventory_display import reconcile_display
+        from .adapters import ConfigurationRequired
+        try: inventory=reconcile_display(cur,install,cur.fetchall())
+        except ConfigurationRequired as exc: raise HTTPException(409,str(exc)) from None
+        return {'ready':True,'jobs':jobs,'inventory':inventory,'inventory_push_enabled':row['inventory_push_enabled']}
 
 @embedded.post('/distribution')
 def distribution_action(body:DistributorAction,install=Depends(linked)):

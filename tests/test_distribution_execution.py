@@ -251,6 +251,33 @@ class DistributorExecutionSQLTests(unittest.TestCase):
         jobs=support.rpc("SELECT kind FROM distribution_jobs WHERE tenant_id=$1 AND status='QUEUED'",[self.tenant])['rows']
         self.assertEqual(jobs,[{'kind':'PUBLISH'}])
 
+    def test_set_stock_assigns_unassigned_variant_after_reconnect(self):
+        from app.distribution.simulated_inventory import set_test_stock
+        self.simulator(10);install=self.demo_install()
+        support.rpc('UPDATE distribution_shopify_variants SET connection_id=NULL WHERE installation_id=$1',[install['id']])
+        with patch.object(sx.sh,'graphql',return_value={'shop':{'plan':{'partnerDevelopment':True}}}):
+            set_test_stock(install,self.connection,self.ed,20,5)
+        rows=support.rpc('SELECT connection_id FROM distribution_shopify_variants WHERE installation_id=$1',[install['id']])['rows']
+        self.assertEqual(rows,[{'connection_id':self.connection}])
+        self.assertEqual(self.quantities()['sellable_quantity'],15)
+
+    def test_set_stock_rejects_missing_variant_without_saving_quantity(self):
+        from app.distribution.simulated_inventory import set_test_stock
+        self.simulator(10);install=self.demo_install()
+        support.rpc('DELETE FROM distribution_shopify_variants WHERE installation_id=$1',[install['id']])
+        with patch.object(sx.sh,'graphql',return_value={'shop':{'plan':{'partnerDevelopment':True}}}),self.assertRaises(HTTPException):
+            set_test_stock(install,self.connection,self.ed,20,5)
+        self.assertEqual(self.quantities()['distributor_quantity'],10)
+
+    def test_set_stock_does_not_take_another_distributors_variant(self):
+        from app.distribution.simulated_inventory import set_test_stock
+        self.simulator(10);install=self.demo_install();other=str(uuid4())
+        support.rpc("INSERT INTO distribution_connections(id,tenant_id,display_name,adapter) VALUES($1,$2,'Other','simulator')",[other,self.tenant])
+        support.rpc('UPDATE distribution_shopify_variants SET connection_id=$1 WHERE installation_id=$2',[other,install['id']])
+        with patch.object(sx.sh,'graphql',return_value={'shop':{'plan':{'partnerDevelopment':True}}}),self.assertRaises(HTTPException):
+            set_test_stock(install,self.connection,self.ed,20,5)
+        self.assertEqual(support.rpc('SELECT connection_id FROM distribution_shopify_variants WHERE installation_id=$1',[install['id']])['rows'][0]['connection_id'],other)
+
     def test_set_stock_rejects_live_store_missing_plan_and_cross_tenant(self):
         from app.distribution.simulated_inventory import set_test_stock
         self.simulator(10);install=self.demo_install()

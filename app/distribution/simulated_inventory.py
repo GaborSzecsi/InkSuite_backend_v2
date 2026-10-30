@@ -26,6 +26,18 @@ def set_test_stock(install,connection_id,edition_id,quantity,safety_buffer):
         from .protocol import Stock
         try: Stock(isbn=isbn,on_hand=quantity)
         except ValueError: raise HTTPException(422,'Test stock requires a 13 digit ISBN and a nonnegative quantity.') from None
+        cur.execute('''SELECT variant_id,connection_id,inventory_item_id FROM distribution_shopify_variants
+            WHERE tenant_id=%s AND installation_id=%s AND edition_id=%s AND active FOR UPDATE''',
+            (tenant,install['id'],edition_id))
+        matches=cur.fetchall()
+        if len(matches)!=1 or not matches[0]['inventory_item_id']:
+            raise HTTPException(409,'Import and match this edition to exactly one Shopify variant before setting test stock.')
+        assigned=matches[0]['connection_id']
+        if assigned and str(assigned)!=str(connection_id):
+            raise HTTPException(409,'This Shopify variant belongs to another distributor. Review its distributor mapping before setting test stock.')
+        cur.execute('''UPDATE distribution_shopify_variants SET connection_id=%s
+            WHERE tenant_id=%s AND installation_id=%s AND variant_id=%s''',
+            (connection_id,tenant,install['id'],matches[0]['variant_id']))
         config={**conn['configuration'],'simulated_stock':{**conn['configuration'].get('simulated_stock',{}),isbn:quantity}}
         # Enable inventory only. A paused order exporter must not be resumed by this action.
         conn=s.one(cur,"""UPDATE distribution_connections SET configuration=%s,safety_buffer=%s,

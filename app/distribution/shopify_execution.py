@@ -70,6 +70,44 @@ def require_development_store(cur,install):
         raise ConfigurationRequired('Simulated stock can only update a Shopify development store.')
 
 
+def known_shopify_commitments(cur, conn, install):
+    tenant=conn['tenant_id']
+    # Use CURRENT remaining lines, not historical quantities, to avoid treating a new
+    # sale as an old committed order and accidentally restoring sold stock.
+    cur.execute("""SELECT id,external_order_id,status FROM distribution_orders o WHERE tenant_id=%s AND connection_id=%s
+        AND source='SHOPIFY' AND source_account=%s AND status IN ('RESERVED','QUEUED','SUBMITTING','SUBMITTED','ACCEPTED','SHIPPED')
+        AND (EXISTS (SELECT 1 FROM distribution_reservations r WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id
+                    AND r.status IN ('RESERVED','SUBMITTED','FULFILLED')) OR (status='SHIPPED' AND NOT shopify_fulfillment_reconciled))
+        ORDER BY created_at LIMIT 1001""",(tenant,conn['id'],install['shop']))
+    orders=cur.fetchall()
+    if len(orders)>1000: raise ConfigurationRequired('Order reconciliation exceeds the current batch limit.')
+    known=Counter()
+    for row in orders:
+        if conn['adapter']=='simulator' and row['external_order_id'].startswith('simulation-'): continue
+        source=sh.graphql(cur,install,sh.ORDER_QUERY,{'id':row['external_order_id']})['order']
+        if not source: raise ConfigurationRequired('Cannot reconcile a previously imported order.')
+        remaining=mapped_quantities(cur,install,source,conn['id']) if not source['cancelledAt'] else Counter()
+        if row['status']=='SHIPPED' and not remaining:
+            cur.execute('UPDATE distribution_orders SET shopify_fulfillment_reconciled=true WHERE tenant_id=%s AND id=%s',(tenant,row['id']))
+        if remaining:
+            cur.execute("""SELECT r.edition_id,r.quantity FROM distribution_reservations r
+                JOIN distribution_orders o ON o.tenant_id=r.tenant_id AND o.id=r.order_id
+                WHERE o.tenant_id=%s AND o.connection_id=%s AND o.source_account=%s AND o.external_order_id=%s
+                AND (r.status IN ('RESERVED','SUBMITTED','FULFILLED') OR (r.status='RELEASED' AND o.status='SHIPPED'))""",(tenant,conn['id'],install['shop'],row['external_order_id']))
+            for reservation in cur.fetchall():
+                edition=str(reservation['edition_id'])
+                known[edition]+=min(reservation['quantity'],remaining[edition])
+            # A distributor shipment is already deducted in its physical stock;
+            # add back Shopify's still-unfulfilled commitment until Shopify catches up.
+            # This also supports connections activated without local reservations.
+            if row['status']=='SHIPPED':
+                cur.execute("""SELECT i.edition_id,i.quantity FROM distribution_order_items i WHERE i.tenant_id=%s AND i.order_id=%s
+                    AND NOT EXISTS (SELECT 1 FROM distribution_reservations r WHERE r.tenant_id=i.tenant_id AND r.order_id=i.order_id AND r.edition_id=i.edition_id)""",(tenant,row['id']))
+                for item in cur.fetchall():
+                    known[str(item['edition_id'])]+=min(item['quantity'],remaining[str(item['edition_id'])])
+    return known
+
+
 def push_inventory(cur,conn):
     """One stock pool per managed Shopify inventory item, guarded against racing sales."""
     tenant=conn['tenant_id']
@@ -86,39 +124,7 @@ def push_inventory(cur,conn):
             # Recheck on every write batch: a development store can become a live store.
             require_development_store(cur,install)
         if not install['location_id']: raise ConfigurationRequired('Select the Shopify stock location.')
-        # Use CURRENT remaining lines, not historical quantities, to avoid treating a new
-        # sale as an old committed order and accidentally restoring sold stock.
-        cur.execute("""SELECT id,external_order_id,status FROM distribution_orders o WHERE tenant_id=%s AND connection_id=%s
-            AND source='SHOPIFY' AND source_account=%s AND status IN ('RESERVED','QUEUED','SUBMITTING','SUBMITTED','ACCEPTED','SHIPPED')
-            AND (EXISTS (SELECT 1 FROM distribution_reservations r WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id
-                        AND r.status IN ('RESERVED','SUBMITTED','FULFILLED')) OR (status='SHIPPED' AND NOT shopify_fulfillment_reconciled))
-            ORDER BY created_at LIMIT 1001""",(tenant,conn['id'],install['shop']))
-        orders=cur.fetchall()
-        if len(orders)>1000: raise ConfigurationRequired('Order reconciliation exceeds the current batch limit.')
-        known=Counter()
-        for row in orders:
-            if conn['adapter']=='simulator' and row['external_order_id'].startswith('simulation-'): continue
-            source=sh.graphql(cur,install,sh.ORDER_QUERY,{'id':row['external_order_id']})['order']
-            if not source: raise ConfigurationRequired('Cannot reconcile a previously imported order.')
-            remaining=mapped_quantities(cur,install,source,conn['id']) if not source['cancelledAt'] else Counter()
-            if row['status']=='SHIPPED' and not remaining:
-                cur.execute('UPDATE distribution_orders SET shopify_fulfillment_reconciled=true WHERE tenant_id=%s AND id=%s',(tenant,row['id']))
-            if remaining:
-                cur.execute("""SELECT r.edition_id,r.quantity FROM distribution_reservations r
-                    JOIN distribution_orders o ON o.tenant_id=r.tenant_id AND o.id=r.order_id
-                    WHERE o.tenant_id=%s AND o.connection_id=%s AND o.source_account=%s AND o.external_order_id=%s
-                    AND (r.status IN ('RESERVED','SUBMITTED','FULFILLED') OR (r.status='RELEASED' AND o.status='SHIPPED'))""",(tenant,conn['id'],install['shop'],row['external_order_id']))
-                for reservation in cur.fetchall():
-                    edition=str(reservation['edition_id'])
-                    known[edition]+=min(reservation['quantity'],remaining[edition])
-                # A distributor shipment is already deducted in its physical stock;
-                # add back Shopify's still-unfulfilled commitment until Shopify catches up.
-                # This also supports connections activated without local reservations.
-                if row['status']=='SHIPPED':
-                    cur.execute("""SELECT i.edition_id,i.quantity FROM distribution_order_items i WHERE i.tenant_id=%s AND i.order_id=%s
-                        AND NOT EXISTS (SELECT 1 FROM distribution_reservations r WHERE r.tenant_id=i.tenant_id AND r.order_id=i.order_id AND r.edition_id=i.edition_id)""",(tenant,row['id']))
-                    for item in cur.fetchall():
-                        known[str(item['edition_id'])]+=min(item['quantity'],remaining[str(item['edition_id'])])
+        known=known_shopify_commitments(cur,conn,install)
         cur.execute("""SELECT v.edition_id,v.inventory_item_id,COALESCE(a.sellable_quantity,0) AS quantity,
             a.sync_status,a.last_synced_at
             FROM distribution_shopify_variants v LEFT JOIN distribution_availability a
