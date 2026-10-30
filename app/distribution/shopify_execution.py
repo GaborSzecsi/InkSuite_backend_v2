@@ -147,6 +147,10 @@ def push_inventory(cur,conn):
             if isinstance(fresh,str): fresh=datetime.fromisoformat(fresh.replace('Z','+00:00'))
             target=(int(variant['quantity'])+min(max(0,levels['committed']),known[str(variant['edition_id'])])
                     if variant['sync_status']=='OK' and fresh and fresh>datetime.now(timezone.utc)-timedelta(hours=24) else 0)
+            # Keep only the IDs needed to withdraw stock even after uninstall
+            # deletes the distributor and clears the installation location.
+            from .inventory_cleanup import remember_stock
+            remember_stock(cur,install,conn['id'],variant['inventory_item_id'],install['location_id'])
             if levels['on_hand']==target: continue
             result=sh.graphql(cur,install,SET_QUERY,{'key':str(uuid4()),'input':{
                 'name':'on_hand','reason':'correction','referenceDocumentUri':'gid://inksuite/Distributor/'+str(conn['id']),

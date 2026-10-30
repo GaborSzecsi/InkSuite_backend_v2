@@ -96,3 +96,55 @@ class InventoryCleanupTests(unittest.TestCase):
         rpc("UPDATE distribution_shopify_installations SET simulated_inventory_connection_id=NULL,inventory_push_enabled=true WHERE id=$1",[self.install['id']])
         with patch.object(cleanup.sh,'graphql',side_effect=self.api):self.remove()
         self.assertEqual(len(self.writes),1)
+
+    def remember(self):
+        with s.transaction() as cur:
+            install=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE id=%s',(self.install['id'],))
+            cleanup.remember_stock(cur,install,self.connection,'item-1','location-1')
+
+    def test_removal_uses_saved_ownership_when_mapping_and_flags_are_gone(self):
+        self.remember()
+        rpc('UPDATE distribution_shopify_variants SET connection_id=NULL WHERE installation_id=$1',[self.install['id']])
+        rpc('UPDATE distribution_shopify_installations SET location_id=NULL,simulated_inventory_connection_id=NULL WHERE id=$1',[self.install['id']])
+        with patch.object(cleanup.sh,'graphql',side_effect=self.api):self.remove()
+        self.assertEqual(len(self.writes),1)
+
+    def reinstall(self):
+        self.remember()
+        old=self.install['id']
+        shop=rpc('SELECT shop FROM distribution_shopify_installations WHERE id=$1',[old])['rows'][0]['shop']
+        with s.transaction() as cur:uninstall_connections(cur,self.install)
+        rpc('UPDATE distribution_shopify_installations SET active=false,location_id=NULL,simulated_inventory_connection_id=NULL WHERE id=$1',[old])
+        _,self.install,_=base.DistributionSQLTests.publishing_fixture(self)
+        rpc('UPDATE distribution_shopify_installations SET shop=$1 WHERE id=$2',[shop,self.install['id']])
+        return rpc('SELECT * FROM distribution_shopify_installations WHERE id=$1',[self.install['id']])['rows'][0]
+
+    def test_reinstall_clears_old_stock_without_new_location_or_mappings(self):
+        install=self.reinstall()
+        self.assertIsNone(install['location_id'])
+        with patch.object(cleanup.sh,'graphql',side_effect=self.api):
+            with s.transaction() as cur:cleanup.clear_previous_installation_stock(cur,install)
+        self.assertEqual(len(self.writes),1)
+        self.assertEqual(rpc('SELECT * FROM distribution_shopify_managed_stock WHERE tenant_id=$1',[self.tenant])['rows'],[])
+        with patch.object(cleanup.sh,'graphql') as api:
+            with s.transaction() as cur:cleanup.clear_previous_installation_stock(cur,install)
+        api.assert_not_called()
+
+    def test_reinstall_failure_keeps_pending_stock_for_retry(self):
+        install=self.reinstall()
+        with patch.object(cleanup.sh,'graphql',side_effect=RuntimeError('offline')),self.assertRaises(HTTPException):
+            with s.transaction() as cur:cleanup.clear_previous_installation_stock(cur,install)
+        self.assertTrue(rpc('SELECT * FROM distribution_shopify_managed_stock WHERE tenant_id=$1',[self.tenant])['rows'])
+
+    def test_reinstall_does_not_clear_other_publisher(self):
+        install=self.reinstall()
+        with patch.object(cleanup.sh,'graphql') as api:
+            with s.transaction() as cur:cleanup.clear_previous_installation_stock(cur,{**install,'tenant_id':self.other})
+        api.assert_not_called()
+
+    def test_readback_must_confirm_zero(self):
+        def no_change(cur,install,query,variables):
+            if query==cleanup.LEVEL_QUERY:return self.api(cur,install,query,variables)
+            return {'inventorySetQuantities':{'userErrors':[]}}
+        with patch.object(cleanup.sh,'graphql',side_effect=no_change),self.assertRaises(HTTPException):self.remove()
+        self.assertTrue(rpc('SELECT id FROM distribution_connections WHERE id=$1',[self.connection])['rows'])

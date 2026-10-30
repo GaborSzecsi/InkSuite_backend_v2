@@ -56,6 +56,8 @@ def linked(auth=Depends(session)):
             JOIN memberships m ON m.tenant_id=i.tenant_id AND m.user_id=g.user_id
             WHERE i.shop=%s AND i.active AND m.role IN ('tenant_admin','superadmin')''', (auth['sub'],auth['shop']))
         if not row: raise HTTPException(403, 'Link this Shopify user to an InkSuite publisher administrator.')
+        from .inventory_cleanup import clear_previous_installation_stock
+        clear_previous_installation_stock(cur,row)
     return row
 
 
@@ -106,6 +108,9 @@ def link(body:LinkIn,auth=Depends(session)):
         cur.execute('INSERT INTO distribution_shopify_users(installation_id,subject,user_id) VALUES(%s,%s,%s) ON CONFLICT(installation_id,subject) DO UPDATE SET user_id=excluded.user_id',(installation,auth['sub'],code['user_id']))
         cur.execute('UPDATE distribution_shopify_link_codes SET used_at=now() WHERE code_hash=%s',(code['code_hash'],))
         privacy.audit(cur,code['tenant_id'],str(code['user_id']),'SHOPIFY_USER_LINKED',installation)
+        from .inventory_cleanup import clear_previous_installation_stock
+        current=s.one(cur,'SELECT * FROM distribution_shopify_installations WHERE id=%s',(installation,))
+        clear_previous_installation_stock(cur,current)
     return {'linked':True,'shop':auth['shop']}
 
 

@@ -15,6 +15,7 @@ const fs=require('fs'),path=require('path'),readline=require('readline');
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/032_shopify_reinstallation.sql'),'utf8'));
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/033_distribution_connection_removal.sql'),'utf8').replace(/^\uFEFF/,''));
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/034_shopify_simulated_inventory.sql'),'utf8'));
+ await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/044_shopify_stock_cleanup.sql'),'utf8'));
  console.log(JSON.stringify({ready:true}));
  for await(const line of readline.createInterface({input:process.stdin,crlfDelay:Infinity})){
   try{const c=JSON.parse(line);const result=c.exec?await db.exec(c.sql):await db.query(c.sql,c.params||[]);console.log(JSON.stringify({result}));}
