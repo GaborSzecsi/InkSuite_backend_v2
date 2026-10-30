@@ -117,7 +117,7 @@ def workspace(install=Depends(linked)):
         cur.execute('SELECT * FROM distribution_connections WHERE tenant_id=%s AND archived_at IS NULL AND (shopify_installation_id IS NULL OR shopify_installation_id=%s) ORDER BY display_name',(tenant,install['id']));connections=[public_connection(c) for c in cur.fetchall()]
         cur.execute("SELECT e.id,e.isbn13,w.title,COALESCE(NULLIF(e.onix_product_form,''),e.product_form) AS product_form FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id WHERE e.tenant_id=%s AND e.archived_at IS NULL ORDER BY w.title LIMIT 1000",(tenant,));editions=cur.fetchall()
         cur.execute('SELECT variant_id,title,sku,edition_id,connection_id,catalog_metadata FROM distribution_shopify_variants WHERE tenant_id=%s AND installation_id=%s AND active ORDER BY title LIMIT 500',(tenant,install['id']));variants=cur.fetchall()
-        cur.execute("SELECT o.id,o.external_order_id,o.status,o.created_at,COALESCE(sum(l.quantity),0) AS quantity FROM distribution_orders o LEFT JOIN distribution_order_items l ON l.order_id=o.id AND l.tenant_id=o.tenant_id WHERE o.tenant_id=%s AND o.source='SHOPIFY' AND o.source_account=%s GROUP BY o.id ORDER BY o.created_at DESC LIMIT 100",(tenant,install['shop']));orders=cur.fetchall()
+        cur.execute("SELECT o.id,o.external_order_id,o.status,o.created_at,o.connection_id,o.mode,COALESCE(sum(l.quantity),0) AS quantity FROM distribution_orders o LEFT JOIN distribution_order_items l ON l.order_id=o.id AND l.tenant_id=o.tenant_id WHERE o.tenant_id=%s AND o.source='SHOPIFY' AND o.source_account=%s GROUP BY o.id ORDER BY o.created_at DESC LIMIT 100",(tenant,install['shop']));orders=cur.fetchall()
         cur.execute('SELECT id,topic,status,error_code FROM distribution_webhooks WHERE tenant_id=%s AND installation_id=%s ORDER BY created_at DESC LIMIT 100',(tenant,install['id']));inbox=cur.fetchall()
         cur.execute('SELECT status,error_code,updated_at FROM distribution_shopify_jobs WHERE installation_id=%s ORDER BY created_at DESC LIMIT 1',(install['id'],));sync=cur.fetchone()
         cur.execute('SELECT id,work_id,status,message FROM distribution_shopify_publish_jobs WHERE installation_id=%s ORDER BY created_at DESC LIMIT 50',(install['id'],));publishing=cur.fetchall()
@@ -169,6 +169,17 @@ def connection(body:ConnectionIn,install=Depends(linked)):
 
 class RetryIn(BaseModel):
     id:UUID
+
+
+class RetryOrderIn(RetryIn):
+    connection_id:UUID
+
+
+@embedded.post('/retry-order')
+def retry_order(body:RetryOrderIn,install=Depends(linked)):
+    from .order_recovery import retry_simulated_order
+    with s.transaction() as cur:
+        return retry_simulated_order(cur,install,body.id,body.connection_id)
 
 
 @embedded.post('/retry')
