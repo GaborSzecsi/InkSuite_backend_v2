@@ -3,7 +3,7 @@ from fastapi import HTTPException
 from . import service as s
 
 
-def purge_simulator(cur, tenant, cid):
+def purge_simulator(cur, tenant, cid, *, clear_shopify_stock=True):
     """Permanently remove a disposable simulator and its dependent test data."""
     row=s.one(cur,'SELECT * FROM distribution_connections WHERE tenant_id=%s AND id=%s FOR UPDATE',(tenant,cid))
     if not row or row['adapter']!='simulator':
@@ -12,6 +12,9 @@ def purge_simulator(cur, tenant, cid):
         raise HTTPException(409,'Remove simulator credentials before purging.')
     if s.one(cur,"SELECT id FROM distribution_jobs WHERE tenant_id=%s AND connection_id=%s AND status='RUNNING' LIMIT 1",(tenant,cid)) or s.one(cur,"SELECT id FROM distribution_shopify_publish_jobs WHERE tenant_id=%s AND connection_id=%s AND status='RUNNING' LIMIT 1",(tenant,cid)):
         raise HTTPException(409,'Wait for running jobs to finish before deleting test data.')
+    if clear_shopify_stock:
+        from .inventory_cleanup import clear_connection_inventory
+        clear_connection_inventory(cur,row)
     from .privacy import delete_order_webhooks, numeric_id
     cur.execute("SELECT source_account,external_order_id FROM distribution_orders WHERE tenant_id=%s AND connection_id=%s AND source='SHOPIFY'",(tenant,cid))
     for order in cur.fetchall():
@@ -32,10 +35,10 @@ def purge_simulator(cur, tenant, cid):
     return {'removed':True}
 
 
-def remove_connection(cur, tenant, cid, actor):
+def remove_connection(cur, tenant, cid, actor, *, clear_shopify_stock=True):
     row=s.connection(cur,tenant,cid,lock=True)
     if row['adapter']=='simulator':
-        return purge_simulator(cur,tenant,cid)
+        return purge_simulator(cur,tenant,cid,clear_shopify_stock=clear_shopify_stock)
     if s.one(cur,"SELECT id FROM distribution_jobs WHERE tenant_id=%s AND connection_id=%s AND status='RUNNING' LIMIT 1",(tenant,cid)):
         raise HTTPException(409,'A distributor job is running. Wait for it to finish before removing the connection.')
     if s.one(cur,"SELECT id FROM distribution_shopify_publish_jobs WHERE tenant_id=%s AND connection_id=%s AND status='RUNNING' LIMIT 1",(tenant,cid)):
@@ -45,6 +48,9 @@ def remove_connection(cur, tenant, cid, actor):
        OR EXISTS (SELECT 1 FROM distribution_reservations r WHERE r.tenant_id=distribution_orders.tenant_id
           AND r.order_id=distribution_orders.id AND r.status IN ('RESERVED','SUBMITTED'))) LIMIT 1""",(tenant,cid)):
         raise HTTPException(409,'Resolve outstanding orders and reservations before removing this distributor.')
+    if clear_shopify_stock:
+        from .inventory_cleanup import clear_connection_inventory
+        clear_connection_inventory(cur,row)
     cur.execute("""UPDATE distribution_connections SET archived_at=now(),enabled=false,orders_enabled=false,
         inventory_enabled=false,status='DISABLED',configuration='{}',updated_at=now() WHERE tenant_id=%s AND id=%s""",(tenant,cid))
     cur.execute("UPDATE distribution_jobs SET status='FAILED',error_code='CONNECTION_REMOVED',finished_at=now() WHERE tenant_id=%s AND connection_id=%s AND status IN ('QUEUED','REVIEW_REQUIRED')",(tenant,cid))
@@ -70,7 +76,8 @@ def uninstall_connections(cur,install):
         if shared:
             cur.execute('UPDATE distribution_connections SET shopify_installation_id=NULL WHERE tenant_id=%s AND id=%s',(install['tenant_id'],cid))
             continue
-        try:remove_connection(cur,install['tenant_id'],cid,'shopify-uninstall')
+        # Uninstall revokes Shopify API access before this webhook arrives.
+        try:remove_connection(cur,install['tenant_id'],cid,'shopify-uninstall',clear_shopify_stock=False)
         except HTTPException as exc:
             if exc.status_code!=409:raise
             cur.execute("UPDATE distribution_connections SET archived_at=now() WHERE tenant_id=%s AND id=%s AND adapter='simulator'",(install['tenant_id'],cid))
@@ -87,7 +94,7 @@ def cleanup_credentials():
             AND NOT EXISTS(SELECT 1 FROM distribution_shopify_publish_jobs j WHERE j.tenant_id=c.tenant_id AND j.connection_id=c.id AND j.status='RUNNING')
             ORDER BY c.archived_at LIMIT 1 FOR UPDATE SKIP LOCKED""")
         if pending:
-            purge_simulator(cur,pending['tenant_id'],pending['id'])
+            purge_simulator(cur,pending['tenant_id'],pending['id'],clear_shopify_stock=False)
             return True
         row=s.one(cur,"SELECT id,tenant_id,secret_reference FROM distribution_connections WHERE archived_at IS NOT NULL AND secret_reference IS NOT NULL ORDER BY archived_at LIMIT 1 FOR UPDATE SKIP LOCKED")
         if not row:return False
