@@ -1,0 +1,20 @@
+[Unit]
+Description=InkSuite Stable statement and inventory ingestion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=inksuite-stable
+WorkingDirectory=/opt/inksuite-stable-worker/current
+EnvironmentFile=/etc/inksuite-stable-sync.env
+ExecStart=/opt/inksuite-stable-worker/venv/bin/python -m app.stable.worker
+MemoryMax=256M
+OOMScoreAdjust=800
+CPUQuota=50%
+TimeoutStartSec=30min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+

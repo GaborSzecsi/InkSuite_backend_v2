@@ -74,9 +74,30 @@ class HachetteExporteoAdapter:
     def get_order_status(self,distributor_order_id): raise ConfigurationRequired('Hachette acknowledgement specification is required.')
     def get_tracking(self,distributor_order_id): raise ConfigurationRequired('Hachette tracking specification is required.')
 
-ADAPTERS={'hachette_exporteo':HachetteExporteoAdapter}
+class StableS3InventoryAdapter:
+    """Daily accepted S3 snapshots supply inventory; this never forwards orders."""
+    capabilities=Capabilities(inventory=True)
+    idempotent_submission=False
+    simulated=False
+    def __init__(self,configuration=None,credentials=None,cur=None,connection=None):
+        self.cur=cur;self.connection=connection
+    def test_connection(self):
+        if self.cur is None or self.connection is None:
+            raise ConfigurationRequired('A configured Stable source is required.')
+        self.cur.execute('SELECT enabled,usable_inventory_confirmed FROM stable_sources WHERE tenant_id=%s AND inventory_connection_id=%s',
+                         (self.connection['tenant_id'],self.connection['id']))
+        row=self.cur.fetchone()
+        if not row or not row['enabled'] or not row['usable_inventory_confirmed']:
+            raise ConfigurationRequired('Enable and verify the Stable daily inventory source first.')
+    def fetch_inventory(self):
+        raise ConfigurationRequired('Stable inventory is populated by the daily ingestion job.')
+
+
+ADAPTERS={'hachette_exporteo':HachetteExporteoAdapter,'stable_s3_inventory':StableS3InventoryAdapter}
 def adapter_for(connection, cur=None, credentials=None):
     from .protocol import StandardJSONAdapter, SimulatedAdapter
+    if connection['adapter']=='stable_s3_inventory':
+        return StableS3InventoryAdapter(connection['configuration'],cur=cur,connection=connection,credentials=credentials)
     if connection['adapter'] in ('standard_json','simulator'):
         cls = StandardJSONAdapter if connection['adapter']=='standard_json' else SimulatedAdapter
         return cls(connection['configuration'], cur=cur, connection=connection, credentials=credentials)

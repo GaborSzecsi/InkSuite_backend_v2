@@ -166,6 +166,8 @@ from app.distribution.shopify import public_router as distribution_shopify_route
 from app.distribution.embedded import embedded as distribution_embedded_router
 app.include_router(distribution_embedded_router)
 app.include_router(distribution_router, prefix="/api")
+from app.stable.router import router as stable_router
+app.include_router(stable_router, prefix="/api")
 app.include_router(distribution_shopify_router)
 from routers.payment_instructions import router as payment_instructions_router
 app.include_router(payment_instructions_router, prefix="/api")

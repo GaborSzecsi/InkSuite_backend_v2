@@ -128,7 +128,7 @@ def get_book_kpis(
                 SELECT
                   COALESCE(SUM(r.units_sold), 0) AS units_sold,
                   COALESCE(SUM(r.units_returned), 0) AS returns,
-                  COALESCE(SUM(r.publisher_receipts), 0) AS publisher_receipts
+                  COALESCE(SUM(CASE WHEN r.currency='USD' THEN r.publisher_receipts ELSE 0 END), 0) AS publisher_receipts
                 FROM public.royalty_sales_lines r
                 JOIN public.royalty_periods rp ON rp.id = r.period_id
                 JOIN public.editions e ON e.id = r.edition_id
@@ -171,7 +171,7 @@ def get_book_kpis(
                 f"""
                 SELECT
                   COALESCE(SUM(f.units_sold), 0) AS fraser_units,
-                  COALESCE(SUM(f.publisher_receipts), 0) AS fraser_dollars
+                  COALESCE(SUM(CASE WHEN f.currency='USD' THEN f.publisher_receipts ELSE 0 END), 0) AS fraser_dollars
                 FROM public.fraser_ca_sales_lines f
                 JOIN public.royalty_periods rp ON rp.id = f.period_id
                 JOIN public.editions e ON e.id = f.edition_id
@@ -238,11 +238,38 @@ def get_book_kpis(
             )
             inv_end = cur.fetchone() or {}
 
+            from app.stable.service import ready
+            stable = {}
+            if ready(cur):
+                cur.execute(f"""WITH latest AS (
+                    SELECT DISTINCT ON(s.edition_id) s.edition_id,s.available,s.as_of
+                    FROM stable_inventory_snapshots s JOIN stable_imports i
+                      ON i.tenant_id=s.tenant_id AND i.id=s.import_id AND i.status='posted'
+                    WHERE s.tenant_id=%s ORDER BY s.edition_id,s.as_of DESC
+                  ) SELECT sum(l.available) AS available,min(l.as_of) AS as_of,count(*) AS matched
+                  FROM latest l JOIN editions e ON e.id=l.edition_id AND e.tenant_id=%s
+                  JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
+                  WHERE (w.id::text=%s OR COALESCE(w.uid::text,'')=%s) {fmt_sql}""",
+                  [tenant_id,tenant_id,bookUid,bookUid]+([fmt_filter] if fmt_filter!='ALL' else []))
+                stable=cur.fetchone() or {}
+                cur.execute(f"""SELECT COALESCE(sum(a.amount),0) AS deductions
+                    FROM stable_receipt_adjustments a JOIN stable_imports i ON i.id=a.import_id AND i.tenant_id=a.tenant_id AND i.status='posted'
+                    JOIN editions e ON e.id=a.edition_id AND e.tenant_id=a.tenant_id
+                    JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
+                    JOIN royalty_periods p ON p.id=a.period_id AND p.tenant_id=a.tenant_id
+                    WHERE a.tenant_id=%s AND (w.id::text=%s OR COALESCE(w.uid::text,'')=%s)
+                    AND p.period_code=ANY(%s) AND a.currency='USD' {fmt_sql}""",
+                    [tenant_id,bookUid,bookUid,keys]+([fmt_filter] if fmt_filter!='ALL' else []))
+                stable['deductions']=cur.fetchone()['deductions']
+
             return {
                 "unitsSold": float(sales.get("units_sold") or 0),
                 "returns": float(sales.get("returns") or 0),
                 "freeCopies": float(inv_period.get("free_copies") or 0),
-                "inventoryEnd": float(inv_end.get("inventory_end") or 0),
+                "inventoryEnd": float(stable['available']) if stable.get('matched') else float(inv_end.get("inventory_end") or 0),
+                "inventoryAsOf": stable.get('as_of'),
+                "inventorySource": "daily_report" if stable.get('matched') else "movement_estimate",
+                "adjustedReceipts": float(sales.get('publisher_receipts') or 0)+float(fr.get('fraser_dollars') or 0)-float(stable.get('deductions') or 0),
                 "fraserShipments": float(inv_period.get("fraser_shipments") or 0) + float(fr.get("fraser_units") or 0),
                 "fraserDollars": round(float(fr.get("fraser_dollars") or 0), 2),
                 "periods": keys,
@@ -334,6 +361,21 @@ def get_book_format_stats(
             )
             rows = cur.fetchall() or []
 
+            from app.stable.service import ready
+            current_stock = {}
+            if ready(cur):
+                cur.execute(f"""WITH latest AS (
+                    SELECT DISTINCT ON(s.edition_id) s.edition_id,s.available,s.as_of
+                    FROM stable_inventory_snapshots s JOIN stable_imports i
+                      ON i.tenant_id=s.tenant_id AND i.id=s.import_id AND i.status='posted'
+                    WHERE s.tenant_id=%s ORDER BY s.edition_id,s.as_of DESC
+                  ) SELECT {FMT_CASE} AS fmt,sum(l.available) AS available,min(l.as_of) AS as_of
+                  FROM latest l JOIN editions e ON e.id=l.edition_id AND e.tenant_id=%s
+                  JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
+                  WHERE (w.id::text=%s OR COALESCE(w.uid::text,'')=%s) GROUP BY {FMT_CASE}""",
+                  (tenant_id,tenant_id,bookUid,bookUid))
+                current_stock={str(r['fmt']).upper():r for r in cur.fetchall()}
+
             formats: Dict[str, Dict[str, Any]] = {}
             for r in rows:
                 fmt = str(r.get("fmt") or "").upper()
@@ -346,7 +388,8 @@ def get_book_format_stats(
                     "ytdSold": float(r.get("ytd_sold") or 0),
                     "lifetimeFraserShipments": float(r.get("lifetime_fraser_shipments") or 0),
                     "ytdFraserShipments": float(r.get("ytd_fraser_shipments") or 0),
-                    "inventoryEnd": float(r.get("inventory_end") or 0),
+                    "inventoryEnd": float(current_stock[fmt]['available']) if fmt in current_stock else float(r.get("inventory_end") or 0),
+                    "inventoryAsOf": current_stock.get(fmt,{}).get('as_of'),
                 }
 
             return {

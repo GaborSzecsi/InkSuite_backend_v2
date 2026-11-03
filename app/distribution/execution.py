@@ -127,7 +127,8 @@ def schedule(cur):
         AND (inventory_enabled OR orders_enabled) ORDER BY next_sync_at FOR NO KEY UPDATE SKIP LOCKED LIMIT 20""")
     for conn in cur.fetchall():
         if active(conn,'inventory_enabled'):
-            s.enqueue(cur,conn['tenant_id'],conn['id'],'INVENTORY')
+            if conn['adapter']!='stable_s3_inventory':
+                s.enqueue(cur,conn['tenant_id'],conn['id'],'INVENTORY')
             # Publication also runs when the feed fails, so stale stock can be zeroed.
             if s.one(cur,"SELECT id FROM distribution_shopify_installations WHERE tenant_id=%s AND active AND (inventory_push_enabled OR simulated_inventory_connection_id=%s) LIMIT 1",(conn['tenant_id'],conn['id'])):
                 s.enqueue(cur,conn['tenant_id'],conn['id'],'PUBLISH')

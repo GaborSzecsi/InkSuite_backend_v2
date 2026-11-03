@@ -1,0 +1,185 @@
+"""Exercise real PostgreSQL statements in disposable PGlite, never AWS."""
+import contextlib
+import json
+import subprocess
+import os
+import unittest
+from unittest.mock import patch
+from datetime import date,datetime
+from decimal import Decimal
+from pathlib import Path
+from uuid import UUID,uuid4
+
+from psycopg.types.json import Jsonb
+from app.stable import service
+from app.stable.parser import ReviewRequired,parse_book,parse,read_workbook
+from test_stable_parser import source
+
+proc=None
+
+
+def rpc(sql,params=(),execute=False):
+    def value(v):
+        if isinstance(v,Jsonb): return v.obj
+        if isinstance(v,(date,datetime)): return v.isoformat()
+        if isinstance(v,(UUID,Decimal)): return str(v)
+        return v
+    proc.stdin.write(json.dumps(dict(sql=sql,params=[value(v) for v in params],exec=execute))+'\n');proc.stdin.flush()
+    result=json.loads(proc.stdout.readline())
+    if 'error' in result: raise RuntimeError(result['error'])
+    return result['result']
+
+
+class Cursor:
+    def execute(self,sql,params=()):
+        for i in range(len(params)): sql=sql.replace('%s',f'${i+1}',1)
+        self.rows=rpc(sql,params)['rows'];return self
+    def fetchone(self): return self.rows[0] if self.rows else None
+    def fetchall(self): return self.rows
+    def __enter__(self): return self
+    def __exit__(self,*args): pass
+
+
+class Connection:
+    def cursor(self,**kwargs): return Cursor()
+
+
+@contextlib.contextmanager
+def database(): yield Connection()
+
+
+class StableSQLTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        global proc
+        proc=subprocess.Popen(['node',str(Path(__file__).with_name('stable_pg.cjs'))],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,encoding='utf-8')
+        status=json.loads(proc.stdout.readline());assert status.get('ready'),status
+    @classmethod
+    def tearDownClass(cls):
+        proc.stdin.close();proc.wait(timeout=20);proc.stdout.close()
+    def setUp(self):
+        self.tenant=str(uuid4());self.work=str(uuid4());self.edition=str(uuid4());self.cur=Cursor()
+        rpc('INSERT INTO tenants VALUES($1)',[self.tenant])
+        rpc("INSERT INTO works VALUES($1,$2,'Example','test')",[self.work,self.tenant])
+        rpc("INSERT INTO editions VALUES($1,$2,$3,'9780306406157','Hardcover','Hardcover')",[self.edition,self.tenant,self.work])
+        rpc("INSERT INTO stable_sources(tenant_id,bucket,key_prefix,enabled,us_currency,ca_currency) VALUES($1,'bucket','tenant/',true,'USD','USD')",[self.tenant])
+    def register(self):
+        return service.register(self.cur,self.tenant,'bucket','tenant/march.xlsx','v1',parse_book(source(),str(uuid4())))
+    def test_posting_reuses_sales_and_separates_once_only_costs(self):
+        item=self.register();self.assertEqual(item['status'],'validated')
+        self.assertTrue(service.post(self.cur,self.tenant,item['id']))
+        self.assertFalse(service.post(self.cur,self.tenant,item['id']))
+        sale=rpc('SELECT * FROM royalty_sales_lines WHERE tenant_id=$1',[self.tenant])['rows']
+        self.assertEqual(len(sale),1);self.assertEqual(sale[0]['customer_name'],'Bookshop')
+        self.assertIsNone(sale[0]['discount_percent'])
+        costs=rpc('SELECT sum(amount) AS total FROM stable_receipt_adjustments WHERE tenant_id=$1',[self.tenant])['rows'][0]
+        self.assertEqual(Decimal(costs['total']),Decimal('.57'))
+        receipts=Decimal(sale[0]['publisher_receipts'])-Decimal(costs['total'])
+        self.assertEqual(receipts,Decimal('12.62'))
+        rows=service.royalty_adjustments(self.cur,self.tenant,self.work,date(2026,3,1),date(2026,3,31))
+        self.assertEqual(sum(Decimal(r['publisher_receipts']) for r in rows),Decimal('-.57'))
+    def test_content_idempotency_and_cross_tenant_isolation(self):
+        report=parse_book(source(),'identical')
+        a=service.register(self.cur,self.tenant,'bucket','one','1',report)
+        self.assertIsNone(service.register(self.cur,self.tenant,'bucket','two','2',report))
+        self.assertFalse(service.post(self.cur,str(uuid4()),a['id']))
+    def test_revised_statement_requires_review(self):
+        first=self.register();second=self.register()
+        self.assertEqual(first['status'],'validated');self.assertEqual(second['status'],'needs_review')
+    def test_unknown_isbn_cannot_post(self):
+        book=source();book['b'][1][4]='9781958325391'
+        item=service.register(self.cur,self.tenant,'bucket','unknown','1',parse_book(book,str(uuid4())))
+        self.assertEqual(item['status'],'needs_review');self.assertFalse(service.post(self.cur,self.tenant,item['id']))
+    def test_issued_statement_blocks_posting(self):
+        item=self.register()
+        rpc("INSERT INTO royalty_periods(tenant_id,period_code,period_start,period_end) VALUES($1,'2026-03','2026-03-01','2026-03-31')",[self.tenant])
+        rpc("INSERT INTO royalty_statements(tenant_id,period_id,status) SELECT tenant_id,id,'final' FROM royalty_periods WHERE tenant_id=$1",[self.tenant])
+        with self.assertRaises(ReviewRequired): service.post(self.cur,self.tenant,item['id'])
+    def test_compatibility_view_preserves_canada_history(self):
+        rpc("INSERT INTO fraser_ca_sales_lines(tenant_id,customer_name) VALUES($1,'Historical Canadian buyer')",[self.tenant])
+        self.assertEqual(rpc('SELECT customer_name FROM canada_sales_lines WHERE tenant_id=$1',[self.tenant])['rows'][0]['customer_name'],'Historical Canadian buyer')
+    def test_dashboard_uses_adjusted_receipts_and_buyer_ranking(self):
+        from app.stable import router
+        item=self.register();service.post(self.cur,self.tenant,item['id'])
+        ctx={'tenant':{'id':self.tenant}}
+        with patch.object(router,'db_conn',database):
+            data=router.overview(year='2026',territory='ALL',currency='USD',q='',work_id='',ctx=ctx)
+            self.assertEqual(data['totals']['netReceipts'],Decimal('12.62'))
+            self.assertEqual(data['buyers'][0]['rank'],1)
+            self.assertEqual(data['buyers'][0]['netReceipts'],Decimal('13.19'))
+            self.assertEqual(data['months'][0]['netUnits'],2)
+            other=router.overview(year='2026',territory='ALL',currency='CAD',q='',work_id='',ctx=ctx)
+            self.assertEqual(other['rows'],[])
+    def test_daily_identical_balance_on_different_dates_keeps_history(self):
+        book={'inventory':[['ISBN (Item Code)','Default Useable Balance Qty','Ending Balance Qty'],['9780306406157',8,10]]}
+        a=service.register(self.cur,self.tenant,'bucket','one','1',parse_book(book,'same-bytes',inventory_date='2026-03-01'))
+        b=service.register(self.cur,self.tenant,'bucket','two','2',parse_book(book,'same-bytes',inventory_date='2026-03-02'))
+        self.assertNotEqual(a['id'],b['id'])
+    def test_currency_conversion_is_not_silently_assumed(self):
+        item=self.register();service.post(self.cur,self.tenant,item['id'])
+        rpc("UPDATE stable_receipt_adjustments SET currency='CAD' WHERE tenant_id=$1",[self.tenant])
+        with self.assertRaises(ReviewRequired):service.royalty_adjustments(self.cur,self.tenant,self.work,date(2026,3,1),date(2026,3,31))
+    def test_sql_keeps_no_raw_percentage_or_duplicate_posted_payload(self):
+        item=self.register()
+        payload=rpc('SELECT payload FROM stable_imports WHERE id=$1',[item['id']])['rows'][0]['payload']
+        self.assertNotIn('controls',payload)
+        self.assertNotIn('raw',payload['sales'][0])
+        self.assertNotIn('discount_percent',payload['sales'][0])
+        self.assertNotIn('sales_price',payload['sales'][0])
+        service.post(self.cur,self.tenant,item['id'])
+        row=rpc('SELECT payload FROM stable_imports WHERE id=$1',[item['id']])['rows'][0]
+        self.assertEqual(row,dict(payload={}))
+    def test_discount_is_retained_only_when_a_royalty_rule_needs_it(self):
+        ids=[str(uuid4()) for _ in range(4)]
+        rpc('INSERT INTO royalty_sets VALUES($1,$2,$3,true)',[ids[0],self.tenant,self.work])
+        rpc('INSERT INTO royalty_rules VALUES($1,$2,$3)',[ids[1],self.tenant,ids[0]])
+        rpc('INSERT INTO royalty_tiers VALUES($1,$2,$3)',[ids[2],self.tenant,ids[1]])
+        rpc("INSERT INTO royalty_tier_conditions VALUES($1,$2,$3,'discount')",[ids[3],self.tenant,ids[2]])
+        item=self.register();service.post(self.cur,self.tenant,item['id'])
+        self.assertEqual(Decimal(rpc('SELECT discount_percent FROM royalty_sales_lines WHERE tenant_id=$1',[self.tenant])['rows'][0]['discount_percent']),50)
+    def test_book_information_receives_adjusted_receipts_and_daily_stock(self):
+        from routers import financials
+        item=self.register();service.post(self.cur,self.tenant,item['id'])
+        book={'inventory':[['ISBN (Item Code)','Default Useable Balance Qty','Ending Balance Qty'],['9780306406157',8,10]]}
+        stock=service.register(self.cur,self.tenant,'bucket','daily','v1',parse_book(book,'inventory-check',inventory_date='2026-03-01'))
+        rpc("UPDATE stable_imports SET status='posted',payload='{}' WHERE id=$1",[stock['id']])
+        rpc("INSERT INTO stable_inventory_snapshots VALUES($1,$2,$3,'2026-03-01',8,10)",[self.tenant,stock['id'],self.edition])
+        with patch.object(financials,'db_conn',database),patch.object(financials,'_get_tenant_id',return_value=self.tenant):
+            kpis=financials.get_book_kpis(bookUid=self.work,mode='MONTH',year=2026,month='03',season=None,format='ALL')
+            self.assertEqual(kpis['adjustedReceipts'],12.62)
+            self.assertEqual(kpis['inventoryEnd'],8)
+            self.assertEqual(kpis['inventorySource'],'daily_report')
+            stats=financials.get_book_format_stats(bookUid=self.work,year=2026)
+            self.assertEqual(stats['formats']['HC']['inventoryEnd'],8)
+
+    def test_rounding_allocation_is_signed_and_preserves_control_total(self):
+        for values in ({'a':Decimal('.005'),'b':Decimal('.005')},{'a':Decimal('-.005'),'b':Decimal('-.005')}):
+            result=service.allocate_cents(values)
+            self.assertEqual(sum(result.values()),service.cents(sum(values.values())))
+            self.assertEqual(result,service.allocate_cents(values))
+
+    def post_original(self,month,territory):
+        root=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
+        us=root/('MARBLE PRESS_Client_Statement_'+month+('_v2' if month=='202607' else '')+'.xlsx')
+        report=parse(us.read_bytes()) if territory=='US' else parse((root/f'MARBLE PRESS_Client_Statement_Canada_{month}.xlsx').read_bytes(),companion=read_workbook(us.read_bytes()))
+        self.assertEqual(report.issues,[])
+        codes={s.isbn for s in report.sales}|{c['isbn'] for c in report.costs}
+        for code in codes:
+            rpc("INSERT INTO editions VALUES($1,$2,$3,$4,'Hardcover','Hardcover')",[str(uuid4()),self.tenant,self.work,code])
+        item=service.register(self.cur,self.tenant,'bucket','original-source','v1',report)
+        self.assertTrue(service.post(self.cur,self.tenant,item['id']))
+        table='royalty_sales_lines' if territory=='US' else 'canada_sales_lines'
+        sale=rpc(f'SELECT sum(gross_sales) AS gross,sum(publisher_receipts) AS cash FROM {table} WHERE tenant_id=$1',[self.tenant])['rows'][0]
+        costs=rpc('SELECT sum(amount) AS total FROM stable_receipt_adjustments WHERE tenant_id=$1',[self.tenant])['rows'][0]['total']
+        return Decimal(sale['gross']),Decimal(sale['cash'])-Decimal(costs)
+
+    @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private originals supplied separately')
+    def test_original_march_is_correct_after_actual_two_decimal_sql_posting(self):
+        self.assertEqual(self.post_original('202603','US'),(Decimal('2309.86'),Decimal('1051.54')))
+
+    @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private originals supplied separately')
+    def test_original_july_canada_conversion_does_not_lose_a_cent(self):
+        self.assertEqual(self.post_original('202607','CA'),(Decimal('143.70'),Decimal('89.34')))
+
+
+if __name__=='__main__':unittest.main()

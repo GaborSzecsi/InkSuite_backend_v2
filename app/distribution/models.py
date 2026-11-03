@@ -7,7 +7,7 @@ class StrictModel(BaseModel):
 
 class ConnectionIn(StrictModel):
     display_name: str = Field(min_length=1,max_length=120)
-    adapter: Literal['hachette_exporteo','standard_json','simulator'] = 'hachette_exporteo'
+    adapter: Literal['hachette_exporteo','standard_json','simulator','stable_s3_inventory'] = 'hachette_exporteo'
     safety_buffer: int = Field(default=5,ge=0,le=100000)
 
 class CredentialsIn(StrictModel):

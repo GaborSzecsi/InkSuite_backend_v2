@@ -429,7 +429,13 @@ def load_sales_rows_for_period(
             ),
         )
 
-    return list(cur.fetchall() or [])
+    rows = list(cur.fetchall() or [])
+    from app.stable.service import royalty_adjustments, ReviewRequired
+    try:
+        rows.extend(royalty_adjustments(cur, tenant_id, work_id, period.period_start, period.period_end))
+    except ReviewRequired as exc:
+        raise StatementValidationError(str(exc)) from exc
+    return rows
 
 
 def edition_category_label(product_form: Any, product_form_detail: Any) -> str:

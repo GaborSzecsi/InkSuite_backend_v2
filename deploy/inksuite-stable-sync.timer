@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Stable sync at midnight Pacific, including daylight saving time
+
+[Timer]
+OnCalendar=*-*-* 00:05:00 America/Los_Angeles
+Persistent=true
+Unit=inksuite-stable-sync.service
+
+[Install]
+WantedBy=timers.target
