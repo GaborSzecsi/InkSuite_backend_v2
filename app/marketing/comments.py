@@ -10,8 +10,8 @@ from .providers import graph, instagram_graph, request, ProviderError
 from .publishing import credentials
 
 FIELDS = {
-    'facebook': 'id,message,created_time,from,is_hidden,can_comment,can_hide,can_remove',
-    'instagram': 'id,text,username,timestamp,hidden,like_count',
+    'facebook': 'id,message,created_time,from{id,name,picture},is_hidden,can_comment,can_hide,can_remove',
+    'instagram': 'id,text,username,from,timestamp,hidden,like_count',
 }
 PERMISSIONS = {
     'facebook': ['pages_read_engagement', 'pages_read_user_content', 'pages_manage_engagement'],
@@ -84,6 +84,20 @@ def provider_error(error, mutation=False):
     raise HTTPException(422, 'The platform could not complete this action. The post or comment may have changed, or this action is not supported.') from None
 
 
+def author_details(item, instagram):
+    sender = item.get('from')
+    sender = sender if isinstance(sender, dict) else {}
+    author = (item.get('username') or sender.get('username')) if instagram else sender.get('name')
+    picture = sender.get('picture')
+    picture = picture.get('data', {}) if isinstance(picture, dict) else {}
+    url = picture.get('url') if isinstance(picture, dict) and not picture.get('is_silhouette') else None
+    # Only use photos provided by Meta; never construct profile URLs or look up
+    # unrelated accounts. Instagram comment responses may provide no photo.
+    if not isinstance(url, str) or urlparse(url).scheme != 'https' or not urlparse(url).hostname or urlparse(url).username or urlparse(url).password:
+        url = None
+    return author, url
+
+
 def comment_view(item, target, tenant, reply_to=None, read_account=None, manage=True):
     instagram = target['provider'] == 'instagram'
     flags = dict(reply=True if instagram else item.get('can_comment') is True,
@@ -91,11 +105,12 @@ def comment_view(item, target, tenant, reply_to=None, read_account=None, manage=
                  delete=True if instagram else item.get('can_remove') is True)
     if not manage:
         flags = dict.fromkeys(flags, False)
+    author, avatar_url = author_details(item, instagram)
     comment_id = identifier(item.get('id'))
     return dict(id=comment_id,
                 handle=seal(target, tenant, 'comment', comment=comment_id, reply_to=reply_to or comment_id,
                             capabilities=flags, **({'read_account': str(read_account)} if read_account else {})),
-                author=item.get('username') if instagram else (item.get('from') or {}).get('name'),
+                author=author, avatar_url=avatar_url,
                 text=item.get('text' if instagram else 'message') or '',
                 created_at=item.get('timestamp' if instagram else 'created_time'),
                 hidden=item.get('hidden' if instagram else 'is_hidden') is True,

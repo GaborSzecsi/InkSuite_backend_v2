@@ -357,3 +357,15 @@ def test_switching_instagram_authorization_invalidates_old_comment_handles(env):
     changed,_=c.destination(pg,ctx,target_id)
     with pytest.raises(HTTPException) as error:c.unseal(handle,changed,data['tenant'],'comment')
     assert error.value.status_code==409
+
+
+@pytest.mark.parametrize('item,instagram,expected', [
+    ({'username': 'reader', 'from': {'username': 'nested'}}, True, ('reader', None)),
+    ({'from': {'username': 'nested'}}, True, ('nested', None)),
+    ({'from': {'name': 'Reader', 'picture': {'data': {'url': 'https://example.com/avatar.jpg'}}}}, False, ('Reader', 'https://example.com/avatar.jpg')),
+    ({'from': {'name': 'Reader', 'picture': {'data': {'url': 'javascript:alert(1)'}}}}, False, ('Reader', None)),
+    ({'from': {'picture': {'data': {'url': 'https://example.com/avatar.jpg', 'is_silhouette': True}}}}, False, (None, None)),
+    ({'from': None}, True, (None, None)),
+])
+def test_comment_author_and_optional_photo(item, instagram, expected):
+    assert c.author_details(item, instagram) == expected
