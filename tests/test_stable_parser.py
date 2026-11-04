@@ -56,6 +56,26 @@ class StableParserTests(unittest.TestCase):
         self.assertEqual(report.totals('US')['units_sold'],2)
         self.assertEqual(report.sales[1].handling,0)
 
+    def test_signed_amazon_money_adjustment_changes_gross_once(self):
+        book=source();book['c'][1]=['9780306406157','Example',3,-1,30,-10,20,.1,-2,18]
+        report=parse_book(book)
+        self.assertEqual(report.issues,[])
+        self.assertEqual(report.totals('US')['gross_sales'],40)
+        self.assertEqual(report.totals('US')['publisher_receipts'],Decimal('30.62'))
+        book['c'][1]=['9780306406157','Example',3,1,30,10,40,.1,-4,36]
+        report=parse_book(book)
+        self.assertEqual(report.issues,[])
+        self.assertEqual(report.totals('US')['gross_sales'],60)
+        self.assertEqual(report.totals('US')['publisher_receipts'],Decimal('48.62'))
+
+    @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private originals supplied separately')
+    def test_april_gross_matches_summary_after_amazon_adjustments(self):
+        p=Path(os.environ['STABLE_ACCEPTANCE_DIR'])/'MARBLE PRESS_Client_Statement_202604.xlsx'
+        report=parse(p.read_bytes())
+        self.assertEqual(report.issues,[])
+        self.assertEqual(report.totals('US')['gross_sales'].quantize(Decimal('.01')),Decimal('11537.33'))
+        self.assertEqual(report.totals('US')['publisher_receipts'].quantize(Decimal('.01')),Decimal('6643.32'))
+
     def test_identical_transactions_are_not_deduplicated(self):
         book=source();book['b'].append(copy.deepcopy(book['b'][1]))
         r=parse_book(book)

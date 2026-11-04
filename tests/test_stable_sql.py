@@ -296,6 +296,19 @@ class StableSQLTests(unittest.TestCase):
         self.assertIsNone(service.register(self.cur,self.tenant,'bucket','source','v1',report))
         self.assertEqual(rpc('SELECT status FROM stable_imports WHERE id=$1',[ready['id']])['rows'][0]['status'],'posted')
 
+    def test_sql_and_dashboard_deduct_amazon_money_adjustment_once(self):
+        from app.stable import router
+        book=source();book['c'][1]=['9780306406157','Example',3,-1,30,-10,20,.1,-2,18]
+        item=service.register(self.cur,self.tenant,'bucket','adjusted-amazon','1',parse_book(book,'amazon-gross-once'))
+        service.post(self.cur,self.tenant,item['id'])
+        with patch.object(router,'db_conn',database):
+            data=router.overview(year='2026',territory='US',currency='USD',q='',work_id='',ctx={'tenant':{'id':self.tenant}},period='month',month='03')
+        self.assertEqual(data['totals']['grossSales'],40)
+        self.assertEqual(data['totals']['netReceipts'],Decimal('30.62'))
+        amazon=next(b for b in data['buyers'] if b['buyer']=='Amazon (paid sales)')
+        self.assertEqual(amazon['grossSales'],20)
+        self.assertEqual(amazon['netUnits'],2)
+
     def post_original(self,month,territory):
         root=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
         us=root/('MARBLE PRESS_Client_Statement_'+month+('_v2' if month=='202607' else '')+'.xlsx')

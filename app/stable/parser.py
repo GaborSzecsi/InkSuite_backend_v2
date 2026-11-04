@@ -16,7 +16,7 @@ from zipfile import ZipFile
 
 import openpyxl
 
-VERSION = "stable-6-canadian-detail"
+VERSION = "stable-7-adjusted-gross"
 ZERO = Decimal(0)
 
 
@@ -433,6 +433,8 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None, reserve_
             adjustment = number(row.get("adjunits"), optional=True) if kind == "amazon" else ZERO
             gross = number(row.get("grosssales"))
             net = number(row.get("netsales")) if kind == "amazon" else gross
+            if kind=='amazon' and abs(gross+number(row.get('adjustments'),optional=True)-net)>Decimal('.011'):
+                report.issues.append(f'Amazon gross/adjustment/net mismatch at {sheet}:{n}')
             # Reported monetary fee/net due are authoritative; inconsistent
             # percentage labels are neither persisted nor substituted for cash.
             fee = -number(row.get('distributionfee'))
@@ -442,7 +444,7 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None, reserve_
             if fx_rate:
                 gross,net,fee=gross/fx_rate,net/fx_rate,fee/fx_rate
             report.sales.append(Sale(code, str(row.get("title") or ""), buyer, territory, sheet, n, kind,
-                                     sold, ZERO, gross, net, fee, unit_adjustment=adjustment, raw=row))
+                                     sold, ZERO, net if kind=='amazon' else gross, net, fee, unit_adjustment=adjustment, raw=row))
     if territory == "US":
         if "warehouse" not in found:
             report.issues.append("Missing monthly warehouse section")

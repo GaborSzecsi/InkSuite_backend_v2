@@ -63,3 +63,15 @@ reserve release and the agreed $0.50 per ISBN technology deduction.
 Needs-review statements are rechecked when a late companion arrives. Posted
 statements remain immutable and are not automatically replaced. The worker still
 runs daily at 00:05 America/Los_Angeles.
+
+
+Agreed sales display basis
+-------------------------
+Gross-sales amounts for paid Amazon settlements include the reported signed
+monetary adjustments: Gross Sales + Adjustments = Net Sales, before distribution
+commission. Validate that equation, then post that adjusted amount to gross_sales.
+This matches the monthly settlement-summary sales basis. Keep gross units and
+signed unit adjustments separate. Publisher receipts already use the settlement
+net and must not be reduced again. Apply the same basis to positive corrections.
+Existing posted sales require a source-hash-verified, per-row gross-only correction;
+never regenerate issued statements or rewrite publisher receipts for this change.
