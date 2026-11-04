@@ -115,8 +115,8 @@ def overview(year: str=Query('',pattern=r'^(|20\d{2})$'),territory: str=Query('A
           JOIN works w ON w.tenant_id=e.tenant_id AND w.id=e.work_id
           WHERE s.tenant_id=%s AND i.status='posted'
           AND s.as_of=(SELECT max(t.as_of) FROM stable_inventory_snapshots t JOIN stable_imports j
-            ON j.tenant_id=t.tenant_id AND j.id=t.import_id WHERE t.tenant_id=s.tenant_id AND j.status='posted')
-          AND (%s='' OR w.id::text=%s OR COALESCE(w.uid::text,'')=%s)""",(tenant,work_id,work_id,work_id))
+            ON j.tenant_id=t.tenant_id AND j.id=t.import_id WHERE t.tenant_id=%s AND j.status='posted')
+          AND (%s='' OR w.id::text=%s OR COALESCE(w.uid::text,'')=%s)""",(tenant,tenant,work_id,work_id,work_id))
         stock = {str(r['edition_id']):r for r in cur.fetchall()}
         for row in titles.values():
             snapshot = stock.get(row['editionId'])
