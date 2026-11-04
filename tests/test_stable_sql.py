@@ -174,6 +174,16 @@ class StableSQLTests(unittest.TestCase):
         kept=service.register(self.cur,self.tenant,'bucket','tenant/kept.xlsx','1',parse_book(data,'kept',inventory_date='2026-03-01'))
         self.assertEqual(kept['status'],'validated')
 
+    def test_historical_inventory_fills_gap_without_replacing_latest(self):
+        data={'inventory':[['ISBN (Item Code)','Default Useable Balance Qty','Ending Balance Qty'],['9780306406157',8,10]]}
+        newer=service.register(self.cur,self.tenant,'bucket','tenant/newer.xlsx','1',parse_book(data,'newer',inventory_date='2026-03-02'))
+        older=service.register(self.cur,self.tenant,'bucket','tenant/older.xlsx','1',parse_book(data,'older',inventory_date='2026-03-01'))
+        self.assertTrue(service.post(self.cur,self.tenant,newer['id']))
+        self.assertTrue(service.post(self.cur,self.tenant,older['id']))
+        result=rpc('SELECT max(as_of)::text AS latest,count(*) AS rows FROM stable_inventory_snapshots WHERE tenant_id=$1',[self.tenant])['rows'][0]
+        self.assertEqual(result['latest'],'2026-03-02')
+        self.assertEqual(result['rows'],2)
+
     def test_pacific_ytd_and_month_bounds(self):
         from app.stable.router import period_bounds
         self.assertEqual(period_bounds('ytd','2025','',date(2026,7,4)),('2025-01','2025-07'))

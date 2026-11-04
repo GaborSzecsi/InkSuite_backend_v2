@@ -206,13 +206,16 @@ def defaultdict_list(rows):
 def post_inventory(cur, source, payload, editions, config):
     tenant = source['tenant_id']
     day = source['as_of']
+    if isinstance(day,str):
+        day=date.fromisoformat(day[:10])
     closing = datetime.combine(day,time(23,59),ZoneInfo('America/Los_Angeles')).astimezone(timezone.utc)
     if closing>datetime.now(timezone.utc):
         return False  # Keep today's closing report queued until its Pacific day ends.
-    cur.execute("SELECT max(as_of) AS latest FROM stable_imports WHERE tenant_id=%s AND status='posted' AND report_type='inventory'", (tenant,))
-    latest = cur.fetchone()['latest']
-    if latest and day <= latest:
-        raise ReviewRequired('Inventory is older than or conflicts with the latest posted report')
+    cur.execute("SELECT id FROM stable_imports WHERE tenant_id=%s AND status='posted' AND report_type='inventory' AND as_of=%s AND id<>%s LIMIT 1", (tenant,day,source['id']))
+    if cur.fetchone():
+        raise ReviewRequired('Another inventory report is already posted for this date')
+    # Historical reports may fill gaps. Current stock still selects max(as_of),
+    # and the age check below prevents older reports from publishing to Shopify.
     for item in payload['inventory']:
         cur.execute('INSERT INTO stable_inventory_snapshots(tenant_id,import_id,edition_id,as_of,available,ending) VALUES(%s,%s,%s,%s,%s,%s)',
                     (tenant,source['id'],editions[item['isbn']]['id'],day,item['available'],item['ending']))
