@@ -41,3 +41,25 @@ Validation: Stable parser and disposable PostgreSQL tests, including original
 statement acceptance tests; royalty rule/workflow tests; frontend session and
 search tests; desktop/mobile dashboard interaction checks. Full frontend type
 checking still includes unrelated pre-existing repository errors.
+
+
+September combined-statement companions
+---------------------------------------
+Combined US/Canada statements can use the original Hachette invoice/credit-detail
+workbook from the same S3 source prefix. Match its Fiscal Period Code, not its
+filename or document date. Canadian USD gross/return/net amounts and ISBN units
+are checked against each Canadian account control before posting. The companion
+is evidence for the statement, never independently posted as another sale. Source
+row references retain the companion filename and sheet. Multiple candidate detail
+workbooks are ambiguous and cannot be selected automatically.
+
+Canadian throughput Excluded Units/Excluded dollars can represent the returns
+shown explicitly in invoice/credit detail. Preserve the reported returned units,
+returned dollars and actual reported handling fees; do not invent a $0.63 fee
+where the statement charged no return handling. Amazon settlement adjustments
+remain signed unit adjustments. Cash includes the verified original six-month
+reserve release and the agreed $0.50 per ISBN technology deduction.
+
+Needs-review statements are rechecked when a late companion arrives. Posted
+statements remain immutable and are not automatically replaced. The worker still
+runs daily at 00:05 America/Los_Angeles.

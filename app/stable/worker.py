@@ -18,7 +18,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.core.db import db_conn
-from .parser import ReviewRequired, Report, VERSION, parse_book, parse_reports, read_workbook, statement_period, sections, report_territory, is_combined
+from .parser import ReviewRequired, Report, VERSION, parse_book, parse_reports, read_workbook, statement_period, sections, report_territory, is_combined, canadian_detail
 from .service import json_value, register, post
 
 log = logging.getLogger(__name__)
@@ -54,6 +54,8 @@ def scan(s3, config):
     # Companions are read only after a matching fiscal period has been established.
     companions = {}
     regional_sources={}
+    detail_sources={}
+    detail_keys=set()
     def download(item):
         if item['Size'] > 32*1024*1024:
             raise ReviewRequired('Source workbook exceeds 32 MB')
@@ -69,6 +71,11 @@ def scan(s3, config):
             try:
                 data, _ = download(item)
                 book = read_workbook(data)
+                detail_period=canadian_detail(book)
+                if detail_period:
+                    detail_keys.add(item['Key'])
+                    detail_sources[detail_period]=None if detail_period in detail_sources else item
+                    continue
                 if 'client_statement' in str(item['Key']).lower():
                     source_key=(statement_period(book),report_territory(book))
                     regional_sources[source_key]=None if source_key in regional_sources else item
@@ -90,11 +97,13 @@ def scan(s3, config):
             with connection.transaction():
                 reconcile_removed_inventory(cur,config,present_keys)
             for item in sorted(objects,key=lambda i:i['Key']):
+                if item['Key'] in detail_keys:
+                    continue  # Companion evidence is never independently posted as another sale.
                 data, version = download(item)
                 digest = hashlib.sha256(data).hexdigest()
                 cur.execute("SELECT id,status,parser_version,report_type FROM stable_imports WHERE tenant_id=%s AND content_hash=%s AND as_of IS NOT DISTINCT FROM %s::date AND status<>'superseded'", (tenant,digest,report_date(item['Key'])))
                 existing=cur.fetchall()
-                if existing and not any(row['status']=='needs_review' and (row['parser_version']!=VERSION or row['report_type']=='inventory') for row in existing):
+                if existing and not any(row['status']=='needs_review' and (row['parser_version']!=VERSION or row['report_type'] in ('inventory','statement')) for row in existing):
                     continue
                 try:
                     book = read_workbook(data)
@@ -113,7 +122,12 @@ def scan(s3, config):
                         origin_book=read_workbook(download(origin_us)[0]) if origin_us else None
                         if origin_book:origins['US']=parse_book(origin_book)
                         if origin_ca:origins['CA']=parse_book(read_workbook(download(origin_ca)[0]),companion=origin_book)
-                    reports = parse_reports(book,digest,companion=companion,inventory_date=report_date(item['Key']),reserve_origins=origins)
+                    detail_book=None
+                    if is_combined(book) or report_territory(book)=='CA':
+                        match=detail_sources.get(statement_period(book))
+                        if match:
+                            detail_book={Path(match['Key']).name+' / '+sheet:rows for sheet,rows in read_workbook(download(match)[0]).items()}
+                    reports = parse_reports(book,digest,companion=companion,inventory_date=report_date(item['Key']),reserve_origins=origins,transaction_detail=detail_book)
                     for report in reports:
                         if 'draft' in Path(item['Key']).name.lower():
                             report.issues.append('Draft statement cannot be automatically posted')

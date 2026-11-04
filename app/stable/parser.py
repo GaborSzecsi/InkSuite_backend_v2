@@ -16,7 +16,7 @@ from zipfile import ZipFile
 
 import openpyxl
 
-VERSION = "stable-5-combined-statements"
+VERSION = "stable-6-canadian-detail"
 ZERO = Decimal(0)
 
 
@@ -165,6 +165,11 @@ def sections(book, territory=None):
                                 mapped.update(grossunits=ZERO if transfer else qty,compunits=qty if transfer else ZERO,
                                   grosssales=number(mapped.get('throughput'))+number(mapped.get('excluded')),
                                   actualreturn=number(mapped.get('return')))
+                                if re.search(r'\bCanada\b|\bCanadian\b|\bCan\b',sheet+' '+' '.join(str(c) for r in rows[:3] for c in r if c),re.I):
+                                    mapped.update(grosssales=number(mapped.get('throughput')),
+                                      actualreturn=number(mapped.get('return'))+number(mapped.get('excluded')),
+                                      returnunits=number(mapped.get('returnunits'))+max(-number(mapped.get('excludedunits')),ZERO),
+                                      _reportedfees=True)
                             data.append((n, mapped))
                     result[result_kind] = (sheet, data)
                     break
@@ -227,7 +232,7 @@ def report_territory(book):
     return 'CA' if summaries and all(re.search(r'\bCanada\b|\bCanadian\b',s,re.I) for s in summaries) else 'US'
 
 
-def parse_book(book, digest="", *, companion=None, inventory_date=None, reserve_origin=None):
+def parse_book(book, digest="", *, companion=None, inventory_date=None, reserve_origin=None, transaction_detail=None):
     # A Canada-only statement declares this in its summary. Combined statements
     # require separate territory extraction; unsupported layouts stop for review.
     territory = report_territory(book)
@@ -291,7 +296,7 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None, reserve_
                 raise ReviewRequired('Same buyer has different monetary deductions; account-number allocation required')
             for column in ('grossunits','returnunits','compunits','grosssales','actualreturn','netsales','distributionfee','returnsreserve','fulfillmentfee','returnsfee'):
                 control[column] = number(control[column])+number(previous[column])
-    transactions = found.get("transactions")
+    transactions = canadian_detail(transaction_detail,period) if territory=="CA" and transaction_detail else found.get("transactions")
     if territory == "CA" and not transactions and companion:
         if statement_period(companion) != period:
             raise ReviewRequired("Canadian companion statement period differs")
@@ -368,14 +373,21 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None, reserve_
                 report.issues.append(f'Zero account net with nonzero monetary deductions for {buyer}')
             fee = account_fee*net/account_net if account_net else ZERO
             reserve = account_reserve*net/account_net if account_net else ZERO
-            handling = (sold+comp)*Decimal("0.63")+returns*Decimal("0.63")
+            fulfillment=(sold+comp)*Decimal("0.63")
+            return_fee=returns*Decimal("0.63")
+            if control.get('_reportedfees'):
+                outbound=number(control['grossunits'])+abs(number(control.get('compunits')))
+                returned=abs(number(control['returnunits']))
+                fulfillment=-number(control['fulfillmentfee'])*(sold+comp)/outbound if outbound else ZERO
+                return_fee=-number(control['returnsfee'])*returns/returned if returned else ZERO
+            handling = fulfillment+return_fee
             sale = Sale(isbn(row["isbn"]), str(row.get("title") or ""), buyer, territory, sheet, n, activity,
                         ZERO if transfer else sold, ZERO if transfer else returns, gross, net, fee, handling, reserve,
                         unit_adjustment=ZERO if transfer else unit_adjustment,raw=row)
             report.sales.append(sale)
             for k, v in {"grossunits":sold, "returnunits":returns, "compunits":comp, "grosssales":gross,
                          "netsales":net, "distributionfee":fee, "returnsreserve":reserve,
-                         "fulfillmentfee":(sold+comp)*Decimal("0.63"), "returnsfee":returns*Decimal("0.63")}.items():
+                         "fulfillmentfee":fulfillment, "returnsfee":return_fee}.items():
                 grouped[key][k] += v
     for key, row in controls.items():
         actual = grouped[key]
@@ -520,6 +532,36 @@ def parse(data, **kwargs):
     return parse_book(read_workbook(data), hashlib.sha256(data).hexdigest(), **kwargs)
 
 
+def canadian_detail(book, period=None):
+    """Normalize the distributor's original USD invoice/credit detail, not a new sale source."""
+    matches=[]
+    required={'acctname','saletype','fiscalperiodcode','isbnitemcode','usdgrossamt','usdreturnsamt','usdnetamt','grossqty','returnqty','nonbillableqty'}
+    for sheet,rows in book.items():
+        for index,row in enumerate(rows[:60]):
+            headers=[label(v) for v in row]
+            if not required<=set(headers):continue
+            data=[];periods=set()
+            for n,values in enumerate(rows[index+1:],index+2):
+                item=dict(zip(headers,values))
+                if not _data_row(item,'isbnitemcode'):continue
+                raw=str(item['fiscalperiodcode']).replace('-','')
+                if not re.fullmatch(r'20[0-9]{4}',raw):raise ReviewRequired('Invalid fiscal period in Hachette detail')
+                periods.add(raw[:4]+'-'+raw[4:])
+                if 'canad' not in str(item.get('saletype','')).lower():continue
+                if number(item.get('excludeqty'),optional=True) or number(item.get('excludeamount'),optional=True):
+                    raise ReviewRequired('Unmapped Canadian excluded detail amounts require review')
+                data.append((n,dict(isbn=item['isbnitemcode'],account=item['acctname'],saletype=item['saletype'],
+                  title=item.get('titlelong'),grossqty=item['grossqty'],returnqty=item['returnqty'],compqty=item['nonbillableqty'],
+                  grosssales=item['usdgrossamt'],returns=item['usdreturnsamt'],netsales=item['usdnetamt'])))
+            if len(periods)!=1 or (period and periods!={period}):raise ReviewRequired('Canadian detail fiscal period differs from statement')
+            matches.append((next(iter(periods)),sheet,data))
+            break
+    if len(matches)>1:raise ReviewRequired('Multiple Canadian detail sections require review')
+    if not matches:return None
+    detected,sheet,data=matches[0]
+    return (sheet,data) if period else detected
+
+
 def is_combined(book):
     contexts=[sheet+' '+' '.join(str(c) for r in rows[:3] for c in r if c) for sheet,rows in book.items()]
     return any(re.search(r'(?:summary|throughput).*\b(?:Canada|Canadian|Can)\b',c,re.I) for c in contexts) and any(re.search(r'(?:summary|throughput).*\bUS\b',c,re.I) for c in contexts)
@@ -535,14 +577,14 @@ def split_regions(book):
     return us,ca
 
 
-def parse_reports(book,digest='',*,companion=None,inventory_date=None,reserve_origins=None):
+def parse_reports(book,digest='',*,companion=None,inventory_date=None,reserve_origins=None,transaction_detail=None):
     origins=reserve_origins or {}
     if not is_combined(book):
         region=report_territory(book)
-        return [parse_book(book,digest,companion=companion,inventory_date=inventory_date,reserve_origin=origins.get(region))]
+        return [parse_book(book,digest,companion=companion,inventory_date=inventory_date,reserve_origin=origins.get(region),transaction_detail=transaction_detail)]
     us,ca=split_regions(book)
     reports=[parse_book(us,digest,reserve_origin=origins.get('US')),
-      parse_book(ca,digest,companion=us,reserve_origin=origins.get('CA'))]
+      parse_book(ca,digest,companion=us,reserve_origin=origins.get('CA'),transaction_detail=transaction_detail)]
     if not any(s.territory=='CA' and s.activity not in ('amazon','direct') for s in reports[1].sales):
         reports[1].issues=['Combined workbook has Canadian account totals but no Canadian ISBN transaction detail; Canadian book royalties require that source detail']
     return reports

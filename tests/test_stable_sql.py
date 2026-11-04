@@ -261,6 +261,41 @@ class StableSQLTests(unittest.TestCase):
             self.assertEqual(sum(result.values()),service.cents(sum(values.values())))
             self.assertEqual(result,service.allocate_cents(values))
 
+    @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private originals supplied separately')
+    def test_canadian_september_posts_net_receipts_with_companion_provenance(self):
+        from app.stable.parser import parse_reports
+        root=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
+        detail=root/'MARBLE PRESS_Hachette_Sales_Detail_202609.xlsx'
+        if not detail.exists():self.skipTest('Original Hachette detail supplied separately')
+        us=read_workbook((root/'MARBLE PRESS_Client_Statement_202603.xlsx').read_bytes())
+        ca=read_workbook((root/'MARBLE PRESS_Client_Statement_Canada_202603.xlsx').read_bytes())
+        reports=parse_reports(read_workbook((root/'MARBLE PRESS_Client_Statement_202609.xlsx').read_bytes()),
+          transaction_detail={detail.name+' / '+k:v for k,v in read_workbook(detail.read_bytes()).items()},
+          reserve_origins={'US':parse_book(us),'CA':parse_book(ca,companion=us)})
+        report=reports[1];report.digest='canada-september-original'
+        self.assertEqual(report.issues,[])
+        for code in {s.isbn for s in report.sales}|{c['isbn'] for c in report.costs}:
+            rpc("INSERT INTO editions VALUES($1,$2,$3,$4,'Hardcover','Hardcover')",[str(uuid4()),self.tenant,self.work,code])
+        item=service.register(self.cur,self.tenant,'bucket','statement-september','v1',report)
+        self.assertTrue(service.post(self.cur,self.tenant,item['id']))
+        row=rpc('SELECT sum(units_sold) AS sold,sum(units_returned) AS returned,sum(unit_adjustment) AS adjusted,sum(publisher_receipts) AS cash FROM canada_sales_lines WHERE tenant_id=$1',[self.tenant])['rows'][0]
+        costs=rpc('SELECT sum(amount) AS amount FROM stable_receipt_adjustments WHERE tenant_id=$1',[self.tenant])['rows'][0]['amount']
+        self.assertEqual(Decimal(row['cash'])-Decimal(costs),Decimal('1565.00'))
+        self.assertEqual(Decimal(row['sold']),360);self.assertEqual(Decimal(row['returned']),6)
+        evidence=rpc("SELECT count(*) AS n FROM canada_sales_lines WHERE tenant_id=$1 AND reference_number LIKE '%Hachette_Sales_Detail_202609.xlsx%'",[self.tenant])['rows'][0]['n']
+        self.assertEqual(evidence,116)
+
+    def test_late_companion_revalidates_same_parser_without_rewriting_posted(self):
+        report=parse_book(source(),'late-companion')
+        report.issues.append('Missing matching companion')
+        first=service.register(self.cur,self.tenant,'bucket','source','v1',report)
+        self.assertEqual(first['status'],'needs_review')
+        ready=service.register(self.cur,self.tenant,'bucket','source','v1',parse_book(source(),'late-companion'))
+        self.assertEqual(ready['id'],first['id']);self.assertEqual(ready['status'],'validated')
+        service.post(self.cur,self.tenant,ready['id'])
+        self.assertIsNone(service.register(self.cur,self.tenant,'bucket','source','v1',report))
+        self.assertEqual(rpc('SELECT status FROM stable_imports WHERE id=$1',[ready['id']])['rows'][0]['status'],'posted')
+
     def post_original(self,month,territory):
         root=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
         us=root/('MARBLE PRESS_Client_Statement_'+month+('_v2' if month=='202607' else '')+'.xlsx')

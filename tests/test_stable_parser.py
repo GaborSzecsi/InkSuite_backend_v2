@@ -97,6 +97,28 @@ class StableParserTests(unittest.TestCase):
         self.assertFalse(adapter.capabilities.order_status)
 
     @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private original statements supplied separately')
+    def test_canadian_september_detail_reconciles_cash_and_return_fee(self):
+        from app.stable.parser import parse_reports, canadian_detail
+        directory=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
+        detail_path=directory/'MARBLE PRESS_Hachette_Sales_Detail_202609.xlsx'
+        if not detail_path.exists():self.skipTest('Original Hachette detail supplied separately')
+        detail=read_workbook(detail_path.read_bytes())
+        self.assertEqual(canadian_detail(detail),'2026-09')
+        with self.assertRaises(ReviewRequired):canadian_detail(detail,'2026-08')
+        us=read_workbook((directory/'MARBLE PRESS_Client_Statement_202603.xlsx').read_bytes())
+        ca=read_workbook((directory/'MARBLE PRESS_Client_Statement_Canada_202603.xlsx').read_bytes())
+        origins={'US':parse_book(us),'CA':parse_book(ca,companion=us)}
+        a,b=parse_reports(read_workbook((directory/'MARBLE PRESS_Client_Statement_202609.xlsx').read_bytes()),
+          transaction_detail=detail,reserve_origins=origins)
+        self.assertEqual(a.issues,[]);self.assertEqual(b.issues,[])
+        self.assertEqual(b.totals('CA')['units_sold'],360)
+        self.assertEqual(b.totals('CA')['units_returned'],6)
+        self.assertEqual(sum(s.unit_adjustment for s in b.sales),1)
+        self.assertEqual(b.totals('CA')['publisher_receipts'].quantize(Decimal('.01')),Decimal('1565.00'))
+        self.assertEqual(sum(s.handling for s in b.sales).quantize(Decimal('.01')),Decimal('203.49'))
+        self.assertEqual(len([s for s in b.sales if s.activity=='Canadian Sale']),116)
+
+    @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private original statements supplied separately')
     def test_original_combined_september_uses_real_reserve_release(self):
         from app.stable.parser import parse_reports
         directory=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
