@@ -18,7 +18,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.core.db import db_conn
-from .parser import ReviewRequired, Report, VERSION, parse_book, read_workbook, statement_period, sections, report_territory
+from .parser import ReviewRequired, Report, VERSION, parse_book, parse_reports, read_workbook, statement_period, sections, report_territory, is_combined
 from .service import json_value, register, post
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ def scan(s3, config):
                 raise ReviewRequired('Source contains more than 10,000 candidate workbooks')
     # Companions are read only after a matching fiscal period has been established.
     companions = {}
+    regional_sources={}
     def download(item):
         if item['Size'] > 32*1024*1024:
             raise ReviewRequired('Source workbook exceeds 32 MB')
@@ -68,6 +69,9 @@ def scan(s3, config):
             try:
                 data, _ = download(item)
                 book = read_workbook(data)
+                if 'client_statement' in str(item['Key']).lower():
+                    source_key=(statement_period(book),report_territory(book))
+                    regional_sources[source_key]=None if source_key in regional_sources else item
                 if 'transactions' not in sections(book,'US'):
                     continue
                 period = statement_period(book)
@@ -88,9 +92,9 @@ def scan(s3, config):
             for item in sorted(objects,key=lambda i:i['Key']):
                 data, version = download(item)
                 digest = hashlib.sha256(data).hexdigest()
-                cur.execute('SELECT id,status,parser_version,report_type FROM stable_imports WHERE tenant_id=%s AND content_hash=%s AND as_of IS NOT DISTINCT FROM %s::date', (tenant,digest,report_date(item['Key'])))
-                existing=cur.fetchone()
-                if existing and not (existing['status']=='needs_review' and (existing['parser_version']!=VERSION or existing['report_type']=='inventory')):
+                cur.execute("SELECT id,status,parser_version,report_type FROM stable_imports WHERE tenant_id=%s AND content_hash=%s AND as_of IS NOT DISTINCT FROM %s::date AND status<>'superseded'", (tenant,digest,report_date(item['Key'])))
+                existing=cur.fetchall()
+                if existing and not any(row['status']=='needs_review' and (row['parser_version']!=VERSION or row['report_type']=='inventory') for row in existing):
                     continue
                 try:
                     book = read_workbook(data)
@@ -99,19 +103,33 @@ def scan(s3, config):
                         match = companions.get(statement_period(book))
                         if match:
                             companion = read_workbook(download(match)[0])
-                    report = parse_book(book,digest,companion=companion,inventory_date=report_date(item['Key']))
-                    if 'draft' in Path(item['Key']).name.lower():
-                        report.issues.append('Draft statement cannot be automatically posted')
-                    if report.currency_hint:
-                        currency = config['ca_currency' if report.territory == 'CA' else 'us_currency']
-                        if report.currency_hint != currency:
-                            report.issues.append(f'Reported currency {report.currency_hint} conflicts with configured {currency}')
+                    origins={}
+                    if is_combined(book):
+                        period=statement_period(book)
+                        y,m=map(int,period.split('-'));index=y*12+m-1-6
+                        original_period=f'{index//12:04d}-{index%12+1:02d}'
+                        origin_us=regional_sources.get((original_period,'US'))
+                        origin_ca=regional_sources.get((original_period,'CA'))
+                        origin_book=read_workbook(download(origin_us)[0]) if origin_us else None
+                        if origin_book:origins['US']=parse_book(origin_book)
+                        if origin_ca:origins['CA']=parse_book(read_workbook(download(origin_ca)[0]),companion=origin_book)
+                    reports = parse_reports(book,digest,companion=companion,inventory_date=report_date(item['Key']),reserve_origins=origins)
+                    for report in reports:
+                        if 'draft' in Path(item['Key']).name.lower():
+                            report.issues.append('Draft statement cannot be automatically posted')
+                        if report.currency_hint:
+                            currency = config['ca_currency' if report.territory == 'CA' else 'us_currency']
+                            if report.currency_hint != currency:
+                                report.issues.append(f'Reported currency {report.currency_hint} conflicts with configured {currency}')
                 except (ReviewRequired, ValueError, KeyError, BadZipFile, ParseError, OSError) as exc:
-                    report = Report(digest,'unknown',issues=[str(exc)])
+                    reports = [Report(digest,'unknown',issues=[str(exc)])]
                 with connection.transaction():
-                    result = register(cur,tenant,config['bucket'],item['Key'],version,report)
-                    if result:
-                        results.append(dict(key=item['Key'],**result))
+                    if any(r.kind=='statement' for r in reports):
+                        cur.execute("UPDATE stable_imports SET status='superseded',payload='{}' WHERE tenant_id=%s AND content_hash=%s AND report_type='unknown' AND status='needs_review'",(tenant,digest))
+                    for report in reports:
+                        result = register(cur,tenant,config['bucket'],item['Key'],version,report)
+                        if result:
+                            results.append(dict(key=item['Key'],**result))
             # Quarantine every conflicting revision before posting any of them.
             with connection.transaction():
                 cur.execute("""UPDATE stable_imports i SET status='needs_review',payload='{}',issues=i.issues || '["Multiple statement revisions require review"]'::jsonb

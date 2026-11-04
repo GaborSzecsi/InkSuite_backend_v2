@@ -72,13 +72,11 @@ def register(cur, tenant, bucket, key, version, report):
     except ReviewRequired as exc:
         report.issues.append(str(exc))
     if report.kind == 'statement':
-        cur.execute("SELECT id FROM stable_imports WHERE tenant_id=%s AND period_code=%s AND territory=%s AND content_hash<>%s AND status<>'failed'", (tenant, report.period, report.territory, report.digest))
+        cur.execute("SELECT id FROM stable_imports WHERE tenant_id=%s AND period_code=%s AND territory=%s AND content_hash<>%s AND status NOT IN ('failed','superseded')", (tenant, report.period, report.territory, report.digest))
         if cur.fetchone():
             report.issues.append('Another source revision exists for this period/territory; controlled replacement required')
-        # Stable may overlap the previous distributor during the transition.
-        cur.execute("SELECT 1 FROM royalty_sales_lines r JOIN royalty_periods p ON p.id=r.period_id WHERE r.tenant_id=%s AND p.period_code=%s AND COALESCE(r.source_system,'')<>'stable' LIMIT 1", (tenant,report.period))
-        if cur.fetchone():
-            report.issues.append('Prior-distributor activity exists in this period; review ISBN/source overlap before posting')
+        # Different distributors can report legitimate activity in the same month.
+        # Source identity and import references preserve that distinction.
     status = 'needs_review' if report.issues else 'validated'
     payload=report.payload()
     needed=discount_works(cur,tenant) if report.sales else set()
@@ -92,7 +90,7 @@ def register(cur, tenant, bucket, key, version, report):
     cur.execute("""INSERT INTO stable_imports(tenant_id,bucket,object_key,version_id,content_hash,parser_version,report_type,
         territory,period_code,as_of,status,issues,payload)
         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT(tenant_id,content_hash,as_of) DO UPDATE SET
+        ON CONFLICT(tenant_id,content_hash,as_of,territory) DO UPDATE SET
           parser_version=excluded.parser_version,status=excluded.status,issues=excluded.issues,payload=excluded.payload,
           report_type=excluded.report_type,territory=excluded.territory,period_code=excluded.period_code
         WHERE stable_imports.status='needs_review' AND (stable_imports.parser_version<>excluded.parser_version OR excluded.report_type='inventory')
@@ -122,11 +120,8 @@ def post(cur, tenant, import_id):
     end = start.replace(day=calendar.monthrange(start.year,start.month)[1])
     cur.execute('SELECT id,is_closed FROM royalty_periods WHERE tenant_id=%s AND period_start<=%s AND period_end>=%s FOR UPDATE', (tenant,end,start))
     periods = cur.fetchall()
-    if any(p['is_closed'] for p in periods):
-        raise ReviewRequired('Statement overlaps a closed royalty period')
-    cur.execute("SELECT 1 FROM royalty_statements s JOIN royalty_periods p ON p.id=s.period_id AND p.tenant_id=s.tenant_id WHERE s.tenant_id=%s AND p.period_start<=%s AND p.period_end>=%s AND lower(s.status)<>'draft' LIMIT 1", (tenant,end,start))
-    if cur.fetchone():
-        raise ReviewRequired('Statement overlaps an issued/frozen royalty statement')
+    # Importing additional ledger evidence does not amend issued royalty snapshots
+    # or reopen periods. This function never writes royalty_statements/lines.
     cur.execute('SELECT id FROM royalty_periods WHERE tenant_id=%s AND period_code=%s', (tenant,period))
     p = cur.fetchone()
     if p:

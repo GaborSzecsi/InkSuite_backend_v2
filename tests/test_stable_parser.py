@@ -97,6 +97,21 @@ class StableParserTests(unittest.TestCase):
         self.assertFalse(adapter.capabilities.order_status)
 
     @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private original statements supplied separately')
+    def test_original_combined_september_uses_real_reserve_release(self):
+        from app.stable.parser import parse_reports
+        directory=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
+        march_us=read_workbook((directory/'MARBLE PRESS_Client_Statement_202603.xlsx').read_bytes())
+        march_ca=read_workbook((directory/'MARBLE PRESS_Client_Statement_Canada_202603.xlsx').read_bytes())
+        origins={'US':parse_book(march_us),'CA':parse_book(march_ca,companion=march_us)}
+        a,b=parse_reports(read_workbook((directory/'MARBLE PRESS_Client_Statement_202609.xlsx').read_bytes()),reserve_origins=origins)
+        self.assertEqual(a.territory,'US');self.assertEqual(a.issues,[])
+        self.assertEqual(a.totals('US')['units_sold'],3993)
+        self.assertEqual(a.totals('US')['units_returned'],136)
+        self.assertEqual(sum(c['amount'] for c in a.costs if c['kind']=='reserve_release'),Decimal('-290.892525'))
+        self.assertEqual(b.territory,'CA');self.assertEqual(len(b.issues),1)
+        self.assertIn('no Canadian ISBN transaction detail',b.issues[0])
+
+    @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private original statements supplied separately')
     def test_original_march_us_and_canada(self):
         directory=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
         us=directory/'MARBLE PRESS_Client_Statement_202603.xlsx'

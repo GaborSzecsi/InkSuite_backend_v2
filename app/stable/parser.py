@@ -16,7 +16,7 @@ from zipfile import ZipFile
 
 import openpyxl
 
-VERSION = "stable-4-signed-returns"
+VERSION = "stable-5-combined-statements"
 ZERO = Decimal(0)
 
 
@@ -124,6 +124,7 @@ class Report:
 SIGNATURES = {
     "transactions": {"isbn", "account", "saletype", "grossqty", "returnqty", "compqty", "grosssales", "netsales"},
     "accounts": {"acctname", "saletype", "grossunits", "returnunits", "distributionfee", "returnsreserve"},
+    "throughput": {"acctname", "saletype", "warehousethroughput", "returnunits", "excludedunits", "throughput", "return", "excluded", "distributionfee", "returnsreserve"},
     "amazon": {"title", "unitssold", "adjunits", "grosssales", "adjustments", "distributionfee"},
     "direct": {"source", "retailercustomer", "qty", "grosssales", "distributionfee"},
     "warehouse": {"isbn", "endingbalanceqty", "monthlystoragecharge"},
@@ -145,7 +146,8 @@ def sections(book, territory=None):
             unique = set(headers)
             for kind, required in SIGNATURES.items():
                 if required <= unique:
-                    if kind in result:
+                    result_kind='accounts' if kind=='throughput' else kind
+                    if result_kind in result:
                         raise ReviewRequired(f"Multiple {kind} sections")
                     names = []
                     for value in row:
@@ -156,8 +158,15 @@ def sections(book, territory=None):
                     data = []
                     for n, values in enumerate(rows[idx+1:], idx+2):
                         if any(v is not None for v in values):
-                            data.append((n, dict(zip(names, values))))
-                    result[kind] = (sheet, data)
+                            mapped=dict(zip(names,values))
+                            if kind=='throughput' and _data_row(mapped,'acctname'):
+                                transfer=any(v in str(mapped.get('saletype','')).lower() for v in ('transfer','gift','comp'))
+                                qty=number(mapped.get('warehousethroughput'))
+                                mapped.update(grossunits=ZERO if transfer else qty,compunits=qty if transfer else ZERO,
+                                  grosssales=number(mapped.get('throughput'))+number(mapped.get('excluded')),
+                                  actualreturn=number(mapped.get('return')))
+                            data.append((n, mapped))
+                    result[result_kind] = (sheet, data)
                     break
             else:
                 continue
@@ -218,7 +227,7 @@ def report_territory(book):
     return 'CA' if summaries and all(re.search(r'\bCanada\b|\bCanadian\b',s,re.I) for s in summaries) else 'US'
 
 
-def parse_book(book, digest="", *, companion=None, inventory_date=None):
+def parse_book(book, digest="", *, companion=None, inventory_date=None, reserve_origin=None):
     # A Canada-only statement declares this in its summary. Combined statements
     # require separate territory extraction; unsupported layouts stop for review.
     territory = report_territory(book)
@@ -474,6 +483,7 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
             if not ZERO <= sale.discount_percent <= 100:
                 sale.discount_percent=None
     # Monthly summary is an independent control, never an additional sale.
+    release_amounts=[]
     for rows in book.values():
         for row in rows:
             if len(row)==2 and label(row[0])=='domesticgrosssales':
@@ -485,7 +495,22 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
     for rows in book.values():
         for row in rows:
             if row and "reservereturnsreleased" in label(row[0]) and len(row) == 2 and number(row[1], optional=True):
-                report.issues.append("Reserve release requires a reviewed per-ISBN allocation")
+                release_amounts.append(number(row[1]))
+    if release_amounts:
+        released=release_amounts[0]
+        if any(abs(v-released)>Decimal('.02') for v in release_amounts):
+            report.issues.append('Conflicting reserve release totals')
+        allocations=defaultdict(lambda:ZERO)
+        y,m=map(int,period.split('-')); original_index=y*12+m-1-6
+        expected_origin=f'{original_index//12:04d}-{original_index%12+1:02d}'
+        if reserve_origin and not reserve_origin.issues and reserve_origin.territory==territory and reserve_origin.period==expected_origin:
+            for sale in reserve_origin.sales:
+                allocations[sale.isbn]+=sale.reserve
+        if not allocations or abs(sum(allocations.values(),ZERO)-released)>Decimal('.02'):
+            report.issues.append('Reserve release needs the matching original six-month reserve by ISBN')
+        else:
+            for code,amount in allocations.items():
+                if amount:report.costs.append(dict(isbn=code,territory=territory,kind='reserve_release',amount=-amount))
     if not codes:
         report.issues.append("No ISBN evidence in statement")
     return report
@@ -493,3 +518,31 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
 
 def parse(data, **kwargs):
     return parse_book(read_workbook(data), hashlib.sha256(data).hexdigest(), **kwargs)
+
+
+def is_combined(book):
+    contexts=[sheet+' '+' '.join(str(c) for r in rows[:3] for c in r if c) for sheet,rows in book.items()]
+    return any(re.search(r'(?:summary|throughput).*\b(?:Canada|Canadian|Can)\b',c,re.I) for c in contexts) and any(re.search(r'(?:summary|throughput).*\bUS\b',c,re.I) for c in contexts)
+
+
+def split_regions(book):
+    us={};ca={}
+    for sheet,rows in book.items():
+        context=sheet+' '+' '.join(str(c) for r in rows[:3] for c in r if c)
+        if 'combined' in context.lower() or 'monthly invoice' in sheet.lower():continue
+        canadian=bool(re.search(r'\bCanada\b|\bCanadian\b|\bCan\b',context,re.I))
+        (ca if canadian else us)[sheet]=rows
+    return us,ca
+
+
+def parse_reports(book,digest='',*,companion=None,inventory_date=None,reserve_origins=None):
+    origins=reserve_origins or {}
+    if not is_combined(book):
+        region=report_territory(book)
+        return [parse_book(book,digest,companion=companion,inventory_date=inventory_date,reserve_origin=origins.get(region))]
+    us,ca=split_regions(book)
+    reports=[parse_book(us,digest,reserve_origin=origins.get('US')),
+      parse_book(ca,digest,companion=us,reserve_origin=origins.get('CA'))]
+    if not any(s.territory=='CA' and s.activity not in ('amazon','direct') for s in reports[1].sales):
+        reports[1].issues=['Combined workbook has Canadian account totals but no Canadian ISBN transaction detail; Canadian book royalties require that source detail']
+    return reports

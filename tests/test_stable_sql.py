@@ -90,11 +90,35 @@ class StableSQLTests(unittest.TestCase):
         book=source();book['b'][1][4]='9781958325391'
         item=service.register(self.cur,self.tenant,'bucket','unknown','1',parse_book(book,str(uuid4())))
         self.assertEqual(item['status'],'needs_review');self.assertFalse(service.post(self.cur,self.tenant,item['id']))
-    def test_issued_statement_blocks_posting(self):
+    def test_import_preserves_issued_statement_and_closed_period(self):
         item=self.register()
         rpc("INSERT INTO royalty_periods(tenant_id,period_code,period_start,period_end) VALUES($1,'2026-03','2026-03-01','2026-03-31')",[self.tenant])
         rpc("INSERT INTO royalty_statements(tenant_id,period_id,status) SELECT tenant_id,id,'final' FROM royalty_periods WHERE tenant_id=$1",[self.tenant])
-        with self.assertRaises(ReviewRequired): service.post(self.cur,self.tenant,item['id'])
+        rpc('UPDATE royalty_periods SET is_closed=true WHERE tenant_id=$1',[self.tenant])
+        before=rpc('SELECT * FROM royalty_statements WHERE tenant_id=$1',[self.tenant])['rows']
+        self.assertTrue(service.post(self.cur,self.tenant,item['id']))
+        self.assertEqual(rpc('SELECT * FROM royalty_statements WHERE tenant_id=$1',[self.tenant])['rows'],before)
+        self.assertTrue(rpc('SELECT is_closed FROM royalty_periods WHERE tenant_id=$1',[self.tenant])['rows'][0]['is_closed'])
+    def test_combined_workbook_has_independent_territory_imports(self):
+        import copy
+        report=parse_book(source(),'combined-source')
+        ca=copy.deepcopy(report);ca.territory='CA'
+        a=service.register(self.cur,self.tenant,'bucket','combined.xlsx','1',report)
+        b=service.register(self.cur,self.tenant,'bucket','combined.xlsx','1',ca)
+        self.assertNotEqual(a['id'],b['id'])
+        self.assertEqual((a['status'],b['status']),('validated','validated'))
+
+    def test_previous_distributor_activity_does_not_block_stable(self):
+        item=self.register();service.post(self.cur,self.tenant,item['id'])
+        # A second, independent tenant has historical activity in the same month.
+        oldtenant,oldwork,oldedition=self.tenant,self.work,self.edition
+        self.setUp()
+        rpc("INSERT INTO royalty_periods(tenant_id,period_code,period_start,period_end) VALUES($1,'2026-03','2026-03-01','2026-03-31')",[self.tenant])
+        rpc("INSERT INTO royalty_sales_lines(tenant_id,work_id,edition_id,period_id,source_system,units_sold,gross_sales,publisher_receipts,currency) SELECT $1,$2,$3,id,'previous_distributor',5,50,50,'USD' FROM royalty_periods WHERE tenant_id=$1",[self.tenant,self.work,self.edition])
+        item=self.register();self.assertEqual(item['status'],'validated')
+        self.assertTrue(service.post(self.cur,self.tenant,item['id']))
+        self.assertEqual(len(rpc('SELECT id FROM royalty_sales_lines WHERE tenant_id=$1',[self.tenant])['rows']),2)
+
     def test_compatibility_view_preserves_canada_history(self):
         rpc("INSERT INTO fraser_ca_sales_lines(tenant_id,customer_name) VALUES($1,'Historical Canadian buyer')",[self.tenant])
         self.assertEqual(rpc('SELECT customer_name FROM canada_sales_lines WHERE tenant_id=$1',[self.tenant])['rows'][0]['customer_name'],'Historical Canadian buyer')
