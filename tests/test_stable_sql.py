@@ -143,6 +143,21 @@ class StableSQLTests(unittest.TestCase):
             amazon=next(b for b in data['buyers'] if b['buyer']=='Amazon (paid sales)')
             self.assertEqual(amazon['grossUnits'],3)
             self.assertEqual(amazon['impliedStock'],11)
+            march_amazon=next(b for b in march['buyers'] if b['buyer']=='Amazon (paid sales)')
+            self.assertEqual(march_amazon['impliedStock'],11)
+
+    def test_selected_book_keeps_rank_against_all_books(self):
+        from app.stable import router
+        item=self.register();service.post(self.cur,self.tenant,item['id'])
+        other_work,other_edition=str(uuid4()),str(uuid4())
+        rpc("INSERT INTO works VALUES($1,$2,'Bestseller','bestseller')",[other_work,self.tenant])
+        rpc("INSERT INTO editions VALUES($1,$2,$3,'9781958325391','Hardcover','Hardcover')",[other_edition,self.tenant,other_work])
+        rpc("INSERT INTO royalty_sales_lines(tenant_id,work_id,edition_id,period_id,source_system,reference_number,customer_name,units_sold,gross_sales,publisher_receipts,currency) SELECT tenant_id,$2,$3,period_id,'stable',reference_number || ':other','Other buyer',100,1000,500,'USD' FROM royalty_sales_lines WHERE tenant_id=$1 LIMIT 1",[self.tenant,other_work,other_edition])
+        with patch.object(router,'db_conn',database):
+            data=router.overview(year='2026',territory='ALL',currency='USD',q='',work_id=self.work,ctx={'tenant':{'id':self.tenant}})
+        self.assertEqual(len(data['rows']),1)
+        self.assertEqual(data['rows'][0]['bestsellerRank'],2)
+        self.assertEqual(data['totals']['grossUnits'],2)
 
     def test_pacific_ytd_and_month_bounds(self):
         from app.stable.router import period_bounds

@@ -37,7 +37,7 @@ def ledger(cur,tenant,year,territory,currency,search,work_id):
        UNION ALL
        SELECT a.id,a.tenant_id,a.edition_id,a.period_id,NULL,0,0,0,0,-a.amount,a.currency,a.territory
        FROM stable_receipt_adjustments a JOIN stable_imports i ON i.tenant_id=a.tenant_id AND i.id=a.import_id AND i.status='posted'
-     ) SELECT s.*,e.isbn13,e.product_form,e.work_id,w.title,p.period_code
+     ) SELECT s.*,e.isbn13,e.product_form,e.work_id,w.uid AS work_uid,w.title,p.period_code
        FROM sales s JOIN editions e ON e.tenant_id=s.tenant_id AND e.id=s.edition_id
        JOIN works w ON w.tenant_id=e.tenant_id AND w.id=e.work_id
        JOIN royalty_periods p ON p.tenant_id=s.tenant_id AND p.id=s.period_id
@@ -47,6 +47,17 @@ def ledger(cur,tenant,year,territory,currency,search,work_id):
        AND (%s='' OR e.work_id::text=%s OR COALESCE(w.uid::text,'')=%s)''',
        (tenant,year,year,territory,territory,currency,search,'%'+search+'%','%'+search+'%','%'+search+'%',work_id,work_id,work_id))
     return list(cur.fetchall())
+
+
+def bestseller_ranks(records):
+    editions={}
+    for row in records:
+        item=editions.setdefault(str(row['edition_id']),dict(net=Decimal(0),gross=Decimal(0),title=row['title']))
+        item['net']+=Decimal(str(row['units_sold'] or 0))-Decimal(str(row['units_returned'] or 0))+Decimal(str(row['unit_adjustment'] or 0))
+        item['gross']+=Decimal(str(row['gross_sales'] or 0))
+    ordered=sorted((key for key in editions if editions[key]['net']>0),
+      key=lambda key:(-editions[key]['net'],-editions[key]['gross'],editions[key]['title'].casefold(),key))
+    return {key:rank for rank,key in enumerate(ordered,1)}
 
 
 def period_bounds(mode,year,month,today=None):
@@ -94,9 +105,14 @@ def overview(year: str=Query('',pattern=r'^(|20\d{2})$'),territory: str=Query('A
     with db_conn() as conn,conn.cursor(row_factory=dict_row) as cur:
         if not ready(cur):
             return dict(available=False,detail='Stable ingestion migration has not been applied.',imports=[],rows=[],months=[],buyers=[])
-        records = ledger(cur,tenant,year,territory,currency,q,work_id)
+        records = ledger(cur,tenant,year,territory,currency,'','')
         if lower:
             records=[r for r in records if lower<=r['period_code']<=upper]
+        ranks=bestseller_ranks(records)
+        if work_id:
+            records=[r for r in records if work_id in (str(r['work_id']),str(r['work_uid'] or ''))]
+        if q:
+            records=[r for r in records if any(q.casefold() in str(r.get(field) or '').casefold() for field in ('title','isbn13','customer_name'))]
         titles,months,buyers = {},{},{}
         zero = lambda: dict(grossUnits=Decimal(0),returns=Decimal(0),unitAdjustments=Decimal(0),grossSales=Decimal(0),netReceipts=Decimal(0))
         for row in records:
@@ -123,14 +139,16 @@ def overview(year: str=Query('',pattern=r'^(|20\d{2})$'),territory: str=Query('A
             row['inventory'] = snapshot['available'] if snapshot else None
             row['inventoryAsOf'] = snapshot['as_of'] if snapshot else None
             row['netUnits'] = row['grossUnits']-row['returns']+row['unitAdjustments']
-        implied,incomplete=channel_stock(cur,tenant,upper,work_id)
+            row['bestsellerRank']=ranks.get(row['editionId'])
+        today=datetime.now(ZoneInfo('America/Los_Angeles')).date()
+        implied,incomplete=channel_stock(cur,tenant,f'{today:%Y-%m}',work_id)
         ranked = sorted(buyers.values(),key=lambda b:(-b['grossUnits'],b['buyer'].casefold(),b['territory']))
         for rank,row in enumerate(ranked,1):
             balance=implied.get((row['buyer'],row['territory']))
             amazon=row['buyer']=='Amazon (paid sales)'
             row.update(rank=rank,netUnits=row['grossUnits']-row['returns']+row['unitAdjustments'],
               impliedStock=balance if amazon and balance is not None and not incomplete else None,
-              impliedStockAsOf=upper if amazon else None,
+              impliedStockAsOf=today.isoformat() if amazon else None,
               impliedStockNote=('Statements awaiting review; stock unavailable' if incomplete else 'Estimated; zero opening stock assumed') if amazon else 'Not a stock-holding account')
         for row in months.values():
             row['netUnits']=row['grossUnits']-row['returns']+row['unitAdjustments']
