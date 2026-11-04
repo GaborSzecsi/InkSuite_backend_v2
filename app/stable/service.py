@@ -92,7 +92,11 @@ def register(cur, tenant, bucket, key, version, report):
     cur.execute("""INSERT INTO stable_imports(tenant_id,bucket,object_key,version_id,content_hash,parser_version,report_type,
         territory,period_code,as_of,status,issues,payload)
         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT DO NOTHING RETURNING id,status""",
+        ON CONFLICT(tenant_id,content_hash,as_of) DO UPDATE SET
+          parser_version=excluded.parser_version,status=excluded.status,issues=excluded.issues,payload=excluded.payload,
+          report_type=excluded.report_type,territory=excluded.territory,period_code=excluded.period_code
+        WHERE stable_imports.status='needs_review' AND stable_imports.parser_version<>excluded.parser_version
+        RETURNING id,status""",
         (tenant,bucket,key,version,report.digest,VERSION,report.kind,report.territory,report.period,report.as_of,status,
          Jsonb(report.issues),Jsonb(json_value(payload if status=='validated' else {}))))
     return cur.fetchone()
@@ -109,7 +113,7 @@ def post(cur, tenant, import_id):
     if not config or not config['enabled']:
         return False
     payload = source['payload']
-    codes = {s['isbn'] for s in payload['sales']} | {c['isbn'] for c in payload['costs']} | {i['isbn'] for i in payload['inventory']}
+    codes = {s['isbn'] for s in payload['sales']} | {c['isbn'] for c in payload['costs']} | {i['isbn'] for i in payload['inventory']} | {m['isbn'] for m in payload.get('movements',[])}
     editions = resolve(cur, tenant, codes)
     if source['report_type'] == 'inventory':
         return post_inventory(cur, source, payload, editions, config)
@@ -150,7 +154,7 @@ def post(cur, tenant, import_id):
         gross_rows=allocate_cents({str(i):Decimal(row['gross_sales']) for i,row in enumerate(rows)},gross_targets[code])
         for i,row in enumerate(rows):
             receipt = Decimal(row['publisher_receipts'])
-            if not Decimal(row['units_sold']) and not Decimal(row['units_returned']) and not Decimal(row['gross_sales']):
+            if not Decimal(row['units_sold']) and not Decimal(row['units_returned']) and not Decimal(row.get('unit_adjustment',0)) and not Decimal(row['gross_sales']):
                 if receipt:
                     adjustments.append(dict(isbn=code,kind='transfer_handling',amount=-receipt,sheet=row['sheet'],row=row['row']))
                 continue
@@ -159,11 +163,19 @@ def post(cur, tenant, import_id):
             sid = uuid4()
             posted_receipts[code]+=cents(receipt)
             cur.execute(f"""INSERT INTO {table}(id,tenant_id,work_id,edition_id,period_id,transaction_date,source_system,source_file,
-              reference_number,customer_name,territory,transaction_type,units_sold,units_returned,gross_sales,publisher_receipts,currency,discount_percent)
-              VALUES(%s,%s,%s,%s,%s,%s,'stable',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+              reference_number,customer_name,territory,transaction_type,units_sold,units_returned,gross_sales,publisher_receipts,currency,discount_percent,unit_adjustment)
+              VALUES(%s,%s,%s,%s,%s,%s,'stable',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
               (sid,tenant,edition['work_id'],edition['id'],period_id,end,source['object_key'],f"{source['id']}:{row['sheet']}:{row['row']}",
                row['buyer'],territory,'return' if Decimal(row['units_returned']) and not Decimal(row['units_sold']) else 'sale',
-               row['units_sold'],row['units_returned'],gross_rows[str(i)],cents(receipt),currency,row.get('discount_percent')))
+               row['units_sold'],row['units_returned'],gross_rows[str(i)],cents(receipt),currency,row.get('discount_percent'),row.get('unit_adjustment',0)))
+    movements={}
+    for movement in payload.get('movements',[]):
+        key=(movement['isbn'],movement['territory'],movement['buyer'])
+        totals=movements.setdefault(key,[Decimal(0),Decimal(0)])
+        totals[0]+=Decimal(movement['outbound']);totals[1]+=Decimal(movement['returned'])
+    for (code,region,buyer),(outbound,returned) in movements.items():
+        cur.execute('''INSERT INTO stable_channel_movements(tenant_id,import_id,edition_id,territory,buyer,outbound,returned)
+          VALUES(%s,%s,%s,%s,%s,%s,%s)''',(tenant,source['id'],editions[code]['id'],region,buyer,outbound,returned))
     grouped={}
     for cost in adjustments:
         key=(cost['isbn'],cost['kind'])
@@ -234,7 +246,7 @@ def royalty_adjustments(cur, tenant, work_id, start, end):
        JOIN royalty_periods p ON p.id=a.period_id
        WHERE a.tenant_id=%s AND e.work_id=%s AND p.period_end BETWEEN %s AND %s
        UNION ALL
-       SELECT r.id,r.edition_id,r.units_sold,r.units_returned,COALESCE(r.discount_percent,0),r.publisher_receipts,r.gross_sales,
+       SELECT r.id,r.edition_id,r.units_sold+r.unit_adjustment,r.units_returned,COALESCE(r.discount_percent,0),r.publisher_receipts,r.gross_sales,
        'canada_derived',e.product_form,e.product_form_detail,r.currency
        FROM canada_sales_lines r JOIN editions e ON e.tenant_id=r.tenant_id AND e.id=r.edition_id
        JOIN stable_imports i ON i.tenant_id=r.tenant_id AND i.id::text=split_part(r.reference_number,':',1) AND i.territory='CA' AND i.status='posted'

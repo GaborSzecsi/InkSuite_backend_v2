@@ -347,7 +347,7 @@ def load_sales_rows_for_period(
         SELECT
             r.id,
             r.edition_id,
-            COALESCE(r.units_sold, 0)::text AS units_sold,
+            (COALESCE(r.units_sold, 0) + COALESCE(r.unit_adjustment, 0))::text AS units_sold,
             COALESCE(r.units_returned, 0)::text AS units_returned,
             COALESCE(r.discount_percent, 0)::text AS discount_percent,
             COALESCE(r.publisher_receipts, 0)::text AS publisher_receipts,
@@ -390,7 +390,7 @@ def load_sales_rows_for_period(
             SELECT
                 r.id,
                 r.edition_id,
-                COALESCE(r.units_sold, 0)::text AS units_sold,
+                (COALESCE(r.units_sold, 0) + COALESCE(r.unit_adjustment, 0))::text AS units_sold,
                 COALESCE(r.units_returned, 0)::text AS units_returned,
                 COALESCE(r.discount_percent, 0)::text AS discount_percent,
                 COALESCE(r.publisher_receipts, 0)::text AS publisher_receipts,

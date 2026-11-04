@@ -18,6 +18,7 @@ const fs=require('fs'),path=require('path'),readline=require('readline');
  units_sold numeric DEFAULT 0,units_returned numeric DEFAULT 0,gross_sales numeric(18,2),publisher_receipts numeric(18,2),currency text,discount_percent numeric,sales_price numeric);
  CREATE TABLE fraser_ca_sales_lines(LIKE royalty_sales_lines INCLUDING ALL);`);
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/045_stable_ingestion.sql'),'utf8'));
+ await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/046_stable_channel_units.sql'),'utf8'));
  console.log(JSON.stringify({ready:true}));
  for await(const line of readline.createInterface({input:process.stdin,crlfDelay:Infinity})){
   try{const c=JSON.parse(line);const result=c.exec?await db.exec(c.sql):await db.query(c.sql,c.params||[]);console.log(JSON.stringify({result}));}

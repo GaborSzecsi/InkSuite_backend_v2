@@ -84,8 +84,9 @@ def scan(s3, config):
             for item in sorted(objects,key=lambda i:i['Key']):
                 data, version = download(item)
                 digest = hashlib.sha256(data).hexdigest()
-                cur.execute('SELECT id FROM stable_imports WHERE tenant_id=%s AND content_hash=%s AND as_of IS NOT DISTINCT FROM %s::date', (tenant,digest,report_date(item['Key'])))
-                if cur.fetchone():
+                cur.execute('SELECT id,status,parser_version FROM stable_imports WHERE tenant_id=%s AND content_hash=%s AND as_of IS NOT DISTINCT FROM %s::date', (tenant,digest,report_date(item['Key'])))
+                existing=cur.fetchone()
+                if existing and not (existing['status']=='needs_review' and existing['parser_version']!=VERSION):
                     continue
                 try:
                     book = read_workbook(data)

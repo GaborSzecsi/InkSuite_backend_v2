@@ -126,7 +126,7 @@ def get_book_kpis(
             cur.execute(
                 f"""
                 SELECT
-                  COALESCE(SUM(r.units_sold), 0) AS units_sold,
+                  COALESCE(SUM(r.units_sold + r.unit_adjustment), 0) AS units_sold,
                   COALESCE(SUM(r.units_returned), 0) AS returns,
                   COALESCE(SUM(CASE WHEN r.currency='USD' THEN r.publisher_receipts ELSE 0 END), 0) AS publisher_receipts
                 FROM public.royalty_sales_lines r
@@ -170,7 +170,7 @@ def get_book_kpis(
             cur.execute(
                 f"""
                 SELECT
-                  COALESCE(SUM(f.units_sold), 0) AS fraser_units,
+                  COALESCE(SUM(f.units_sold + f.unit_adjustment), 0) AS fraser_units,
                   COALESCE(SUM(CASE WHEN f.currency='USD' THEN f.publisher_receipts ELSE 0 END), 0) AS fraser_dollars
                 FROM public.fraser_ca_sales_lines f
                 JOIN public.royalty_periods rp ON rp.id = f.period_id
@@ -213,7 +213,7 @@ def get_book_kpis(
                 sales_to_date AS (
                   SELECT
                     e.id AS edition_id,
-                    COALESCE(SUM(r.units_sold - r.units_returned), 0) AS net_units
+                    COALESCE(SUM(r.units_sold + r.unit_adjustment - r.units_returned), 0) AS net_units
                   FROM public.royalty_sales_lines r
                   JOIN public.royalty_periods rp ON rp.id = r.period_id
                   JOIN public.editions e ON e.id = r.edition_id
@@ -311,8 +311,8 @@ def get_book_format_stats(
                 sales AS (
                   SELECT
                     eb.fmt,
-                    COALESCE(SUM(r.units_sold - r.units_returned), 0) AS lifetime_sold,
-                    COALESCE(SUM(CASE WHEN rp.period_code LIKE %s THEN r.units_sold - r.units_returned ELSE 0 END), 0) AS ytd_sold
+                    COALESCE(SUM(r.units_sold + r.unit_adjustment - r.units_returned), 0) AS lifetime_sold,
+                    COALESCE(SUM(CASE WHEN rp.period_code LIKE %s THEN r.units_sold + r.unit_adjustment - r.units_returned ELSE 0 END), 0) AS ytd_sold
                   FROM edition_base eb
                   LEFT JOIN public.royalty_sales_lines r ON r.edition_id = eb.edition_id
                   LEFT JOIN public.royalty_periods rp ON rp.id = r.period_id
@@ -321,8 +321,8 @@ def get_book_format_stats(
                 fraser AS (
                   SELECT
                     eb.fmt,
-                    COALESCE(SUM(f.units_sold), 0) AS lifetime_fraser_sold,
-                    COALESCE(SUM(CASE WHEN rp.period_code LIKE %s THEN f.units_sold ELSE 0 END), 0) AS ytd_fraser_sold
+                    COALESCE(SUM(f.units_sold + f.unit_adjustment), 0) AS lifetime_fraser_sold,
+                    COALESCE(SUM(CASE WHEN rp.period_code LIKE %s THEN f.units_sold + f.unit_adjustment ELSE 0 END), 0) AS ytd_fraser_sold
                   FROM edition_base eb
                   LEFT JOIN public.fraser_ca_sales_lines f ON f.edition_id = eb.edition_id
                   LEFT JOIN public.royalty_periods rp ON rp.id = f.period_id

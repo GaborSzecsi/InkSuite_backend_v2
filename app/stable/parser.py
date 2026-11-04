@@ -16,7 +16,7 @@ from zipfile import ZipFile
 
 import openpyxl
 
-VERSION = "stable-2-cents"
+VERSION = "stable-3-channel-units"
 ZERO = Decimal(0)
 
 
@@ -98,16 +98,18 @@ class Report:
     issues: list[str] = field(default_factory=list)
     controls: list[dict] = field(default_factory=list)
     currency_hint: str | None = None
+    movements: list[dict] = field(default_factory=list)
 
     def payload(self):
         # SQL staging contains only posting inputs. Full original cells, rates,
         # formulas and account controls remain in the original S3 workbook.
         return dict(sales=[dict(isbn=s.isbn,buyer=s.buyer,sheet=s.sheet,row=s.row,
-                     units_sold=s.units_sold,units_returned=s.units_returned,
+                     units_sold=s.units_sold,units_returned=s.units_returned,unit_adjustment=s.unit_adjustment,
                      gross_sales=s.gross_sales,publisher_receipts=s.receipts,
                      discount_percent=s.discount_percent,sales_price=s.sales_price)
                      for s in self.sales],
                     costs=[{k:v for k,v in c.items() if k in ('isbn','kind','amount','sheet','row','inventory')} for c in self.costs],
+                    movements=self.movements,
                     inventory=[dict(isbn=i['isbn'],available=i['available'],ending=i['ending']) for i in self.inventory])
 
     def totals(self, territory):
@@ -311,10 +313,17 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
                 report.issues.append(f"Gross/returns/net mismatch at {sheet}:{n}")
             sold = number(row.get("grossqty"))
             returns = abs(number(row.get("returnqty")))
-            comp = abs(number(row.get("compqty")))
+            signed_comp = number(row.get("compqty"))
+            # Negative Comp Qty is a physical return of previously transferred stock.
+            returns += max(-signed_comp, ZERO)
+            comp = max(signed_comp, ZERO)
             transfer = any(t in activity.lower() for t in ("transfer", "gift", "comp"))
             if transfer and (gross or net or sold):
                 report.issues.append(f"Transfer has paid-sales values at {sheet}:{n}")
+            if transfer:
+                self_territory = 'CA' if label(buyer) == 'amazoncomcaulc' else territory
+                self_buyer = 'Amazon (paid sales)' if label(buyer) in ('amazoncom','amazoncomcaulc') else buyer
+                report.movements.append(dict(isbn=isbn(row['isbn']),territory=self_territory,buyer=self_buyer,outbound=comp,returned=returns))
             account_net=number(control['netsales'])
             account_fee=-number(control['distributionfee'])
             account_reserve=-number(control['returnsreserve'])
@@ -379,8 +388,7 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
             fee = -number(row.get('distributionfee'))
             if abs(number(row.get("netduetoclient"))-(net-fee)) > Decimal("0.011"):
                 report.issues.append(f"Paid settlement mismatch at {sheet}:{n}")
-            if adjustment:
-                report.issues.append(f"Amazon unit adjustment needs physical-return classification at {sheet}:{n}")
+            # Signed settlement adjustments change net sold units, not physical returns.
             if fx_rate:
                 gross,net,fee=gross/fx_rate,net/fx_rate,fee/fx_rate
             report.sales.append(Sale(code, str(row.get("title") or ""), buyer, territory, sheet, n, kind,
@@ -438,8 +446,8 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
     for rows in book.values():
         for row in rows:
             if len(row)==2 and label(row[0])=='domesticgrosssales':
-                total = sum((s.gross_sales for s in report.sales),ZERO)
-                expected = number(row[1]) if row[1] is not None else sum((number(c['grosssales']) for c in controls.values()),ZERO)+sum((s.gross_sales for s in report.sales if s.activity in ('amazon','direct')),ZERO)
+                total = sum((s.monetary_net if s.activity=='amazon' else s.gross_sales for s in report.sales),ZERO)
+                expected = number(row[1]) if row[1] is not None else sum((number(c['grosssales']) for c in controls.values()),ZERO)+sum((s.monetary_net if s.activity=='amazon' else s.gross_sales for s in report.sales if s.activity in ('amazon','direct')),ZERO)
                 if abs(expected-total)>Decimal('.02'):
                     report.issues.append(f'Monthly monetary-sales control mismatch: source={row[1]}, detail={total}')
     # A release is not safely attributable to ISBN from an account/summary alone.

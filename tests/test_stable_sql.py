@@ -110,6 +110,45 @@ class StableSQLTests(unittest.TestCase):
             self.assertEqual(data['months'][0]['netUnits'],2)
             other=router.overview(year='2026',territory='ALL',currency='CAD',q='',work_id='',ctx=ctx)
             self.assertEqual(other['rows'],[])
+    def test_adjustments_stock_period_and_historical_exclusion(self):
+        from app.stable import router
+        book=source()
+        book['c'][1]=['9780306406157','Example',5,-1,50,-10,40,.1,-4,36]
+        report=parse_book(book,str(uuid4()))
+        self.assertEqual(report.issues,[])
+        report.movements=[dict(isbn='9780306406157',territory='US',buyer='Amazon (paid sales)',outbound=Decimal(20),returned=Decimal(2))]
+        item=service.register(self.cur,self.tenant,'bucket','march','1',report)
+        service.post(self.cur,self.tenant,item['id'])
+        # Historical receipts and gross are not verified Stable financials.
+        rpc("INSERT INTO royalty_sales_lines(tenant_id,work_id,edition_id,period_id,source_system,units_sold,gross_sales,publisher_receipts,currency) SELECT tenant_id,work_id,edition_id,period_id,'old',10000,10000,10000,'USD' FROM royalty_sales_lines WHERE tenant_id=$1 LIMIT 1",[self.tenant])
+        ctx={'tenant':{'id':self.tenant}}
+        with patch.object(router,'db_conn',database):
+            data=router.overview(year='2026',territory='ALL',currency='USD',q='',work_id='',ctx=ctx,period='month',month='03')
+            self.assertEqual(data['totals']['grossUnits'],7)
+            self.assertEqual(data['totals']['unitAdjustments'],-1)
+            self.assertEqual(data['totals']['returns'],0)
+            self.assertEqual(data['totals']['netUnits'],6)
+            self.assertEqual(data['totals']['netReceipts'],Decimal('48.62'))
+            amazon=next(b for b in data['buyers'] if b['buyer']=='Amazon (paid sales)')
+            self.assertEqual(amazon['impliedStock'],14)
+            april={key:[[v.replace('202603','202604').replace('March','April') if isinstance(v,str) else v for v in row] for row in rows] for key,rows in source().items()}
+            april['c'][1]=['9780306406157','Example',3,0,30,0,30,.1,-3,27]
+            item=service.register(self.cur,self.tenant,'bucket','april','1',parse_book(april,str(uuid4())))
+            service.post(self.cur,self.tenant,item['id'])
+            rpc("INSERT INTO stable_inventory_snapshots(tenant_id,import_id,edition_id,as_of,available,ending) VALUES($1,$2,$3,'2026-04-30',7,9)",[self.tenant,item['id'],self.edition])
+            data=router.overview(year='2026',territory='ALL',currency='USD',q='',work_id='',ctx=ctx,period='month',month='04')
+            self.assertEqual(data['inventory']['available'],7)
+            march=router.overview(year='2026',territory='ALL',currency='USD',q='',work_id='',ctx=ctx,period='month',month='03')
+            self.assertEqual(march['inventory']['available'],7)
+            amazon=next(b for b in data['buyers'] if b['buyer']=='Amazon (paid sales)')
+            self.assertEqual(amazon['grossUnits'],3)
+            self.assertEqual(amazon['impliedStock'],11)
+
+    def test_pacific_ytd_and_month_bounds(self):
+        from app.stable.router import period_bounds
+        self.assertEqual(period_bounds('ytd','2025','',date(2026,7,4)),('2025-01','2025-07'))
+        self.assertEqual(period_bounds('month','2026','2'),('2026-02','2026-02'))
+
     def test_daily_identical_balance_on_different_dates_keeps_history(self):
         book={'inventory':[['ISBN (Item Code)','Default Useable Balance Qty','Ending Balance Qty'],['9780306406157',8,10]]}
         a=service.register(self.cur,self.tenant,'bucket','one','1',parse_book(book,'same-bytes',inventory_date='2026-03-01'))
