@@ -34,6 +34,28 @@ class StableParserTests(unittest.TestCase):
                 book[key] = [[None],['Unrelated heading']]+[list(reversed(row))+[None] for row in rows]
         self.assertEqual(parse_book(book).totals('US'),parse_book(source()).totals('US'))
 
+    def test_negative_gross_row_is_return_when_account_return_control_agrees(self):
+        book=source()
+        book['a'][2]=['19','Bookshop','Domestic Regular',2,-1,0,20,-10,10,.15,-1.5,.15,-1.275,-1.26,-.63]
+        book['b'].append(['2026-03-04','Bookshop','Domestic Regular','2','9780306406157','Example',-1,0,0,-10,0,-10])
+        report=parse_book(book)
+        self.assertEqual(report.issues,[])
+        self.assertEqual(report.totals('US')['units_sold'],2)
+        self.assertEqual(report.totals('US')['units_returned'],1)
+        self.assertEqual(report.totals('US')['gross_sales'],20)
+        self.assertEqual(report.sales[1].discount_percent,Decimal(50))
+
+    def test_negative_gross_row_remains_adjustment_when_no_return_is_reported(self):
+        book=source()
+        book['a'][2]=['19','Bookshop','Domestic Regular',2,0,0,10,0,10,.15,-1.5,.15,-1.275,-1.26,0]
+        book['b'].append(['2026-03-04','Bookshop','Domestic Regular','2','9780306406157','Example',-1,0,0,-10,0,-10])
+        report=parse_book(book)
+        self.assertEqual(report.issues,[])
+        self.assertEqual(report.sales[1].unit_adjustment,-1)
+        self.assertEqual(report.totals('US')['units_returned'],0)
+        self.assertEqual(report.totals('US')['units_sold'],2)
+        self.assertEqual(report.sales[1].handling,0)
+
     def test_identical_transactions_are_not_deduplicated(self):
         book=source();book['b'].append(copy.deepcopy(book['b'][1]))
         r=parse_book(book)

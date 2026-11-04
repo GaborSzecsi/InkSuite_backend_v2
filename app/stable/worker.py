@@ -37,8 +37,10 @@ def scan(s3, config):
     tenant = config['tenant_id']
     now = datetime.now(timezone.utc)
     objects = []
+    present_keys=set()
     for page in s3.get_paginator('list_objects_v2').paginate(Bucket=config['bucket'],Prefix=config['key_prefix']):
         for item in page.get('Contents', []):
+            present_keys.add(item['Key'])
             name = Path(item['Key']).name.lower()
             if not name.endswith('.xlsx') or item['Size'] == 0:
                 continue
@@ -81,12 +83,14 @@ def scan(s3, config):
         if not cur.fetchone()['locked']:
             return []
         try:
+            with connection.transaction():
+                reconcile_removed_inventory(cur,config,present_keys)
             for item in sorted(objects,key=lambda i:i['Key']):
                 data, version = download(item)
                 digest = hashlib.sha256(data).hexdigest()
-                cur.execute('SELECT id,status,parser_version FROM stable_imports WHERE tenant_id=%s AND content_hash=%s AND as_of IS NOT DISTINCT FROM %s::date', (tenant,digest,report_date(item['Key'])))
+                cur.execute('SELECT id,status,parser_version,report_type FROM stable_imports WHERE tenant_id=%s AND content_hash=%s AND as_of IS NOT DISTINCT FROM %s::date', (tenant,digest,report_date(item['Key'])))
                 existing=cur.fetchone()
-                if existing and not (existing['status']=='needs_review' and existing['parser_version']!=VERSION):
+                if existing and not (existing['status']=='needs_review' and (existing['parser_version']!=VERSION or existing['report_type']=='inventory')):
                     continue
                 try:
                     book = read_workbook(data)
@@ -130,6 +134,17 @@ def scan(s3, config):
         finally:
             cur.execute('SELECT pg_advisory_unlock(hashtextextended(%s,0))', ('stable:'+str(tenant),))
     return results
+
+
+def reconcile_removed_inventory(cur,config,present_keys):
+    """Retire only unposted inventory candidates removed from this exact S3 source."""
+    cur.execute("""SELECT id,object_key FROM stable_imports WHERE tenant_id=%s AND bucket=%s
+      AND report_type='inventory' AND status IN ('needs_review','validated')""",(config['tenant_id'],config['bucket']))
+    for row in cur.fetchall():
+        if row['object_key'].startswith(config['key_prefix']) and row['object_key'] not in present_keys:
+            cur.execute("""UPDATE stable_imports SET status='superseded',payload='{}',
+              issues=issues || '["Unposted inventory source removed from S3"]'::jsonb
+              WHERE tenant_id=%s AND id=%s AND status IN ('needs_review','validated')""",(config['tenant_id'],row['id']))
 
 
 def main():

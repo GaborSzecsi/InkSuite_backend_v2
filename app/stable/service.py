@@ -95,7 +95,7 @@ def register(cur, tenant, bucket, key, version, report):
         ON CONFLICT(tenant_id,content_hash,as_of) DO UPDATE SET
           parser_version=excluded.parser_version,status=excluded.status,issues=excluded.issues,payload=excluded.payload,
           report_type=excluded.report_type,territory=excluded.territory,period_code=excluded.period_code
-        WHERE stable_imports.status='needs_review' AND stable_imports.parser_version<>excluded.parser_version
+        WHERE stable_imports.status='needs_review' AND (stable_imports.parser_version<>excluded.parser_version OR excluded.report_type='inventory')
         RETURNING id,status""",
         (tenant,bucket,key,version,report.digest,VERSION,report.kind,report.territory,report.period,report.as_of,status,
          Jsonb(report.issues),Jsonb(json_value(payload if status=='validated' else {}))))

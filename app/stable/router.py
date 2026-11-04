@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
+import re
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from psycopg.rows import dict_row
@@ -58,6 +59,28 @@ def bestseller_ranks(records):
     ordered=sorted((key for key in editions if editions[key]['net']>0),
       key=lambda key:(-editions[key]['net'],-editions[key]['gross'],editions[key]['title'].casefold(),key))
     return {key:rank for rank,key in enumerate(ordered,1)}
+
+
+def statement_coverage(cur,tenant,lower,upper,year,territory):
+    cur.execute("""SELECT object_key,period_code,territory,status FROM stable_imports
+      WHERE tenant_id=%s AND report_type IN ('statement','unknown') AND status NOT IN ('failed','superseded')""",(tenant,))
+    included=[];pending=[]
+    for row in cur.fetchall():
+        if 'client_statement' not in row['object_key'].lower():
+            continue
+        code=row['period_code']
+        if not code:
+            match=re.search(r'(20\d{2})(0[1-9]|1[0-2])',row['object_key'])
+            code=f'{match[1]}-{match[2]}' if match else None
+        if not code or (year and not code.startswith(year)) or (lower and not lower<=code<=upper):
+            continue
+        region=row['territory'] or ('CA' if '_canada_' in row['object_key'].lower() else 'US')
+        if territory!='ALL' and territory!=region:
+            continue
+        item=dict(period=code,territory=region,status=row['status'])
+        (included if row['status']=='posted' else pending).append(item)
+    return dict(complete=not pending,included=sorted(included,key=lambda x:(x['period'],x['territory'])),
+      pending=sorted(pending,key=lambda x:(x['period'],x['territory'])))
 
 
 def period_bounds(mode,year,month,today=None):
@@ -160,12 +183,15 @@ def overview(year: str=Query('',pattern=r'^(|20\d{2})$'),territory: str=Query('A
             imports=[i for i in imports if i['territory'] in (None,territory)]
         cur.execute('SELECT max(posted_at) AS last_sync FROM stable_imports WHERE tenant_id=%s AND status=%s',(tenant,'posted'))
         last_sync = cur.fetchone()['last_sync']
+        coverage=statement_coverage(cur,tenant,lower,upper,year,territory)
+        for item in coverage['included']:
+            months.setdefault(item['period'],dict(period=item['period'],netUnits=Decimal(0),**zero()))
         totals = zero()
         for row in titles.values():
             for key in totals:
                 totals[key] += row[key]
         totals['netUnits'] = totals['grossUnits']-totals['returns']+totals['unitAdjustments']
-        return dict(available=True,currency=currency,totals=totals,rows=list(titles.values()),
+        return dict(available=True,currency=currency,totals=totals,rows=list(titles.values()),coverage=coverage,
                     inventory=dict(available=sum(r['available'] for r in stock.values()) if stock else None,
                       asOf=max((r['as_of'] for r in stock.values()),default=None),
                       basis='Latest accepted distributor warehouse report; independent of sales period and territory'),

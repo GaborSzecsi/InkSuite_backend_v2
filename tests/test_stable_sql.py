@@ -159,6 +159,21 @@ class StableSQLTests(unittest.TestCase):
         self.assertEqual(data['rows'][0]['bestsellerRank'],2)
         self.assertEqual(data['totals']['grossUnits'],2)
 
+    def test_deleted_inventory_duplicate_releases_remaining_file_only(self):
+        from app.stable.worker import reconcile_removed_inventory
+        data={'inventory':[['ISBN (Item Code)','Default Useable Balance Qty','Ending Balance Qty'],['9780306406157',8,10]]}
+        a=service.register(self.cur,self.tenant,'bucket','tenant/removed.xlsx','1',parse_book(data,'removed',inventory_date='2026-03-01'))
+        b=service.register(self.cur,self.tenant,'bucket','tenant/kept.xlsx','1',parse_book(data,'kept',inventory_date='2026-03-01'))
+        rpc("UPDATE stable_imports SET status='needs_review' WHERE tenant_id=$1",[self.tenant])
+        old=service.register(self.cur,self.tenant,'bucket','tenant/posted.xlsx','1',parse_book(data,'posted',inventory_date='2026-02-28'))
+        rpc("UPDATE stable_imports SET status='posted' WHERE id=$1",[old['id']])
+        reconcile_removed_inventory(self.cur,dict(tenant_id=self.tenant,bucket='bucket',key_prefix='tenant/'),{'tenant/kept.xlsx'})
+        statuses={r['object_key']:r['status'] for r in rpc('SELECT object_key,status FROM stable_imports WHERE tenant_id=$1',[self.tenant])['rows']}
+        self.assertEqual(statuses['tenant/removed.xlsx'],'superseded')
+        self.assertEqual(statuses['tenant/posted.xlsx'],'posted')
+        kept=service.register(self.cur,self.tenant,'bucket','tenant/kept.xlsx','1',parse_book(data,'kept',inventory_date='2026-03-01'))
+        self.assertEqual(kept['status'],'validated')
+
     def test_pacific_ytd_and_month_bounds(self):
         from app.stable.router import period_bounds
         self.assertEqual(period_bounds('ytd','2025','',date(2026,7,4)),('2025-01','2025-07'))

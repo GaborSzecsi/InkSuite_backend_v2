@@ -16,7 +16,7 @@ from zipfile import ZipFile
 
 import openpyxl
 
-VERSION = "stable-3-channel-units"
+VERSION = "stable-4-signed-returns"
 ZERO = Decimal(0)
 
 
@@ -291,6 +291,25 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
         if controls:
             report.issues.append("Missing ISBN transaction detail; Canada requires the matching US statement")
     grouped = defaultdict(lambda: defaultdict(lambda: ZERO))
+    # Some workbooks put physical returns in negative Gross Qty/Sales columns.
+    # Classify them only when the account's independent return-unit control agrees.
+    negative_units=defaultdict(lambda:ZERO)
+    explicit_returns=defaultdict(lambda:ZERO)
+    if transactions:
+        for _,row in transactions[1]:
+            if not _data_row(row,'isbn'):
+                continue
+            key=(label(row.get('account')),label(row.get('saletype')))
+            negative_units[key]+=max(-number(row.get('grossqty')),ZERO)
+            explicit_returns[key]+=abs(number(row.get('returnqty')))
+    negative_as_return={}
+    for key,qty in negative_units.items():
+        if not qty or key not in controls:
+            continue
+        reported=abs(number(controls[key].get('returnunits')))
+        negative_as_return[key]=(reported==explicit_returns[key]+qty)
+        if reported not in (explicit_returns[key],explicit_returns[key]+qty):
+            report.issues.append(f'Ambiguous negative gross-unit classification for {key}')
     if transactions:
         sheet, rows = transactions
         for n, row in rows:
@@ -313,6 +332,15 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
                 report.issues.append(f"Gross/returns/net mismatch at {sheet}:{n}")
             sold = number(row.get("grossqty"))
             returns = abs(number(row.get("returnqty")))
+            unit_adjustment=ZERO
+            if sold<0:
+                if negative_as_return.get(key):
+                    returns+=abs(sold)
+                    returned_money+=gross
+                    gross=ZERO
+                else:
+                    unit_adjustment=sold
+                sold=ZERO
             signed_comp = number(row.get("compqty"))
             # Negative Comp Qty is a physical return of previously transferred stock.
             returns += max(-signed_comp, ZERO)
@@ -333,7 +361,8 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
             reserve = account_reserve*net/account_net if account_net else ZERO
             handling = (sold+comp)*Decimal("0.63")+returns*Decimal("0.63")
             sale = Sale(isbn(row["isbn"]), str(row.get("title") or ""), buyer, territory, sheet, n, activity,
-                        ZERO if transfer else sold, ZERO if transfer else returns, gross, net, fee, handling, reserve, raw=row)
+                        ZERO if transfer else sold, ZERO if transfer else returns, gross, net, fee, handling, reserve,
+                        unit_adjustment=ZERO if transfer else unit_adjustment,raw=row)
             report.sales.append(sale)
             for k, v in {"grossunits":sold, "returnunits":returns, "compunits":comp, "grosssales":gross,
                          "netsales":net, "distributionfee":fee, "returnsreserve":reserve,
@@ -434,6 +463,8 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None):
             sale.sales_price = sale.gross_sales/sale.units_sold
         elif sale.units_returned > 0:
             sale.sales_price = abs(sale.monetary_net)/sale.units_returned
+        elif sale.unit_adjustment:
+            sale.sales_price = abs(sale.monetary_net/sale.unit_adjustment)
         price=sale.sales_price;catalog=prices.get(sale.isbn)
         if territory=='CA' and sale.activity=='amazon' and any(c.get('cad_per_usd') for c in report.controls):
             catalog=canadian_prices.get(sale.isbn)
