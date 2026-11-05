@@ -9,7 +9,6 @@ from psycopg.rows import dict_row
 from app.core.db import db_conn
 from app.distribution.router import access
 from .service import ready
-from .parser import VERSION
 
 router = APIRouter(prefix='/tenants/{tenant_slug}/stable',tags=['Stable analytics'])
 
@@ -99,6 +98,11 @@ def period_bounds(mode,year,month,today=None):
     return f'{year}-01',f'{year}-{today.month:02d}' if mode=='ytd' else f'{year}-12'
 
 
+def return_percentage(gross,returned):
+    gross=Decimal(str(gross or 0))
+    return Decimal(str(returned or 0))*100/gross if gross>0 else None
+
+
 def channel_stock(cur,tenant,cutoff,work_id):
     # A stock balance is cumulative from the start, never just selected-month transfers.
     cur.execute('''SELECT m.buyer,m.territory,sum(m.outbound-m.returned) AS transferred
@@ -112,11 +116,21 @@ def channel_stock(cur,tenant,cutoff,work_id):
     for row in ledger(cur,tenant,'','ALL','USD','',work_id):
         if row['period_code']<=cutoff and row['customer_name']=='Amazon (paid sales)':
             key=(row['customer_name'],row['territory'])
-            stock[key]=stock.get(key,Decimal(0))-Decimal(str(row['units_sold'] or 0))-Decimal(str(row['unit_adjustment'] or 0))
-    cur.execute("""SELECT count(*) AS gaps FROM stable_imports WHERE tenant_id=%s AND period_code<=%s
-      AND report_type IN ('statement','unknown') AND (status NOT IN ('posted','superseded','failed')
-      OR (status='posted' AND parser_version<>%s))""",(tenant,cutoff,VERSION))
-    return stock,bool(cur.fetchone()['gaps'])
+            stock[key]=stock.get(key,Decimal(0))-Decimal(str(row['units_sold'] or 0))+Decimal(str(row['units_returned'] or 0))-Decimal(str(row['unit_adjustment'] or 0))
+    # Channel movements were introduced with stable-3. Later cash/fee parser changes
+    # do not invalidate movement history. Canadian transfers are carried by US reports.
+    cur.execute("""SELECT territory,parser_version,status FROM stable_imports
+      WHERE tenant_id=%s AND period_code<=%s AND report_type IN ('statement','unknown')
+      AND status<>'superseded'""",(tenant,cutoff))
+    gaps=set()
+    for row in cur.fetchall():
+        match=re.match(r'^stable-(\d+)-',row['parser_version'] or '')
+        legacy_us=row['territory']=='US' and row['status']=='posted' and (not match or int(match[1])<3)
+        if row['status']!='posted' or legacy_us:
+            # Pending US reports may also contain transfers to Canada.
+            gaps.update(('US','CA') if row['territory'] in (None,'US') else ('CA',))
+    return stock,gaps
+
 
 
 @router.get('/overview')
@@ -136,7 +150,7 @@ def overview(year: str=Query('',pattern=r'^(|20\d{2})$'),territory: str=Query('A
             records=[r for r in records if work_id in (str(r['work_id']),str(r['work_uid'] or ''))]
         if q:
             records=[r for r in records if any(q.casefold() in str(r.get(field) or '').casefold() for field in ('title','isbn13','customer_name'))]
-        titles,months,buyers = {},{},{}
+        titles,months,buyers,buyer_books = {},{},{},{}
         zero = lambda: dict(grossUnits=Decimal(0),returns=Decimal(0),unitAdjustments=Decimal(0),grossSales=Decimal(0),netReceipts=Decimal(0))
         for row in records:
             title = titles.setdefault(str(row['edition_id']),dict(editionId=str(row['edition_id']),title=row['title'],isbn=row['isbn13'],format=row['product_form'],**zero()))
@@ -145,6 +159,8 @@ def overview(year: str=Query('',pattern=r'^(|20\d{2})$'),territory: str=Query('A
             if row['customer_name'] and (row['units_sold'] or row['units_returned'] or row['gross_sales'] or row['unit_adjustment']):
                 key = (row['customer_name'],row['territory'])
                 targets.append(buyers.setdefault(key,dict(buyer=row['customer_name'],territory=row['territory'],**zero())))
+                targets.append(buyer_books.setdefault(key,{}).setdefault(str(row['edition_id']),dict(
+                  editionId=str(row['edition_id']),title=row['title'],isbn=row['isbn13'],format=row['product_form'],**zero())))
             for target in targets:
                 for key,source in [('grossUnits','units_sold'),('returns','units_returned'),('unitAdjustments','unit_adjustment'),('grossSales','gross_sales'),('netReceipts','publisher_receipts')]:
                     target[key] += Decimal(str(row[source] or 0))
@@ -163,16 +179,24 @@ def overview(year: str=Query('',pattern=r'^(|20\d{2})$'),territory: str=Query('A
             row['inventoryAsOf'] = snapshot['as_of'] if snapshot else None
             row['netUnits'] = row['grossUnits']-row['returns']+row['unitAdjustments']
             row['bestsellerRank']=ranks.get(row['editionId'])
+            row['returnPercentage']=return_percentage(row['grossUnits'],row['returns'])
         today=datetime.now(ZoneInfo('America/Los_Angeles')).date()
         implied,incomplete=channel_stock(cur,tenant,f'{today:%Y-%m}',work_id)
         ranked = sorted(buyers.values(),key=lambda b:(-b['grossUnits'],b['buyer'].casefold(),b['territory']))
         for rank,row in enumerate(ranked,1):
             balance=implied.get((row['buyer'],row['territory']))
             amazon=row['buyer']=='Amazon (paid sales)'
+            incomplete_region=row['territory'] in incomplete
+            books=list(buyer_books[(row['buyer'],row['territory'])].values())
+            for book in books:
+                book['netUnits']=book['grossUnits']-book['returns']+book['unitAdjustments']
+                book['returnPercentage']=return_percentage(book['grossUnits'],book['returns'])
+            row['books']=sorted(books,key=lambda b:(-b['grossUnits'],b['title'].casefold(),b['isbn']))
+            row['returnPercentage']=return_percentage(row['grossUnits'],row['returns'])
             row.update(rank=rank,netUnits=row['grossUnits']-row['returns']+row['unitAdjustments'],
-              impliedStock=balance if amazon and balance is not None and not incomplete else None,
+              impliedStock=balance if amazon and balance is not None and not incomplete_region else None,
               impliedStockAsOf=today.isoformat() if amazon else None,
-              impliedStockNote=('Statements awaiting review; stock unavailable' if incomplete else 'Estimated; zero opening stock assumed') if amazon else 'Not a stock-holding account')
+              impliedStockNote=('Incomplete stock history; estimate unavailable' if incomplete_region else 'Latest accepted statements; zero opening stock assumed') if amazon else 'Not a stock-holding account')
         for row in months.values():
             row['netUnits']=row['grossUnits']-row['returns']+row['unitAdjustments']
         cur.execute('SELECT id,object_key,report_type,territory,period_code,as_of,status,issues,created_at,posted_at FROM stable_imports WHERE tenant_id=%s ORDER BY created_at DESC LIMIT 100',(tenant,))
@@ -191,6 +215,7 @@ def overview(year: str=Query('',pattern=r'^(|20\d{2})$'),territory: str=Query('A
             for key in totals:
                 totals[key] += row[key]
         totals['netUnits'] = totals['grossUnits']-totals['returns']+totals['unitAdjustments']
+        totals['returnPercentage']=return_percentage(totals['grossUnits'],totals['returns'])
         return dict(available=True,currency=currency,totals=totals,rows=list(titles.values()),coverage=coverage,
                     inventory=dict(available=sum(r['available'] for r in stock.values()) if stock else None,
                       asOf=max((r['as_of'] for r in stock.values()),default=None),

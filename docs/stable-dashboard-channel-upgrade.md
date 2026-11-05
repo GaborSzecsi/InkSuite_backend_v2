@@ -106,3 +106,21 @@ ISBNs. Excluding these records gives 173 hardcover-equivalent and 148 paperback-
 equivalent ISBNs: 321 total, $160.50 monthly on the current catalog. The publisher
 requested that this corrected count replace the earlier 404-ISBN calculation for
 all imported months. Catalog records and issued statements are preserved.
+
+
+Buyer detail and return statistics
+---------------------------------
+Overview buyers include ISBN-level books aggregated from the same tenant, period,
+territory and optional work selection. Buyer/book receipts remain before monthly
+ISBN costs. Return percentage is sum(returned units)/sum(gross units)*100; signed
+settlement adjustments are not reclassified as physical returns. A zero sales
+denominator gives null, and returns of older sales may produce rates above 100%.
+The inventory tile retains latest reported stock independently of the sales period
+and displays the selected period's weighted return percentage alongside it.
+
+Implied stock validity is based on movement-capable source history (stable-3+ US
+reports), not equality to the current cash parser version. Pending Canadian reports
+hold Canadian estimates only; pending US reports hold both because they carry
+Canadian transfers too. Estimates remain cumulative through the current Pacific
+month, regardless of the selected sales period. Existing financial records and
+issued statements are not modified by these read-only reporting changes.

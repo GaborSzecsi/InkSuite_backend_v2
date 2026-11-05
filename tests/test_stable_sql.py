@@ -344,6 +344,52 @@ class StableSQLTests(unittest.TestCase):
         self.assertEqual(str(costs[0]['edition_id']),self.edition)
         self.assertEqual(Decimal(costs[0]['amount']),Decimal('.50'))
 
+    def test_stock_survives_newer_cash_parsers_and_isolates_canadian_gaps(self):
+        from app.stable import router
+        book=source();book['c'][1]=['9780306406157','Example',5,-1,50,-10,40,.1,-4,36]
+        report=parse_book(book,'stock-old-parser');report.movements=[dict(isbn='9780306406157',territory='US',buyer='Amazon (paid sales)',outbound=20,returned=2)]
+        item=service.register(self.cur,self.tenant,'bucket','march','v1',report);service.post(self.cur,self.tenant,item['id'])
+        rpc("UPDATE stable_imports SET parser_version='stable-4-signed-returns' WHERE id=$1",[item['id']])
+        from app.stable.parser import Report
+        held=Report('ca-pending','statement',period='2026-04',territory='CA',issues=['Missing detail'])
+        service.register(self.cur,self.tenant,'bucket','canada-april','v1',held)
+        with patch.object(router,'db_conn',database):
+            data=router.overview(year='2026',territory='US',currency='USD',q='',work_id='',ctx={'tenant':{'id':self.tenant}},period='month',month='03')
+        amazon=next(b for b in data['buyers'] if b['buyer']=='Amazon (paid sales)')
+        self.assertEqual(amazon['impliedStock'],14)
+        held=Report('us-pending','statement',period='2026-04',territory='US',issues=['Missing detail'])
+        service.register(self.cur,self.tenant,'bucket','us-april','v1',held)
+        with patch.object(router,'db_conn',database):
+            data=router.overview(year='2026',territory='US',currency='USD',q='',work_id='',ctx={'tenant':{'id':self.tenant}},period='month',month='03')
+        self.assertIsNone(next(b for b in data['buyers'] if b['buyer']=='Amazon (paid sales)')['impliedStock'])
+
+    def test_return_rates_and_buyer_books_use_selected_period_and_actual_returns(self):
+        from app.stable import router
+        book=source()
+        for index,value in {4:1,7:-10,8:10,10:-1.5,12:-1.275,14:-.63}.items():book['a'][2][index]=value
+        for index,value in {7:-1,10:-10,11:10}.items():book['b'][1][index]=value
+        book['c'][1]=['9780306406157','Example',5,-1,50,-10,40,.1,-4,36]
+        report=parse_book(book,'buyer-return-rates');self.assertEqual(report.issues,[])
+        item=service.register(self.cur,self.tenant,'bucket','march','v1',report);service.post(self.cur,self.tenant,item['id'])
+        ctx={'tenant':{'id':self.tenant}}
+        with patch.object(router,'db_conn',database):
+            data=router.overview(year='2026',territory='US',currency='USD',q='',work_id='',ctx=ctx,period='month',month='03')
+            april=router.overview(year='2026',territory='US',currency='USD',q='',work_id='',ctx=ctx,period='month',month='04')
+        self.assertEqual(data['totals']['grossUnits'],7);self.assertEqual(data['totals']['returns'],1)
+        self.assertEqual(data['totals']['returnPercentage'],Decimal(100)/7)
+        buyer=next(b for b in data['buyers'] if b['buyer']=='Bookshop')
+        self.assertEqual(buyer['returnPercentage'],50)
+        self.assertEqual(len(buyer['books']),1)
+        self.assertEqual(buyer['books'][0]['isbn'],'9780306406157')
+        self.assertEqual(buyer['books'][0]['returns'],1)
+        self.assertEqual(buyer['books'][0]['netUnits'],1)
+        amazon=next(b for b in data['buyers'] if b['buyer']=='Amazon (paid sales)')
+        self.assertEqual(amazon['returnPercentage'],0)
+        self.assertEqual(amazon['books'][0]['unitAdjustments'],-1)
+        self.assertEqual(april['buyers'],[]);self.assertIsNone(april['totals']['returnPercentage'])
+        self.assertIsNone(router.return_percentage(0,2))
+        self.assertEqual(router.return_percentage(2,3),150)
+
     def post_original(self,month,territory):
         root=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
         us=root/('MARBLE PRESS_Client_Statement_'+month+('_v2' if month=='202607' else '')+'.xlsx')
