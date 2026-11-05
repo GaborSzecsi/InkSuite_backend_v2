@@ -17,6 +17,7 @@ const fs=require('fs'),path=require('path'),readline=require('readline');
  transaction_date date,source_system text,source_file text,reference_number text,customer_name text,territory text,transaction_type text CHECK(transaction_type IN ('sale','return')),
  units_sold numeric DEFAULT 0,units_returned numeric DEFAULT 0,gross_sales numeric(18,2),publisher_receipts numeric(18,2),currency text,discount_percent numeric,sales_price numeric);
  CREATE TABLE fraser_ca_sales_lines(LIKE royalty_sales_lines INCLUDING ALL);`);
+ await db.exec('ALTER TABLE editions ADD COLUMN archived_at timestamptz');
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/045_stable_ingestion.sql'),'utf8'));
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/046_stable_channel_units.sql'),'utf8'));
  await db.exec(fs.readFileSync(path.join(__dirname,'../migrations/047_stable_combined_statements.sql'),'utf8'));

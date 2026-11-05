@@ -94,3 +94,15 @@ January/February zero-sales approvals do not exempt the monthly catalog charge.
 On 2026-11-04 the publisher authorized recalculating every imported month using
 the current catalog: 173 hardcover-equivalent + 231 paperback-equivalent ISBNs,
 404 total, $202 monthly. Already issued royalty statement snapshots stay unchanged.
+
+
+Catalog archive correction
+--------------------------
+Technology eligibility additionally requires editions.archived_at IS NULL.
+The primary status field alone is not sufficient: 83 discontinued large-print
+editions remain labeled Paperback and status active, but have an archive timestamp
+and explicit large-print archive reason. They must never be billed as active print
+ISBNs. Excluding these records gives 173 hardcover-equivalent and 148 paperback-
+equivalent ISBNs: 321 total, $160.50 monthly on the current catalog. The publisher
+requested that this corrected count replace the earlier 404-ISBN calculation for
+all imported months. Catalog records and issued statements are preserved.

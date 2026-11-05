@@ -335,6 +335,15 @@ class StableSQLTests(unittest.TestCase):
         self.assertEqual(Decimal(row['total']),Decimal('.50'))
         self.assertEqual(rpc('SELECT count(*) AS n FROM royalty_sales_lines WHERE tenant_id=$1',[self.tenant])['rows'][0]['n'],0)
 
+    def test_archived_large_print_mislabeled_paperback_is_not_billed(self):
+        archived=str(uuid4())
+        rpc("INSERT INTO editions(id,tenant_id,work_id,isbn13,product_form,product_form_detail,archived_at) VALUES($1,$2,$3,'9780744300291','Paperback','Paperback',now())",[archived,self.tenant,self.work])
+        item=self.register();service.post(self.cur,self.tenant,item['id'])
+        costs=rpc("SELECT edition_id,amount FROM stable_receipt_adjustments WHERE import_id=$1 AND kind='technology'",[item['id']])['rows']
+        self.assertEqual(len(costs),1)
+        self.assertEqual(str(costs[0]['edition_id']),self.edition)
+        self.assertEqual(Decimal(costs[0]['amount']),Decimal('.50'))
+
     def post_original(self,month,territory):
         root=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
         us=root/('MARBLE PRESS_Client_Statement_'+month+('_v2' if month=='202607' else '')+'.xlsx')

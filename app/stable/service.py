@@ -68,6 +68,7 @@ def catalog_technology_costs(cur,tenant):
     """One monthly fee per distinct hardcover/paperback ISBN, including no-sale titles."""
     cur.execute("""SELECT id,work_id,regexp_replace(isbn13,'[^0-9Xx]','','g') AS code
       FROM editions WHERE tenant_id=%s
+      AND archived_at IS NULL
       AND lower(trim(product_form)) IN ('hardcover','paperback','paper over boards','trade paperback')
       AND nullif(trim(isbn13),'') IS NOT NULL ORDER BY isbn13,id""",(tenant,))
     rows=cur.fetchall()
