@@ -75,3 +75,22 @@ signed unit adjustments separate. Publisher receipts already use the settlement
 net and must not be reduced again. Apply the same basis to positive corrections.
 Existing posted sales require a source-hash-verified, per-row gross-only correction;
 never regenerate issued statements or rewrite publisher receipts for this change.
+
+
+Technology fee policy (supersedes the report-ISBN rule above)
+-----------------------------------------------------------
+Publisher-directed rule: ignore statement technology charges. Charge $0.50 once
+per month per distinct tenant catalog ISBN whose primary product_form is Hardcover,
+Paperback, Paper over boards (hardcover alias), or Trade paperback (paperback alias).
+Exclude Large Print, E-Book and Audio Book, even when a conflicting detail label
+looks like print. Do not count a format subtype again as another ISBN.
+
+The SQL posting service snapshots the eligible print catalog at US statement
+posting and assigns $0.50 to each eligible ISBN, including titles with no sales.
+Canada is not separately charged. Growth changes the next monthly posting; posted
+months stay frozen unless the publisher explicitly authorizes a recalculation.
+January/February zero-sales approvals do not exempt the monthly catalog charge.
+
+On 2026-11-04 the publisher authorized recalculating every imported month using
+the current catalog: 173 hardcover-equivalent + 231 paperback-equivalent ISBNs,
+404 total, $202 monthly. Already issued royalty statement snapshots stay unchanged.

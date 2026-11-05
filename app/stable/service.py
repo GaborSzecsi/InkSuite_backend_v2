@@ -64,6 +64,18 @@ def discount_works(cur,tenant):
     return {str(row['work_id']) for row in cur.fetchall()}
 
 
+def catalog_technology_costs(cur,tenant):
+    """One monthly fee per distinct hardcover/paperback ISBN, including no-sale titles."""
+    cur.execute("""SELECT id,work_id,regexp_replace(isbn13,'[^0-9Xx]','','g') AS code
+      FROM editions WHERE tenant_id=%s
+      AND lower(trim(product_form)) IN ('hardcover','paperback','paper over boards','trade paperback')
+      AND nullif(trim(isbn13),'') IS NOT NULL ORDER BY isbn13,id""",(tenant,))
+    rows=cur.fetchall()
+    if len({r['code'] for r in rows})!=len(rows):
+        raise ReviewRequired('Duplicate catalog print ISBNs require review before technology billing')
+    return [dict(isbn=r['code'],kind='technology',amount=Decimal('0.50')) for r in rows]
+
+
 def register(cur, tenant, bucket, key, version, report):
     codes = {s.isbn for s in report.sales} | {c['isbn'] for c in report.costs} | {i['isbn'] for i in report.inventory}
     editions={}
@@ -110,7 +122,11 @@ def post(cur, tenant, import_id):
     config = cur.fetchone()
     if not config or not config['enabled']:
         return False
-    payload = source['payload']
+    payload = dict(source['payload'])
+    # Technology is a tenant-wide print-catalog charge, never per sold ISBN or per territory.
+    payload['costs']=[c for c in payload['costs'] if c['kind']!='technology']
+    if source['report_type']=='statement' and source['territory']=='US':
+        payload['costs']+=catalog_technology_costs(cur,tenant)
     codes = {s['isbn'] for s in payload['sales']} | {c['isbn'] for c in payload['costs']} | {i['isbn'] for i in payload['inventory']} | {m['isbn'] for m in payload.get('movements',[])}
     editions = resolve(cur, tenant, codes)
     if source['report_type'] == 'inventory':

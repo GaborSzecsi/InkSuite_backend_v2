@@ -16,7 +16,7 @@ from zipfile import ZipFile
 
 import openpyxl
 
-VERSION = "stable-7-adjusted-gross"
+VERSION = "stable-8-catalog-technology"
 ZERO = Decimal(0)
 
 
@@ -465,8 +465,7 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None, reserve_
                 report.costs.append(dict(isbn=code, territory=territory, kind="storage", amount=amount,
                                          inventory=qty, sheet=sheet, row=n))
     codes = {s.isbn for s in report.sales} | {c["isbn"] for c in report.costs}
-    for code in sorted(codes):
-        report.costs.append(dict(isbn=code, territory=territory, kind="technology", amount=Decimal("0.50")))
+    # Catalog-wide technology charges are added by the SQL posting service, once per US month.
     # Statement prices, rather than today's catalog prices, preserve historical
     # discount tiers. Canada may use the companion's explicitly labelled CA price.
     warehouse = found.get('warehouse')

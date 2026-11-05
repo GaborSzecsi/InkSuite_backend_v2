@@ -24,7 +24,7 @@ class StableParserTests(unittest.TestCase):
     def test_source_precision_and_once_per_isbn_costs(self):
         r = parse_book(source())
         self.assertEqual(r.issues, [])
-        self.assertEqual(r.totals('US')['publisher_receipts'],Decimal('12.62'))
+        self.assertEqual(r.totals('US')['publisher_receipts'],Decimal('13.12'))
         self.assertEqual(r.sales[0].discount_percent,Decimal('50'))
 
     def test_shifted_reordered_columns_and_renamed_tabs(self):
@@ -61,12 +61,12 @@ class StableParserTests(unittest.TestCase):
         report=parse_book(book)
         self.assertEqual(report.issues,[])
         self.assertEqual(report.totals('US')['gross_sales'],40)
-        self.assertEqual(report.totals('US')['publisher_receipts'],Decimal('30.62'))
+        self.assertEqual(report.totals('US')['publisher_receipts'],Decimal('31.12'))
         book['c'][1]=['9780306406157','Example',3,1,30,10,40,.1,-4,36]
         report=parse_book(book)
         self.assertEqual(report.issues,[])
         self.assertEqual(report.totals('US')['gross_sales'],60)
-        self.assertEqual(report.totals('US')['publisher_receipts'],Decimal('48.62'))
+        self.assertEqual(report.totals('US')['publisher_receipts'],Decimal('49.12'))
 
     @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private originals supplied separately')
     def test_april_gross_matches_summary_after_amazon_adjustments(self):
@@ -74,7 +74,7 @@ class StableParserTests(unittest.TestCase):
         report=parse(p.read_bytes())
         self.assertEqual(report.issues,[])
         self.assertEqual(report.totals('US')['gross_sales'].quantize(Decimal('.01')),Decimal('11537.33'))
-        self.assertEqual(report.totals('US')['publisher_receipts'].quantize(Decimal('.01')),Decimal('6643.32'))
+        self.assertEqual(report.totals('US')['publisher_receipts'].quantize(Decimal('.01')),Decimal('6657.82'))
 
     def test_identical_transactions_are_not_deduplicated(self):
         book=source();book['b'].append(copy.deepcopy(book['b'][1]))
@@ -96,7 +96,7 @@ class StableParserTests(unittest.TestCase):
         book=source();book['a'][2][9]=.99;book['a'][2][11]=.77
         r=parse_book(book)
         self.assertEqual(r.issues,[])
-        self.assertEqual(r.totals('US')['publisher_receipts'],Decimal('12.62'))
+        self.assertEqual(r.totals('US')['publisher_receipts'],Decimal('13.12'))
 
     def test_inventory_missing_is_not_zero_and_duplicate_rejected(self):
         rows=[['ISBN (Item Code)','Default Useable Balance Qty','Ending Balance Qty'],['9780306406157',8,10]]
@@ -134,7 +134,7 @@ class StableParserTests(unittest.TestCase):
         self.assertEqual(b.totals('CA')['units_sold'],360)
         self.assertEqual(b.totals('CA')['units_returned'],6)
         self.assertEqual(sum(s.unit_adjustment for s in b.sales),1)
-        self.assertEqual(b.totals('CA')['publisher_receipts'].quantize(Decimal('.01')),Decimal('1565.00'))
+        self.assertEqual(b.totals('CA')['publisher_receipts'].quantize(Decimal('.01')),Decimal('1577.00'))
         self.assertEqual(sum(s.handling for s in b.sales).quantize(Decimal('.01')),Decimal('203.49'))
         self.assertEqual(len([s for s in b.sales if s.activity=='Canadian Sale']),116)
 
@@ -160,10 +160,10 @@ class StableParserTests(unittest.TestCase):
         ca=directory/'MARBLE PRESS_Client_Statement_Canada_202603.xlsx'
         a=parse(us.read_bytes());b=parse(ca.read_bytes(),companion=read_workbook(us.read_bytes()))
         self.assertEqual(a.issues,[]);self.assertEqual(b.issues,[])
-        self.assertEqual(a.totals('US')['publisher_receipts'],Decimal('1051.539975'))
-        self.assertEqual(b.totals('CA')['publisher_receipts'],Decimal('24.511575'))
+        self.assertEqual(a.totals('US')['publisher_receipts'],Decimal('1066.039975'))
+        self.assertEqual(b.totals('CA')['publisher_receipts'],Decimal('26.511575'))
         self.assertEqual(a.totals('US')['units_sold'],274)
-        self.assertEqual(sum(c['amount'] for c in a.costs if c['kind']=='technology'),Decimal('14.50'))
+        self.assertEqual(sum(c['amount'] for c in a.costs if c['kind']=='technology'),Decimal('0'))
 
 
 if __name__=='__main__': unittest.main()

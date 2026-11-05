@@ -280,7 +280,7 @@ class StableSQLTests(unittest.TestCase):
         self.assertTrue(service.post(self.cur,self.tenant,item['id']))
         row=rpc('SELECT sum(units_sold) AS sold,sum(units_returned) AS returned,sum(unit_adjustment) AS adjusted,sum(publisher_receipts) AS cash FROM canada_sales_lines WHERE tenant_id=$1',[self.tenant])['rows'][0]
         costs=rpc('SELECT sum(amount) AS amount FROM stable_receipt_adjustments WHERE tenant_id=$1',[self.tenant])['rows'][0]['amount']
-        self.assertEqual(Decimal(row['cash'])-Decimal(costs),Decimal('1565.00'))
+        self.assertEqual(Decimal(row['cash'])-Decimal(costs),Decimal('1577.00'))
         self.assertEqual(Decimal(row['sold']),360);self.assertEqual(Decimal(row['returned']),6)
         evidence=rpc("SELECT count(*) AS n FROM canada_sales_lines WHERE tenant_id=$1 AND reference_number LIKE '%Hachette_Sales_Detail_202609.xlsx%'",[self.tenant])['rows'][0]['n']
         self.assertEqual(evidence,116)
@@ -309,6 +309,32 @@ class StableSQLTests(unittest.TestCase):
         self.assertEqual(amazon['grossSales'],20)
         self.assertEqual(amazon['netUnits'],2)
 
+    def test_catalog_fee_includes_no_sale_print_isbns_excludes_other_formats_and_charges_once(self):
+        for form,code in [('Paperback','9781958325391'),('Paper over boards','9781958325476'),('Trade paperback','9781958325537'),('Large Print','9781958325445'),('E-Book','9781958325162'),('Audio Book','9781958325001')]:
+            rpc('INSERT INTO editions VALUES($1,$2,$3,$4,$5,$5)',[str(uuid4()),self.tenant,self.work,code,form])
+        item=self.register();service.post(self.cur,self.tenant,item['id'])
+        row=rpc("SELECT count(*) AS n,sum(amount) AS total FROM stable_receipt_adjustments WHERE tenant_id=$1 AND kind='technology'",[self.tenant])['rows'][0]
+        self.assertEqual(row['n'],4);self.assertEqual(Decimal(row['total']),2)
+        report=parse_book(source(),'canadian-month');report.territory='CA'
+        ca=service.register(self.cur,self.tenant,'bucket','canada','v1',report)
+        service.post(self.cur,self.tenant,ca['id'])
+        self.assertEqual(rpc("SELECT count(*) AS n FROM stable_receipt_adjustments WHERE import_id=$1 AND kind='technology'",[ca['id']])['rows'][0]['n'],0)
+        self.assertFalse(service.post(self.cur,self.tenant,item['id']))
+        rpc("INSERT INTO editions VALUES($1,$2,$3,'9781958325605','Paperback','Paperback')",[str(uuid4()),self.tenant,self.work])
+        report=parse_book(source(),'next-month');report.period='2026-04'
+        next_month=service.register(self.cur,self.tenant,'bucket','april','v1',report)
+        service.post(self.cur,self.tenant,next_month['id'])
+        self.assertEqual(Decimal(rpc("SELECT sum(amount) AS total FROM stable_receipt_adjustments WHERE import_id=$1 AND kind='technology'",[next_month['id']])['rows'][0]['total']),Decimal('2.50'))
+        self.assertEqual(Decimal(rpc("SELECT sum(amount) AS total FROM stable_receipt_adjustments WHERE import_id=$1 AND kind='technology'",[item['id']])['rows'][0]['total']),2)
+
+    def test_zero_sales_month_still_has_catalog_technology_cost(self):
+        from app.stable.parser import Report
+        item=service.register(self.cur,self.tenant,'bucket','approved-zero','v1',Report('zero-approved','statement',period='2026-01',territory='US'))
+        self.assertTrue(service.post(self.cur,self.tenant,item['id']))
+        row=rpc("SELECT sum(amount) AS total FROM stable_receipt_adjustments WHERE import_id=$1 AND kind='technology'",[item['id']])['rows'][0]
+        self.assertEqual(Decimal(row['total']),Decimal('.50'))
+        self.assertEqual(rpc('SELECT count(*) AS n FROM royalty_sales_lines WHERE tenant_id=$1',[self.tenant])['rows'][0]['n'],0)
+
     def post_original(self,month,territory):
         root=Path(os.environ['STABLE_ACCEPTANCE_DIR'])
         us=root/('MARBLE PRESS_Client_Statement_'+month+('_v2' if month=='202607' else '')+'.xlsx')
@@ -326,11 +352,11 @@ class StableSQLTests(unittest.TestCase):
 
     @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private originals supplied separately')
     def test_original_march_is_correct_after_actual_two_decimal_sql_posting(self):
-        self.assertEqual(self.post_original('202603','US'),(Decimal('2309.86'),Decimal('1051.54')))
+        self.assertEqual(self.post_original('202603','US'),(Decimal('2309.86'),Decimal('1051.04')))
 
     @unittest.skipUnless(os.getenv('STABLE_ACCEPTANCE_DIR'),'Private originals supplied separately')
     def test_original_july_canada_conversion_does_not_lose_a_cent(self):
-        self.assertEqual(self.post_original('202607','CA'),(Decimal('143.70'),Decimal('89.34')))
+        self.assertEqual(self.post_original('202607','CA'),(Decimal('143.70'),Decimal('93.84')))
 
 
 if __name__=='__main__':unittest.main()
