@@ -27,7 +27,7 @@ def entries(cur,tenant,currency):
     cur.execute(f'''SELECT e.id,e.work_id,e.isbn13,e.product_form,e.onix_product_form,e.cover_image_link,
         w.title,w.subtitle,w.uid,{DESCRIPTION_SQL} AS description FROM editions e JOIN works w ON w.id=e.work_id AND w.tenant_id=e.tenant_id
         WHERE e.tenant_id=%s AND e.archived_at IS NULL ORDER BY w.title,e.id''',(tenant,))
-    rows=cur.fetchall()
+    rows=[e for e in cur.fetchall() if not (e.get('onix_product_form') or e.get('product_form') or '').upper().startswith(('E','D','A'))]
     cur.execute("""SELECT d.edition_id,p.price_amount FROM edition_prices p JOIN edition_supply_details d
       ON d.id=p.supply_detail_id AND d.tenant_id=p.tenant_id WHERE d.tenant_id=%s
       AND p.currency_code=%s AND COALESCE(NULLIF(btrim(p.price_type_code),''),'01') IN ('01','02') AND p.price_amount>0
@@ -184,11 +184,11 @@ def plan(selected,variants):
 def save_match(cur,install,connection,e,v):
     metadata={'product_id':v['product']['id'],'product_title':v['product']['title'],'variant_title':v['title'],
               'barcode':v.get('barcode') or e['isbn'],'isbn':e['isbn'],'match_status':'MATCHED_BY_ISBN'}
-    cur.execute('''INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,sku,title,edition_id,connection_id,catalog_metadata)
-      VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(tenant_id,installation_id,variant_id) DO UPDATE
-      SET active=true,edition_id=COALESCE(distribution_shopify_variants.edition_id,excluded.edition_id),
+    cur.execute('''INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,sku,title,edition_id,connection_id,catalog_metadata,inventory_item_id)
+      VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(tenant_id,installation_id,variant_id) DO UPDATE
+      SET active=true,inventory_item_id=COALESCE(excluded.inventory_item_id,distribution_shopify_variants.inventory_item_id),edition_id=COALESCE(distribution_shopify_variants.edition_id,excluded.edition_id),
       connection_id=COALESCE(distribution_shopify_variants.connection_id,excluded.connection_id),catalog_metadata=excluded.catalog_metadata''',
-      (install['tenant_id'],install['id'],v['id'],v.get('sku') or '',e['title']+' / '+v['title'],e['id'],connection,Jsonb(metadata)))
+      (install['tenant_id'],install['id'],v['id'],v.get('sku') or '',e['title']+' / '+v['title'],e['id'],connection,Jsonb(metadata),(v.get('inventoryItem') or {}).get('id')))
 
 
 def create_or_add(cur,install,selected):
@@ -206,13 +206,13 @@ def create_or_add(cur,install,selected):
             raise ValueError('Existing product needs a single Format option before adding editions')
         option=p['options'][0]
         if set(labels)&{v['name'] for v in option['optionValues']}:raise ValueError('Format already exists with a different ISBN')
-        query='''mutation($id:ID!,$variants:[ProductVariantsBulkInput!]!){productVariantsBulkCreate(productId:$id,variants:$variants){productVariants{id title barcode sku product{id title}} userErrors{message}}}'''
+        query='''mutation($id:ID!,$variants:[ProductVariantsBulkInput!]!){productVariantsBulkCreate(productId:$id,variants:$variants){productVariants{id title barcode sku inventoryItem{id} product{id title}} userErrors{message}}}'''
         payload={'id':product,'variants':[{'barcode':e['isbn'],'price':e['price'],'inventoryItem':{'sku':e['isbn'],'tracked':True},'optionValues':[{'optionName':option['name'],'name':e['format']}]} for e in missing]}
         result=sh.graphql(cur,install,query,payload)['productVariantsBulkCreate']
         created=result.get('productVariants') or []
     else:
         images=missing_images(images,[])
-        query='''mutation($input:ProductSetInput!){productSet(input:$input,synchronous:true){product{id variants(first:100){nodes{id title barcode sku product{id title}}}} userErrors{message}}}'''
+        query='''mutation($input:ProductSetInput!){productSet(input:$input,synchronous:true){product{id variants(first:100){nodes{id title barcode sku inventoryItem{id} product{id title}}}} userErrors{message}}}'''
         payload={'input':{'title':selected[0]['title'],'status':'DRAFT','productType':'Book',
           'descriptionHtml':'<p>'+html.escape(selected[0]['description']).replace('\n','<br/>')+'</p>',
           'productOptions':[{'name':'Format','position':1,'values':[{'name':e['format']} for e in missing]}],

@@ -234,6 +234,22 @@ class DistributorExecutionSQLTests(unittest.TestCase):
         installation=self.stock_store()
         return {'id':installation,'tenant_id':self.tenant,'user_id':self.user}
 
+    def test_published_variant_can_receive_test_stock_without_catalog_reimport(self):
+        from app.distribution import publishing
+        from app.distribution.simulated_inventory import set_test_stock
+        self.simulator(10);install=self.demo_install()
+        support.rpc('DELETE FROM distribution_shopify_variants WHERE installation_id=$1',[install['id']])
+        variant={'id':'gid://shopify/ProductVariant/99','title':'Paperback','sku':'9780000000002',
+                 'barcode':'9780000000002','inventoryItem':{'id':'gid://shopify/InventoryItem/99'},
+                 'product':{'id':'gid://shopify/Product/99','title':'Test Book'}}
+        with s.transaction() as cur:
+            publishing.save_match(cur,install,self.connection,{'id':self.ed,'title':'Test Book','isbn':'9780000000002'},variant)
+        with patch.object(sx.sh,'graphql',return_value={'shop':{'plan':{'partnerDevelopment':True}}}):
+            set_test_stock(install,self.connection,self.ed,20,5)
+        self.assertEqual(self.quantities()['sellable_quantity'],15)
+        rows=support.rpc('SELECT inventory_item_id FROM distribution_shopify_variants WHERE installation_id=$1',[install['id']])['rows']
+        self.assertEqual(rows,[{'inventory_item_id':'gid://shopify/InventoryItem/99'}])
+
     def test_set_stock_saves_and_queues_without_enabling_orders(self):
         from app.distribution.simulated_inventory import set_test_stock
         self.simulator(10);install=self.demo_install()

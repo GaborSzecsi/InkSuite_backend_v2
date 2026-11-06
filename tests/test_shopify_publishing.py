@@ -53,6 +53,13 @@ class CatalogMetadataTests(unittest.TestCase):
   self.assertEqual(result[1]['title'],'Penguin and Panda: Fun and Games')
   self.assertEqual(result[1]['issues'],[])
   self.assertIn("NULLIF(btrim(p.price_type_code),'')",cur.execute.call_args_list[1].args[0])
+ def test_digital_editions_are_not_offered_for_shopify_import(self):
+  cur=MagicMock()
+  base=dict(work_id='book',title='Book',isbn13='9780306406157',description='Description',cover_image_link='https://example.com/cover.jpg')
+  cur.fetchall.side_effect=[[dict(base,id='print',product_form='Paperback',onix_product_form='BC'),dict(base,id='digital',product_form='E-book',onix_product_form='DG')],[dict(edition_id='print',price_amount=13.99)],[]]
+  result=p.entries(cur,'tenant','USD')
+  self.assertEqual([e['id'] for e in result],['print'])
+
  def test_conflicting_prices_are_not_guessed(self):
   cur=MagicMock();cur.fetchall.side_effect=[[dict(id='hc',work_id='book',title='Book',isbn13='9780306406157',product_form='Hardcover',description='Description',cover_image_link='https://example.com/cover.jpg')],[dict(edition_id='hc',price_amount=13.99),dict(edition_id='hc',price_amount=12.99)],[]]
   result=p.entries(cur,'tenant','USD')
