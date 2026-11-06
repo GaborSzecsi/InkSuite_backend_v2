@@ -92,10 +92,23 @@ def catalog(cur,install):
     currency=info['shop']['currencyCode']
     rows=entries(cur,install['tenant_id'],currency)
     cur.execute('SELECT * FROM distribution_shopify_variants WHERE installation_id=%s AND tenant_id=%s AND active',(install['id'],install['tenant_id']))
-    variants=cur.fetchall();by_isbn=defaultdict(list)
-    for v in variants:
-        m=v['catalog_metadata'];isbn=sh.normalized_isbn(m.get('barcode')) or sh.normalized_isbn(v['sku'])
-        if isbn:by_isbn[isbn].append(v)
+    saved=cur.fetchall()
+    # A complete live read must succeed before retiring saved matches. Shopify
+    # deletions otherwise leave both catalog labels and stock validation stale.
+    live=live_variants(cur,install)
+    live_ids={v['id'] for v in live}
+    saved_by_id={v['variant_id']:v for v in saved}
+    for v in saved:
+        if v['variant_id'] not in live_ids:
+            cur.execute('UPDATE distribution_shopify_variants SET active=false WHERE tenant_id=%s AND installation_id=%s AND variant_id=%s',
+                        (install['tenant_id'],install['id'],v['variant_id']))
+    by_isbn=defaultdict(list)
+    for v in live:
+        mapped=saved_by_id.get(v['id'],{})
+        current={'sku':v.get('sku') or '', 'edition_id':mapped.get('edition_id'),
+                 'catalog_metadata':{'barcode':v.get('barcode') or ''}}
+        isbn=sh.normalized_isbn(v.get('barcode')) or sh.normalized_isbn(v.get('sku'))
+        if isbn:by_isbn[isbn].append(current)
     for e in rows:
         matches=by_isbn[e['isbn']]
         if len(matches)==1:

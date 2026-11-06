@@ -34,6 +34,25 @@ class CatalogPublishingTests(unittest.TestCase):
   with patch.object(p,'live_variants',return_value=[self.variant()]),patch.object(p,'sync_images'),patch.object(p.sh,'graphql',side_effect=responses) as call:
    p.create_or_add(None,{},[e]);payload=call.call_args.args[3]
    self.assertEqual(set(payload),{'id','variants'});self.assertEqual(payload['variants'][0]['optionValues'][0]['name'],'Paperback')
+ def test_deleted_shopify_variant_is_ready_to_reimport_and_match_is_retired(self):
+  cur=MagicMock();cur.fetchall.return_value=[{'variant_id':'deleted','edition_id':'edition'}]
+  item=dict(self.edition(),id='edition')
+  with patch.object(p,'entries',return_value=[item]),patch.object(p,'live_variants',return_value=[]),patch.object(p.sh,'graphql',return_value={'shop':{'currencyCode':'USD'},'currentAppInstallation':{'accessScopes':[]}}):
+   result=p.catalog(cur,{'id':'store','tenant_id':'tenant'})
+  self.assertEqual(result['editions'][0]['status'],'Ready to add')
+  self.assertIn('SET active=false',cur.execute.call_args.args[0])
+  self.assertEqual(cur.execute.call_args.args[1],('tenant','store','deleted'))
+ def test_failed_live_catalog_read_does_not_retire_saved_matches(self):
+  cur=MagicMock();cur.fetchall.return_value=[{'variant_id':'saved','edition_id':'edition'}]
+  with patch.object(p,'entries',return_value=[]),patch.object(p,'live_variants',side_effect=RuntimeError('Shopify unavailable')),patch.object(p.sh,'graphql',return_value={'shop':{'currencyCode':'USD'}}):
+   with self.assertRaises(RuntimeError):p.catalog(cur,{'id':'store','tenant_id':'tenant'})
+  self.assertFalse(any('UPDATE' in call.args[0] for call in cur.execute.call_args_list))
+ def test_live_variant_keeps_already_in_shopify_status(self):
+  cur=MagicMock();cur.fetchall.return_value=[]
+  with patch.object(p,'entries',return_value=[self.edition()]),patch.object(p,'live_variants',return_value=[self.variant()]),patch.object(p.sh,'graphql',return_value={'shop':{'currencyCode':'USD'},'currentAppInstallation':{'accessScopes':[]}}):
+   result=p.catalog(cur,{'id':'store','tenant_id':'tenant'})
+  self.assertEqual(result['editions'][0]['status'],'Already in Shopify')
+
  def test_private_or_signed_images_not_sent(self):
   for url in ('http://example.com/a.jpg','https://127.0.0.1/a','https://example.com/a?token=secret','https://user:pass@example.com/a'):
    self.assertIsNone(p.image_url(url))
