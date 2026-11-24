@@ -163,7 +163,7 @@ def shared_guidance():
         return {"guidance": ""}
     return {"guidance": storage_s3.get_bytes(key).decode()}
 
-DESKTOP_RELEASE = "0.1.1"
+DESKTOP_RELEASE = "0.1.2"
 INSTALLERS = {
     "windows": f"InkSuite-Desktop-{DESKTOP_RELEASE}-x64.exe",
     "macos": f"InkSuite-Desktop-{DESKTOP_RELEASE}-universal.dmg",
