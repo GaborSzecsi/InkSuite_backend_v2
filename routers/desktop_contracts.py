@@ -163,9 +163,10 @@ def shared_guidance():
         return {"guidance": ""}
     return {"guidance": storage_s3.get_bytes(key).decode()}
 
+DESKTOP_RELEASE = "0.1.1"
 INSTALLERS = {
-    "windows": "InkSuite-Desktop-0.1.0-x64.exe",
-    "macos": "InkSuite-Desktop-0.1.0-universal.dmg",
+    "windows": f"InkSuite-Desktop-{DESKTOP_RELEASE}-x64.exe",
+    "macos": f"InkSuite-Desktop-{DESKTOP_RELEASE}-universal.dmg",
 }
 
 
@@ -174,7 +175,7 @@ def download_installer(platform: str):
     filename = INSTALLERS.get(platform)
     if filename is None:
         raise HTTPException(404, "Installer not found.")
-    key = f"releases/inksuite-desktop/0.1.0/{filename}"
+    key = f"releases/inksuite-desktop/{DESKTOP_RELEASE}/{filename}"
     try:
         storage_s3.s3().head_object(Bucket=storage_s3._bucket(), Key=key)
     except ClientError as exc:
