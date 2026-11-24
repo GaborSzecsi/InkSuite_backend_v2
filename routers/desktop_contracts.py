@@ -61,7 +61,7 @@ def queue():
         if not missing(exc):
             raise
         body, etag = b'{"cases":[],"inbox":[],"playbook":"","defaultModel":"qwen3.5:2b"}', '"new"'
-    return Response(body, media_type="application/json", headers={"ETag": etag})
+    return Response(body, media_type="application/json", headers={"ETag": etag, "Cache-Control": "private, no-store, no-transform"})
 
 
 @router.put("/queue")
@@ -85,6 +85,9 @@ async def update_queue(request: Request, if_match: str = Header(), selected=Depe
         if any(data.get(field) != saved.get(field) for field in ("settings", "defaultModel")):
             raise HTTPException(403, "Only a publisher administrator can change the mailbox and integration settings.")
     data["updatedBy"] = selected.user_id
+    # Compression proxies can add W/ to the S3 ETag returned to the desktop.
+    # Recover the underlying queue version, preserving S3's conditional write.
+    if_match = if_match.removeprefix("W/")
     condition = {"IfNoneMatch": "*"} if if_match == '"new"' else {"IfMatch": if_match}
     try:
         result = storage_s3.s3().put_object(
@@ -94,9 +97,9 @@ async def update_queue(request: Request, if_match: str = Header(), selected=Depe
         )
     except ClientError as exc:
         if exc.response["Error"]["Code"] in {"412", "PreconditionFailed", "ConditionalRequestConflict"}:
-            raise HTTPException(409, "The queue changed on another device. Refresh and review the latest version.") from exc
+            raise HTTPException(409, "The contract queue changed while you were working. Refresh to load the latest version.") from exc
         raise
-    return Response(status_code=204, headers={"ETag": result["ETag"]})
+    return Response(status_code=204, headers={"ETag": result["ETag"], "Cache-Control": "private, no-store"})
 
 
 @router.put("/files/{digest}", dependencies=[Depends(contract_access)])
