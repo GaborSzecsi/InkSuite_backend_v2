@@ -6,6 +6,7 @@ import re
 
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 
 from app.auth.service import get_memberships_for_user
 from app.tenants.workspace import workspace
@@ -161,3 +162,27 @@ def shared_guidance():
     if not key:
         return {"guidance": ""}
     return {"guidance": storage_s3.get_bytes(key).decode()}
+
+INSTALLERS = {
+    "windows": "InkSuite-Desktop-0.1.0-x64.exe",
+    "macos": "InkSuite-Desktop-0.1.0-universal.dmg",
+}
+
+
+@router.get("/installers/{platform}", dependencies=[Depends(workspace)])
+def download_installer(platform: str):
+    filename = INSTALLERS.get(platform)
+    if filename is None:
+        raise HTTPException(404, "Installer not found.")
+    key = f"releases/inksuite-desktop/0.1.0/{filename}"
+    try:
+        storage_s3.s3().head_object(Bucket=storage_s3._bucket(), Key=key)
+    except ClientError as exc:
+        if not missing(exc):
+            raise
+        raise HTTPException(404, "Installer pending release.") from exc
+    return RedirectResponse(
+        storage_s3.presign_get(key, expires=900),
+        status_code=302,
+        headers={"Cache-Control": "private, no-store"},
+    )
