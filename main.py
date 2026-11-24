@@ -104,6 +104,7 @@ from routers import books, royalty, uploads, banking, ingest  # noqa: E402
 from routers import templates as contracts_templates  # noqa: E402
 from routers import deal_memo_drafts  # noqa: E402
 from routers.contract_docs import router as contract_docs_router, wopi_router  # noqa: E402
+from routers.desktop_contracts import router as desktop_contracts_router
 from routers.financials import router as financials_router  # noqa: E402
 from routers import financialuploads  # noqa: E402
 #from routers import uploads_read  # noqa: E402
@@ -150,6 +151,7 @@ app.include_router(banking_access_router, prefix="/api")
 app.include_router(contracts_templates.router, prefix="/api", tags=["Contracts"])
 app.include_router(deal_memo_drafts.router, prefix="/api", tags=["Contracts Drafts"])
 app.include_router(contract_docs_router, prefix="/api", tags=["Contracts Docs"])
+app.include_router(desktop_contracts_router, prefix="/api")
 # WOPI host for Collabora Online (draft contracts + templates)
 app.include_router(wopi_router, prefix="/api", tags=["WOPI"])
 app.include_router(contracts_templates.wopi_templates_router, prefix="/api", tags=["WOPI Templates"])
