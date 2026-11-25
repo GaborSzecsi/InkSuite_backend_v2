@@ -269,3 +269,6 @@ def configure_execution(connection_id:UUID,body:'ExecutionIn',ctx=Depends(admin)
             (body.enabled,body.orders_enabled,body.inventory_enabled,body.enabled,body.orders_enabled,'preview' if conn['adapter']=='simulator' else 'live',tenant,connection_id))
         s.event(cur,tenant,connection_id,actor,'EXECUTION_SETTINGS_CHANGED',details=body.model_dump())
         return public_connection(row)
+
+# Register shipment endpoints on the existing tenant-scoped router.
+from . import shipment_routes  # noqa: E402, F401
