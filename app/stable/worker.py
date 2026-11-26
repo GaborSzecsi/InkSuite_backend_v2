@@ -147,6 +147,11 @@ def scan(s3, config, *, inventory_only=False):
                     for report in reports:
                         result = register(cur,tenant,config['bucket'],item['Key'],version,report)
                         if result:
+                            if report.kind == 'inventory' and report.as_of:
+                                cur.execute("""UPDATE stable_imports SET status='superseded',payload='{}'
+                                    WHERE tenant_id=%s AND bucket=%s AND object_key=%s AND content_hash=%s
+                                      AND report_type='unknown' AND status='needs_review'""",
+                                    (tenant, config['bucket'], item['Key'], digest))
                             results.append(dict(key=item['Key'],**result))
             # Quarantine every conflicting revision before posting any of them.
             with connection.transaction():

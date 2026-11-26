@@ -58,6 +58,16 @@ def isbn(value):
     return value
 
 
+def non_book_inventory_gtin(value):
+    if isinstance(value, (int, float, Decimal)) and value == int(value):
+        value = int(value)
+    code = str(value).strip()
+    if not re.fullmatch(r'[0-9]{13}', code) or code.startswith(('978', '979')):
+        return None
+    checksum = sum(int(digit) * (1 if index % 2 == 0 else 3) for index, digit in enumerate(code))
+    return code if checksum % 10 == 0 else None
+
+
 @dataclass
 class Sale:
     isbn: str
@@ -99,6 +109,7 @@ class Report:
     controls: list[dict] = field(default_factory=list)
     currency_hint: str | None = None
     movements: list[dict] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def payload(self):
         # SQL staging contains only posting inputs. Full original cells, rates,
@@ -245,6 +256,10 @@ def parse_book(book, digest="", *, companion=None, inventory_date=None, reserve_
         seen = set()
         for n, row in rows:
             if not _data_row(row, "isbnitemcode"):
+                continue
+            non_book = non_book_inventory_gtin(row["isbnitemcode"])
+            if non_book:
+                report.warnings.append(f"Skipped non-book item code {non_book} at {sheet}:{n}")
                 continue
             code = isbn(row["isbnitemcode"])
             available = number(row.get("defaultuseablebalanceqty"))

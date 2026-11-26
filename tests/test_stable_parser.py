@@ -21,6 +21,25 @@ def source():
 
 
 class StableParserTests(unittest.TestCase):
+    def test_inventory_skips_valid_non_book_gtin_and_warns(self):
+        report = parse_book({'Daily': [
+            ['ISBN/Item Code', 'Default Useable Balance Qty', 'Ending Balance Qty'],
+            ['8005235229556', 100, 100],
+            ['9780306406157', 200, 210],
+        ]}, inventory_date='2026-11-25')
+        self.assertEqual(report.issues, [])
+        self.assertEqual(report.payload()['inventory'], [
+            {'isbn': '9780306406157', 'available': 200, 'ending': 210},
+        ])
+        self.assertEqual(report.warnings, ['Skipped non-book item code 8005235229556 at Daily:2'])
+
+    def test_inventory_rejects_invalid_book_isbn(self):
+        with self.assertRaises(ReviewRequired):
+            parse_book({'Daily': [
+                ['ISBN/Item Code', 'Default Useable Balance Qty', 'Ending Balance Qty'],
+                ['9780306406158', 200, 210],
+            ]}, inventory_date='2026-11-25')
+
     def test_source_precision_and_once_per_isbn_costs(self):
         r = parse_book(source())
         self.assertEqual(r.issues, [])

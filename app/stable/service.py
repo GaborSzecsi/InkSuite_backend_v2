@@ -109,7 +109,7 @@ def register(cur, tenant, bucket, key, version, report):
         WHERE stable_imports.status='needs_review' AND (stable_imports.parser_version<>excluded.parser_version OR excluded.report_type IN ('inventory','statement'))
         RETURNING id,status""",
         (tenant,bucket,key,version,report.digest,VERSION,report.kind,report.territory,report.period,report.as_of,status,
-         Jsonb(report.issues),Jsonb(json_value(payload if status=='validated' else {}))))
+         Jsonb(report.issues + report.warnings),Jsonb(json_value(payload if status=='validated' else {}))))
     return cur.fetchone()
 
 
