@@ -33,7 +33,7 @@ def report_date(key):
     return None
 
 
-def scan(s3, config):
+def scan(s3, config, *, inventory_only=False):
     tenant = config['tenant_id']
     now = datetime.now(timezone.utc)
     objects = []
@@ -45,6 +45,8 @@ def scan(s3, config):
             if not name.endswith('.xlsx') or item['Size'] == 0:
                 continue
             if name.startswith('~$') or name.endswith(('.tmp.xlsx','.part.xlsx')):
+                continue
+            if inventory_only and not re.match(r'\d{6}-Marble Daily Inventory\b', name, re.I):
                 continue
             if item['LastModified'] > now-timedelta(minutes=5):
                 continue
@@ -65,7 +67,7 @@ def scan(s3, config):
         if len(data) > 32*1024*1024:
             raise ReviewRequired('Source workbook exceeds 32 MB')
         return data,response.get('VersionId')
-    for item in objects:
+    for item in (() if inventory_only else objects):
         name = Path(item['Key']).name.lower()
         if 'draft' not in name:
             try:
@@ -138,6 +140,8 @@ def scan(s3, config):
                 except (ReviewRequired, ValueError, KeyError, BadZipFile, ParseError, OSError) as exc:
                     reports = [Report(digest,'unknown',issues=[str(exc)])]
                 with connection.transaction():
+                    if inventory_only:
+                        reports = [r for r in reports if r.kind in ('inventory', 'unknown')]
                     if any(r.kind=='statement' for r in reports):
                         cur.execute("UPDATE stable_imports SET status='superseded',payload='{}' WHERE tenant_id=%s AND content_hash=%s AND report_type='unknown' AND status='needs_review'",(tenant,digest))
                     for report in reports:
@@ -146,15 +150,17 @@ def scan(s3, config):
                             results.append(dict(key=item['Key'],**result))
             # Quarantine every conflicting revision before posting any of them.
             with connection.transaction():
-                cur.execute("""UPDATE stable_imports i SET status='needs_review',payload='{}',issues=i.issues || '["Multiple statement revisions require review"]'::jsonb
-                  WHERE i.tenant_id=%s AND i.report_type='statement' AND i.status='validated'
-                  AND EXISTS(SELECT 1 FROM stable_imports j WHERE j.tenant_id=i.tenant_id AND j.period_code=i.period_code
-                    AND j.territory=i.territory AND j.id<>i.id AND j.status NOT IN ('failed','superseded'))""", (tenant,))
+                if not inventory_only:
+                    cur.execute("""UPDATE stable_imports i SET status='needs_review',payload='{}',issues=i.issues || '["Multiple statement revisions require review"]'::jsonb
+                      WHERE i.tenant_id=%s AND i.report_type='statement' AND i.status='validated'
+                      AND EXISTS(SELECT 1 FROM stable_imports j WHERE j.tenant_id=i.tenant_id AND j.period_code=i.period_code
+                        AND j.territory=i.territory AND j.id<>i.id AND j.status NOT IN ('failed','superseded'))""", (tenant,))
                 cur.execute("""UPDATE stable_imports i SET status='needs_review',payload='{}',issues=i.issues || '["Conflicting inventory sources for the same report date"]'::jsonb
                   WHERE i.tenant_id=%s AND i.report_type='inventory' AND i.status='validated'
                   AND EXISTS(SELECT 1 FROM stable_imports j WHERE j.tenant_id=i.tenant_id AND j.report_type='inventory'
                     AND j.as_of=i.as_of AND j.content_hash<>i.content_hash AND j.status NOT IN ('failed','superseded'))""", (tenant,))
-            cur.execute("SELECT id FROM stable_imports WHERE tenant_id=%s AND status='validated' ORDER BY as_of NULLS FIRST,period_code,created_at", (tenant,))
+            cur.execute("""SELECT id FROM stable_imports WHERE tenant_id=%s AND status='validated'
+                AND (NOT %s OR report_type='inventory') ORDER BY as_of NULLS FIRST,period_code,created_at""", (tenant, inventory_only))
             pending = list(cur.fetchall())
             for item in pending:
                 try:
@@ -183,6 +189,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--local',type=Path,help='Parse a local workbook without SQL or S3 writes')
     parser.add_argument('--companion',type=Path)
+    parser.add_argument('--inventory-only', action='store_true', help='Import daily inventory without posting financial statements')
+    parser.add_argument('--tenant-slug', help='Limit the S3 scan to one configured publisher')
     args = parser.parse_args()
     if args.local:
         data = args.local.read_bytes()
@@ -191,12 +199,27 @@ def main():
                   inventory_date=report_date(args.local.name))
         print(json.dumps(json_value(dict(payload=report.payload(),totals=report.totals(report.territory))),indent=2))
         return 2 if report.issues else 0
+    logging.basicConfig(level=logging.INFO)
     s3 = boto3.client('s3',region_name='us-east-2',config=Config(connect_timeout=5,read_timeout=30,retries={'mode':'standard','total_max_attempts':3}))
     with db_conn() as connection, connection.cursor(row_factory=dict_row) as cur:
-        cur.execute('SELECT * FROM stable_sources ORDER BY tenant_id')
+        cur.execute("""SELECT s.* FROM stable_sources s JOIN tenants t ON t.id=s.tenant_id
+            WHERE (%s::text IS NULL OR t.slug=%s) ORDER BY s.tenant_id""",
+            (args.tenant_slug, args.tenant_slug))
         sources = list(cur.fetchall())
+    if args.tenant_slug and not sources:
+        parser.error('No Stable source is configured for this publisher.')
+    if args.inventory_only and args.tenant_slug:
+        source = sources[0]
+        if not source['enabled'] or not source['inventory_connection_id'] or not source['usable_inventory_confirmed']:
+            parser.error('The selected publisher needs an enabled Stable source, verified usable stock, and an inventory connection.')
     for source in sources:
-        log.info('Stable ingestion: %s',json.dumps(json_value(scan(s3,source))))
+        log.info('Stable ingestion: %s', json.dumps(json_value(scan(s3, source, inventory_only=args.inventory_only))))
+        if args.inventory_only:
+            with db_conn() as connection:
+                latest = connection.execute("""SELECT max(as_of) FILTER (WHERE status='posted'),
+                    max(as_of) FILTER (WHERE status='needs_review')
+                    FROM stable_imports WHERE tenant_id=%s AND report_type='inventory'""", (source['tenant_id'],)).fetchone()
+            log.info('Latest posted inventory date: %s; latest inventory date needing review: %s', *latest)
     return 0
 
 
