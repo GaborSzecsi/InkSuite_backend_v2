@@ -29,15 +29,15 @@ def search_term(reference):
     return 'name:"' + escaped + '"'
 
 
-def annotate_preview(cur, tenant, connection, rows):
+def annotate_preview(cur, tenant, installation_id, rows):
     candidates = [row for row in rows if row['status'] == 'parsed']
     if not candidates:
         return
     install = db.one(cur, '''SELECT * FROM distribution_shopify_installations
         WHERE tenant_id=%s AND id=%s AND active FOR UPDATE''',
-        (tenant, connection['shopify_installation_id']))
+        (tenant, installation_id))
     if not install or not install['location_id']:
-        raise HTTPException(409, 'Link the distributor to a Shopify store and configure its fulfillment location.')
+        raise HTTPException(409, 'Select a Shopify store in Shipment Confirmation and configure its fulfillment location.')
     references = sorted({row['fields']['order_reference'] for row in candidates})
     if len(references) > 25:
         raise HTTPException(422, 'Shopify matching supports up to 25 different order names per preview. Use a smaller sample.')

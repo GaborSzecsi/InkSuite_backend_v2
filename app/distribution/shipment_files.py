@@ -7,6 +7,7 @@ import re
 import stat
 from datetime import date, timedelta
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import Field, model_validator
 
@@ -42,6 +43,7 @@ class ShipmentFeed(StrictModel):
     filters: list[SourceFilter] = Field(default_factory=list, max_length=20)
     match_all: bool = True
     default_carrier: str = Field(default='', max_length=100)
+    shopify_installation_id: UUID | None = None
     order_identifier: Literal['shopify_name', 'shopify_id', 'marketplace_reference'] = 'shopify_name'
 
     @model_validator(mode='after')

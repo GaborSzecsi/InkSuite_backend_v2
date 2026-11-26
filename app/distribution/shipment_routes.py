@@ -59,6 +59,9 @@ def save_feed(connection_id: UUID, body: ShipmentFeed, ctx=Depends(admin)):
     configuration = body.model_dump(mode='json')
     with db.transaction() as cur:
         _, previous = load_feed(cur, tenant, connection_id, required=False, lock=True)
+        if body.shopify_installation_id and not db.one(cur, """SELECT id FROM distribution_shopify_installations
+            WHERE tenant_id=%s AND id=%s AND active""", (tenant, body.shopify_installation_id)):
+            raise HTTPException(422, 'Select an active Shopify store linked to this publisher.')
         identity = ('host', 'port', 'host_key')
         changed_server = previous and any(previous['configuration'][key] != configuration[key] for key in identity)
         feed = db.one(cur, '''INSERT INTO distribution_shipment_feeds AS feed
@@ -153,7 +156,7 @@ def local_matches(cur, tenant, connection, config, rows):
         source, account, field = 'MARKETPLACE', None, 'reference'
     else:
         install = db.one(cur, '''SELECT shop, location_id FROM distribution_shopify_installations
-            WHERE tenant_id=%s AND id=%s AND active''', (tenant, connection['shopify_installation_id']))
+            WHERE tenant_id=%s AND id=%s AND active''', (tenant, config.shopify_installation_id or connection['shopify_installation_id']))
         source = 'SHOPIFY'
         account = install['shop'] if install else None
         field = 'external_order_id' if config.order_identifier == 'shopify_id' else 'reference'
@@ -216,7 +219,8 @@ def preview_feed(connection_id: UUID, body: PreviewIn, ctx=Depends(admin)):
             if config.order_identifier != 'shopify_name':
                 raise HTTPException(422, 'Shopify lookup requires the Shopify order name identifier.')
             from .shipment_shopify import annotate_preview
-            annotate_preview(cur, tenant, connection, result['rows'])
+            installation_id = config.shopify_installation_id or connection['shopify_installation_id']
+            annotate_preview(cur, tenant, installation_id, result['rows'])
         else:
             local_matches(cur, tenant, connection, config, result['rows'])
     return result
@@ -228,12 +232,13 @@ def shopify_permissions(connection_id: UUID, ctx=Depends(admin)):
 
     tenant, _ = ids(ctx)
     with db.transaction() as cur:
-        connection = db.connection(cur, tenant, connection_id)
+        connection, feed = load_feed(cur, tenant, connection_id, required=False)
+        selected = feed['configuration'].get('shopify_installation_id') if feed else None
         install = db.one(cur, """SELECT * FROM distribution_shopify_installations
             WHERE tenant_id=%s AND id=%s AND active FOR UPDATE""",
-            (tenant, connection['shopify_installation_id']))
+            (tenant, selected or connection['shopify_installation_id']))
         if not install:
-            raise HTTPException(409, 'Link the distributor to an active Shopify store first.')
+            raise HTTPException(409, 'Select an active Shopify store in Shipment Confirmation and save the configuration first.')
         result = shopify.graphql(cur, install, '''query ShipmentAppPermissions {
             currentAppInstallation { accessScopes { handle } }
         }''')

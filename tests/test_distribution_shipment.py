@@ -103,7 +103,69 @@ def test_shopify_match_requires_exact_name_and_distributor_location(monkeypatch)
     ]}})
     monkeypatch.setattr(shipment_shopify.shopify, 'graphql', query)
     rows = preview(b'#991\t\t\t\t\tA\n#992\t\t\t\t\tB', settings())['rows']
-    shipment_shopify.annotate_preview(Mock(), tenant, {'shopify_installation_id': installation_id}, rows)
+    shipment_shopify.annotate_preview(Mock(), tenant, installation_id, rows)
     assert [row['match_status'] for row in rows] == ['matched_in_shopify', 'unmatched_in_shopify']
     assert rows[0]['configured_location_id'] == 'L'
     assert query.call_args.args[-1]['search'] == 'name:"991" OR name:"992"'
+
+
+def test_shipment_store_selection_preserves_sftp_credentials(monkeypatch):
+    from contextlib import nullcontext
+    from app.distribution import shipment_routes
+
+    tenant, actor, connection_id, installation_id = (uuid4() for _ in range(4))
+    previous = {'configuration': settings().model_dump(mode='json')}
+    cur = Mock()
+    monkeypatch.setattr(shipment_routes.db, 'transaction', lambda: nullcontext(cur))
+    monkeypatch.setattr(shipment_routes, 'load_feed', lambda *args, **kwargs: ({}, previous))
+    monkeypatch.setattr(shipment_routes.db, 'event', Mock())
+    queries = Mock(side_effect=[
+        {'id': installation_id},
+        {'configuration': {'shopify_installation_id': str(installation_id)}, 'credentials_saved': True},
+    ])
+    monkeypatch.setattr(shipment_routes.db, 'one', queries)
+    body = settings(shopify_installation_id=installation_id)
+    ctx = {'tenant': {'id': tenant}, 'user': {'id': actor}}
+    result = shipment_routes.save_feed(connection_id, body, ctx)
+    validation = queries.call_args_list[0].args
+    assert 'tenant_id=%s AND id=%s AND active' in validation[1]
+    assert validation[2] == (tenant, installation_id)
+    assert queries.call_args_list[1].args[2][-2:] == (False, False)
+    assert result['credentials_saved'] is True
+
+
+def test_shipment_store_selection_rejects_unavailable_store(monkeypatch):
+    from contextlib import nullcontext
+    from app.distribution import shipment_routes
+
+    monkeypatch.setattr(shipment_routes.db, 'transaction', lambda: nullcontext(Mock()))
+    monkeypatch.setattr(shipment_routes, 'load_feed', lambda *args, **kwargs: ({}, None))
+    query = Mock(return_value=None)
+    monkeypatch.setattr(shipment_routes.db, 'one', query)
+    ctx = {'tenant': {'id': uuid4()}, 'user': {'id': uuid4()}}
+    with pytest.raises(HTTPException) as result:
+        shipment_routes.save_feed(uuid4(), settings(shopify_installation_id=uuid4()), ctx)
+    assert result.value.status_code == 422
+    assert query.call_count == 1
+
+
+def test_permissions_check_uses_saved_shipment_store(monkeypatch):
+    from contextlib import nullcontext
+    from app.distribution import shipment_routes, shopify
+
+    tenant, installation_id = uuid4(), uuid4()
+    cur = Mock()
+    install = {'shop': 'example.myshopify.com'}
+    monkeypatch.setattr(shipment_routes.db, 'transaction', lambda: nullcontext(cur))
+    monkeypatch.setattr(shipment_routes, 'load_feed', lambda *args, **kwargs: (
+        {'shopify_installation_id': None},
+        {'configuration': {'shopify_installation_id': str(installation_id)}},
+    ))
+    find = Mock(return_value=install)
+    monkeypatch.setattr(shipment_routes.db, 'one', find)
+    monkeypatch.setattr(shopify, 'graphql', Mock(return_value={
+        'currentAppInstallation': {'accessScopes': [{'handle': 'write_merchant_managed_fulfillment_orders'}]},
+    }))
+    result = shipment_routes.shopify_permissions(uuid4(), {'tenant': {'id': tenant}, 'user': {'id': uuid4()}})
+    assert find.call_args.args[2] == (tenant, str(installation_id))
+    assert result['merchant_managed_write_granted'] is True

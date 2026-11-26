@@ -1,6 +1,6 @@
 # Shipment confirmation preview
 
-The Shipment Confirmation tab in Financials → Inventory lets a publisher administrator configure and test a distributor's inbound feed. It uses the existing distributor connection and Shopify installation. The shipment password goes to the existing distribution Secrets Manager namespace under a separate credential ID. Changing the host, port or verified key requires the administrator to re-enter shipment credentials. A superseded secret remains in Secrets Manager for operator cleanup. Shipment previews are synchronous and are not scheduled.
+The Shipment Confirmation tab in Financials → Inventory lets a publisher administrator configure and test a distributor's inbound feed. It uses the existing distributor connection. A publisher administrator can select an active Shopify store for this shipment feed without changing the distributor's inventory or outbound order setup. The shipment password goes to the existing distribution Secrets Manager namespace under a separate credential ID. Changing the host, port or verified key requires the administrator to re-enter shipment credentials. A superseded secret remains in Secrets Manager for operator cleanup. Shipment previews are synchronous and are not scheduled.
 
 ## Installation
 
@@ -32,7 +32,7 @@ WHERE conrelid = 'public.distribution_shipment_feeds'::regclass;
 4. Enter `SG_shipment_confirmation_{{MM}}{{DD}}{{YYYY}}-{{*}}.txt` as the pattern. The preview expands date tokens in UTC and includes today in its lookback.
 5. Select Tab, UTF-8, and zero-based positions. Start with no header, order reference in column 0, tracking number in column 5, and UPS as the default carrier. Add a column 0 **Starts with** filter for **#99**. These are provisional settings. Verify them with a redacted shipment sample and leave unknown item and quantity mappings blank.
 6. Test the connection, list files and preview a remote file or upload a local sample. The test reports directory and file readability separately.
-7. With a sample of up to 25 distinct Shopify order names, enable Shopify lookup to check exact names and distributor location assignments. Use **Check Shopify fulfillment permission** to read the linked installation's merchant-managed fulfillment write grant. Confirm separately that the distributor location is merchant-managed and the Shopify user has permission to fulfill and ship orders.
+7. Select the Marble Press Shopify store under Field mappings and save the shipment configuration. With a sample of up to 25 distinct Shopify order names, enable Shopify lookup to check exact names and distributor location assignments. Use **Check Shopify fulfillment permission** to read the linked installation's merchant-managed fulfillment write grant. Confirm separately that the distributor location is merchant-managed and the Shopify user has permission to fulfill and ship orders.
 
 The preview identifies duplicate rows within a file and shows local order matches or Shopify lookup results. It does not establish that all items for an order shipped. Before scheduling live updates, confirm file format, item-level shipment semantics, location ownership and permissions. A live cutover also needs persistent file and shipment history, reconciliation of uncertain Shopify results, and a process that prevents EZ Fulfill and InkSuite from handling the same shipment.
 
