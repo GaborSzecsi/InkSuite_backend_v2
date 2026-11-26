@@ -46,11 +46,11 @@ class HachetteExporteoAdapter:
         if not method: raise ConfigurationRequired('Map this shipping method to a verified distributor service code.')
         recipient=order['recipient']
         if not recipient.get('address_1'): raise ConfigurationRequired('A delivery address is required.')
-        if recipient.get('company') or recipient.get('phone'):
-            raise ConfigurationRequired('Company/phone field placement needs distributor confirmation; this export template has no mapping.')
+        if recipient.get('company'):
+            raise ConfigurationRequired('Company field placement needs distributor confirmation; this export template has no mapping.')
         ref=order['reference']
         header=['HDR',ref,ref,recipient['name'],recipient['address_1'],recipient.get('address_2',''),'','',recipient['city'],recipient.get('state_region',''),recipient['postal_code'],recipient['country'],'',recipient.get('email',''),method,'','','','','',order.get('delivery_instructions','')]
-        records=[header]+[['DTL',ref,index,item['isbn'],item['quantity']] for index,item in enumerate(items,1)]
+        records=[header]+[['DTL',ref,index,(order.get('export_skus') or {}).get(str(item.get('edition_id')),item['isbn']),item['quantity']] for index,item in enumerate(items,1)]
         return ('\r\n'.join('\t'.join(field(v) for v in row) for row in records)+'\r\n').encode('utf-8')
     def test_connection(self):
         from .transports import sftp
@@ -67,7 +67,7 @@ class HachetteExporteoAdapter:
         if config.get('transport')!='sftp' or not self.credentials:
             raise ConfigurationRequired('Configure SFTP and credentials before forwarding orders.')
         key=str(UUID(str(order['id'])))
-        content=self.render_order({**order,'reference':key},items)
+        content=self.render_order(order,items)
         with sftp(config,self.credentials) as client:
             sftp_upload(client,config['directory'],'inksuite-'+key+'.txt',content)
         return Receipt(order_key=key,distributor_order_id=key,status='SUBMITTED')

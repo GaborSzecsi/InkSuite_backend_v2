@@ -246,6 +246,7 @@ def process_inbox_once():
                     return True
                 if order['displayFinancialStatus']!='PAID': raise ValueError('SOURCE_ORDER_NOT_PAID')
                 if not install['location_id']: raise ValueError('SELECT_SHOPIFY_FULFILLMENT_LOCATION')
+                from .order_routing import outbound_connection
                 groups={};pending=False
                 fulfillment=order['fulfillmentOrders']
                 if fulfillment['pageInfo']['hasNextPage']: raise ValueError('ORDER_REQUIRES_PAGINATION_REVIEW')
@@ -259,7 +260,7 @@ def process_inbox_once():
                         if not variant: pending=True;continue
                         mapping=s.one(cur,"INSERT INTO distribution_shopify_variants(tenant_id,installation_id,variant_id,sku,title) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(tenant_id,installation_id,variant_id) DO UPDATE SET sku=excluded.sku,title=excluded.title RETURNING *",(install['tenant_id'],install['id'],variant,line.get('sku') or '',line['title']))
                         if not mapping['edition_id'] or not mapping['connection_id']: pending=True;continue
-                        groups.setdefault(str(mapping['connection_id']),[]).append({'edition_id':str(mapping['edition_id']),'quantity':item['remainingQuantity']})
+                        groups.setdefault(str(outbound_connection(install,mapping['connection_id'])),[]).append({'edition_id':str(mapping['edition_id']),'quantity':item['remainingQuantity']})
                 if pending: raise ValueError('UNMATCHED_PRODUCTS')
                 if not groups: raise ValueError('NO_ELIGIBLE_LINES_AT_SELECTED_LOCATION')
                 cur.execute("SELECT connection_id FROM distribution_orders WHERE tenant_id=%s AND source='SHOPIFY' AND source_account=%s AND external_order_id=%s",(install['tenant_id'],install['shop'],order['id']))
@@ -290,7 +291,7 @@ def process_inbox_once():
 def stores(ctx=Depends(access)):
     tenant,_=ids(ctx)
     with s.transaction() as cur:
-        cur.execute('SELECT id,shop,active,location_id FROM distribution_shopify_installations WHERE tenant_id=%s ORDER BY shop',(tenant,))
+        cur.execute("SELECT id,shop,active,location_id,to_jsonb(i)->>'outbound_inventory_connection_id' AS inventory_connection_id,to_jsonb(i)->>'outbound_order_connection_id' AS outbound_connection_id FROM distribution_shopify_installations i WHERE tenant_id=%s ORDER BY shop",(tenant,))
         return {'items':cur.fetchall()}
 
 class LocationIn(BaseModel): location_id:str

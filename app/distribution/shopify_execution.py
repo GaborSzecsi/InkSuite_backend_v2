@@ -4,13 +4,14 @@ from uuid import uuid4
 from . import service as s, shopify as sh, privacy
 from .adapters import ConfigurationRequired
 from .models import ShippingAddress
+from .order_routing import outbound_connection
 
 # The preview/webhook query remains contact-free. This query runs only at transmission.
 DELIVERY_QUERY=sh.ORDER_QUERY.replace(
     'id createdAt displayFinancialStatus cancelledAt',
-    'id createdAt displayFinancialStatus cancelledAt shippingAddress { name company address1 address2 city provinceCode zip countryCodeV2 phone }')
+    'id name createdAt displayFinancialStatus cancelledAt shippingAddress { name company address1 address2 city provinceCode zip countryCodeV2 phone }')
 
-def mapped_quantities(cur,install,source,connection_id):
+def mapped_quantities(cur,install,source,connection_id,*,outbound=False,sku_by_edition=None):
     fulfillment=source['fulfillmentOrders']
     if fulfillment['pageInfo']['hasNextPage']:
         raise ConfigurationRequired('Fulfillment pagination requires review.')
@@ -21,9 +22,19 @@ def mapped_quantities(cur,install,source,connection_id):
             raise ConfigurationRequired('Fulfillment pagination requires review.')
         for line in group['lineItems']['nodes']:
             variant=(line['lineItem'].get('variant') or {}).get('id')
-            mapping=s.one(cur,"SELECT edition_id FROM distribution_shopify_variants WHERE tenant_id=%s AND installation_id=%s AND variant_id=%s AND connection_id=%s AND active",(install['tenant_id'],install['id'],variant,connection_id))
-            if mapping and mapping['edition_id'] and line['remainingQuantity']>0:
-                quantities[str(mapping['edition_id'])]+=line['remainingQuantity']
+            mapping=s.one(cur,"SELECT edition_id,connection_id FROM distribution_shopify_variants WHERE tenant_id=%s AND installation_id=%s AND variant_id=%s AND active",(install['tenant_id'],install['id'],variant))
+            if not mapping or not mapping['edition_id'] or line['remainingQuantity'] <= 0:
+                continue
+            target = outbound_connection(install, mapping['connection_id']) if outbound else mapping['connection_id']
+            if str(target) != str(connection_id):
+                continue
+            edition = str(mapping['edition_id'])
+            quantities[edition] += line['remainingQuantity']
+            if sku_by_edition is not None:
+                sku = line['lineItem'].get('sku') or ''
+                if not sku or sku_by_edition.get(edition, sku) != sku:
+                    raise ConfigurationRequired('A Shopify edition has a missing or ambiguous outbound SKU.')
+                sku_by_edition[edition] = sku
     return quantities
 
 def delivery_order(cur,conn,order,items):
@@ -40,7 +51,8 @@ def delivery_order(cur,conn,order,items):
     if not source or source['cancelledAt'] or source['displayFinancialStatus']!='PAID':
         raise ConfigurationRequired('Order is no longer eligible for fulfillment.')
     expected=Counter({str(i['edition_id']):i['quantity'] for i in items})
-    if mapped_quantities(cur,install,source,conn['id'])!=expected:
+    skus = {} if conn['adapter']=='hachette_exporteo' else None
+    if mapped_quantities(cur,install,source,conn['id'],outbound=True,sku_by_edition=skus)!=expected:
         raise ConfigurationRequired('Order quantities or fulfillment location changed.')
     lines=source['shippingLines']
     if lines['pageInfo']['hasNextPage'] or len(lines['nodes'])!=1 or lines['nodes'][0]['title']!=order['shipping_method']:
@@ -54,7 +66,9 @@ def delivery_order(cur,conn,order,items):
             phone=address.get('phone') or '').model_dump()
     except Exception:
         raise ConfigurationRequired('A valid delivery address is required.') from None
-    return {**order,'recipient':recipient}
+    if conn['adapter']=='hachette_exporteo' and not source.get('name'):
+        raise ConfigurationRequired('The original Shopify order name is missing.')
+    return {**order,'recipient':recipient,'reference':source.get('name') or order['reference'],'export_skus':skus}
 
 LEVEL_QUERY='''query($item:ID!,$location:ID!){inventoryItem(id:$item){tracked inventoryLevel(locationId:$location){quantities(names:["on_hand","committed"]){name quantity}}}}'''
 SET_QUERY='''mutation($input:InventorySetQuantitiesInput!,$key:String!){

@@ -1,6 +1,6 @@
 # Shipment confirmation preview
 
-The Shipment Confirmation tab in Financials → Inventory lets a publisher administrator configure and test a distributor's inbound feed. It uses the existing distributor connection. A publisher administrator can select an active Shopify store for this shipment feed without changing the distributor's inventory or outbound order setup. The shipment password goes to the existing distribution Secrets Manager namespace under a separate credential ID. Changing the host, port or verified key requires the administrator to re-enter shipment credentials. A superseded secret remains in Secrets Manager for operator cleanup. Shipment previews are synchronous and are not scheduled.
+The Shipment Confirmation tab in Financials → Inventory lets a publisher administrator configure and test a distributor's inbound feed. It uses the existing distributor connection. A publisher administrator can select an active Shopify store for this shipment feed without changing the distributor's inventory or outbound order setup. The shipment password goes to the existing distribution Secrets Manager namespace under a separate credential ID. Changing the host, port or verified key requires the administrator to re-enter shipment credentials. A superseded secret remains in Secrets Manager for operator cleanup. Shipment previews are synchronous. The distribution worker checks enabled shipment feeds on their saved interval.
 
 ## Installation
 
@@ -34,7 +34,7 @@ WHERE conrelid = 'public.distribution_shipment_feeds'::regclass;
 6. Test the connection, list files and preview a remote file or upload a local sample. The test reports directory and file readability separately.
 7. Select the Marble Press Shopify store under Field mappings and save the shipment configuration. With a sample of up to 25 distinct Shopify order names, enable Shopify lookup to check exact names and distributor location assignments. Use **Check Shopify fulfillment permission** to read the linked installation's merchant-managed fulfillment write grant. Confirm separately that the distributor location is merchant-managed and the Shopify user has permission to fulfill and ship orders.
 
-The preview identifies duplicate rows within a file and shows local order matches or Shopify lookup results. It does not establish that all items for an order shipped. Before scheduling live updates, confirm file format, item-level shipment semantics, location ownership and permissions. A live cutover also needs persistent file and shipment history, reconciliation of uncertain Shopify results, and a process that prevents EZ Fulfill and InkSuite from handling the same shipment.
+The preview identifies duplicate rows within a file and shows local order matches or Shopify lookup results. It does not establish that all items for an order shipped. Before enabling automatic fulfillment, confirm shipment completeness, location ownership and permissions. Uncertain submissions require Shopify review.
 
 ## API
 
@@ -48,3 +48,15 @@ The existing publisher-scoped Distribution router exposes these paths under `con
 | GET | `/files` | Discover matching files |
 | POST | `/preview` | Preview one remote file or a base64-encoded local sample |
 | GET | `/shopify-permissions` | Read the installed Shopify app's merchant-managed fulfillment write grant |
+
+## Automated fulfillment and paid order test
+
+Apply migrations 049, 050, and 051 in order, skipping any already applied. Deploy both repositories, restart the API, and restart the existing distribution worker.
+
+1. In Shopify Admin, use the HBG Indiana inventory location. In the embedded InkSuite app, select Stable daily inventory. Confirm a fresh database inventory import, valid variant mappings to Stable daily inventory, and enabled Shopify stock updates. Verify the chosen book shows positive Available stock before placing a paid order.
+2. In Financials → Inventory → Distributor → Shopify order routing, select Stable daily inventory as the inventory source and the actual credentialed Hachette connection as the outbound destination. Test its separate SFTP connection and enable order forwarding before creating the test order.
+3. Place a small paid order at the Shopify storefront. In InkSuite, find its processing result. SUBMITTED means InkSuite finished uploading the export. Check for the same Shopify order number in the remote HDR and DTL rows. The file uses the existing inksuite-<order-id>.txt naming convention and may move from queued to sent after pickup.
+4. In Shipment Confirmation, keep the Marble Press Shopify store selected and the #99 source filter saved. Use the separate inbound shipment credentials. Once the feed is confirmed to describe complete warehouse shipments, enable automatic fulfillment for that feed. The first check is due immediately and the default interval is 15 minutes. No per-order confirmation is needed.
+5. Wait for Stable to publish a matching file. Refresh shipment activity and check tracking on the Shopify order. Ambiguous data and uncertain Shopify results are held for review.
+
+Customer notifications are disabled for automated posting. Existing tracking updates and partial shipments require separate handling. No automation is enabled by applying migration 050.

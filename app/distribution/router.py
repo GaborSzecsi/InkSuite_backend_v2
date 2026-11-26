@@ -86,8 +86,19 @@ def sync(connection_id:UUID,ctx=Depends(access)):
         conn=s.connection(cur,tenant,connection_id)
         if not adapter_for(conn).capabilities.inventory:
             raise HTTPException(409,'The distributor inventory specification is required before synchronization can be enabled.')
-        result=s.enqueue(cur,tenant,connection_id,'INVENTORY')
-        s.event(cur,tenant,connection_id,actor,'INVENTORY_SYNC_REQUESTED')
+        if conn['adapter']=='stable_s3_inventory':
+            from datetime import datetime, timedelta, timezone
+            from .execution import active
+            if not active(conn,'inventory_enabled'):
+                raise HTTPException(409,'Enable the Stable inventory connection before publishing stock.')
+            snapshot=conn.get('inventory_as_of')
+            if not snapshot or snapshot <= datetime.now(timezone.utc)-timedelta(hours=24):
+                raise HTTPException(409,'Stable inventory has no fresh accepted snapshot. Check the daily inventory import before publishing.')
+            result=s.enqueue(cur,tenant,connection_id,'PUBLISH')
+            s.event(cur,tenant,connection_id,actor,'INVENTORY_PUBLICATION_REQUESTED')
+        else:
+            result=s.enqueue(cur,tenant,connection_id,'INVENTORY')
+            s.event(cur,tenant,connection_id,actor,'INVENTORY_SYNC_REQUESTED')
         return result
 
 
@@ -272,3 +283,5 @@ def configure_execution(connection_id:UUID,body:'ExecutionIn',ctx=Depends(admin)
 
 # Register shipment endpoints on the existing tenant-scoped router.
 from . import shipment_routes  # noqa: E402, F401
+
+from . import order_routing  # noqa: E402, F401

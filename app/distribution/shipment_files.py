@@ -110,7 +110,7 @@ def matches(rule, value):
     }[rule.operator]
 
 
-def preview(content, config):
+def preview(content, config, *, limit=MAX_PREVIEW_ROWS):
     if len(content) > MAX_BYTES:
         raise ValueError('The shipment file exceeds the size limit.')
     try:
@@ -134,7 +134,7 @@ def preview(content, config):
                 first = False
                 continue
             first = False
-            if len(rows) == MAX_PREVIEW_ROWS:
+            if len(rows) == limit:
                 truncated = True
                 break
             if not config.header:
